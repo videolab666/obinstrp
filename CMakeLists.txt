@@ -94,6 +94,7 @@ target_sources(
     src/sr-config.c
     src/sr-session.c
     src/sr-event-db.c
+    src/sr-event-controller.c
     src/sr-segment-writer.c
     src/sr-segment-reader.c
     src/sr-segment-catalog.c
