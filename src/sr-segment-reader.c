@@ -116,14 +116,14 @@ struct sr_segment_reader *sr_segment_reader_open(const char *segment_path, const
 	r->segment_file = os_fopen(segment_path, "rb");
 	r->index_file = os_fopen(index_path, "rb");
 	if (!r->segment_file || !r->index_file) {
-		obs_log(LOG_WARNING, "Sports Replay: could not open replay segment/index '%s' / '%s'", segment_path,
+		blog(LOG_WARNING, "Sports Replay: could not open replay segment/index '%s' / '%s'", segment_path,
 			index_path);
 		sr_segment_reader_close(r);
 		return NULL;
 	}
 
 	if (!read_headers(r) || !sr_segment_reader_refresh_index(r)) {
-		obs_log(LOG_WARNING, "Sports Replay: invalid or unsupported replay segment '%s'", segment_path);
+		blog(LOG_WARNING, "Sports Replay: invalid or unsupported replay segment '%s'", segment_path);
 		sr_segment_reader_close(r);
 		return NULL;
 	}

@@ -222,7 +222,7 @@ static bool storage_reserve_allows(struct sr_segment_writer *w, uint64_t timesta
 	const uint64_t free_bytes = os_get_free_disk_space(w->camera_dir);
 	if (free_bytes < w->min_free_bytes) {
 		if (!w->reserve_blocked) {
-			obs_log(LOG_ERROR,
+			blog(LOG_ERROR,
 				"Sports Replay: continuous recording paused for '%s': disk free space %.1f GB is below the %.1f GB reserve",
 				w->camera_name, (double)free_bytes / (1024.0 * 1024.0 * 1024.0),
 				(double)w->min_free_bytes / (1024.0 * 1024.0 * 1024.0));
@@ -234,7 +234,7 @@ static bool storage_reserve_allows(struct sr_segment_writer *w, uint64_t timesta
 	}
 
 	if (w->reserve_blocked) {
-		obs_log(LOG_INFO, "Sports Replay: disk reserve restored for '%s'; continuous recording resumed",
+		blog(LOG_INFO, "Sports Replay: disk reserve restored for '%s'; continuous recording resumed",
 			w->camera_name);
 		w->reserve_blocked = false;
 		w->reserve_recheck_after_ns = 0;
@@ -249,7 +249,7 @@ static bool open_segment(struct sr_segment_writer *w, uint64_t start_ns, bool di
 		return false;
 
 	if (w->next_sequence == UINT32_MAX) {
-		obs_log(LOG_ERROR, "Sports Replay: segment sequence exhausted for camera '%s'", w->camera_name);
+		blog(LOG_ERROR, "Sports Replay: segment sequence exhausted for camera '%s'", w->camera_name);
 		stats_set_failed(w);
 		return false;
 	}
@@ -264,7 +264,7 @@ static bool open_segment(struct sr_segment_writer *w, uint64_t start_ns, bool di
 	w->segment_file = os_fopen(w->segment_part_path, "wb");
 	w->index_file = os_fopen(w->index_part_path, "wb");
 	if (!w->segment_file || !w->index_file) {
-		obs_log(LOG_ERROR, "Sports Replay: could not open segment files for camera '%s'", w->camera_name);
+		blog(LOG_ERROR, "Sports Replay: could not open segment files for camera '%s'", w->camera_name);
 		close_open_files(w);
 		w->current_segment_failed = true;
 		stats_set_failed(w);
@@ -296,7 +296,7 @@ static bool open_segment(struct sr_segment_writer *w, uint64_t start_ns, bool di
 			write_exact(w->segment_file, w->extradata, sh.extradata_size) &&
 			write_exact(w->index_file, &ih, sizeof(ih));
 	if (!ok) {
-		obs_log(LOG_ERROR, "Sports Replay: failed to write segment header for camera '%s'", w->camera_name);
+		blog(LOG_ERROR, "Sports Replay: failed to write segment header for camera '%s'", w->camera_name);
 		w->current_segment_failed = true;
 		stats_set_failed(w);
 		close_open_files(w);
@@ -325,7 +325,7 @@ static void close_segment(struct sr_segment_writer *w, bool finalize)
 			w->stats.segments_finalized++;
 			pthread_mutex_unlock(&w->mutex);
 		} else {
-			obs_log(LOG_ERROR, "Sports Replay: could not finalize segment for camera '%s'", w->camera_name);
+			blog(LOG_ERROR, "Sports Replay: could not finalize segment for camera '%s'", w->camera_name);
 			stats_set_failed(w);
 		}
 	}
@@ -490,7 +490,7 @@ static void *writer_thread(void *param)
 		}
 
 		if (!write_video_packet(w, node)) {
-			obs_log(LOG_ERROR,
+			blog(LOG_ERROR,
 				"Sports Replay: disk write failed for camera '%s'; waiting for next keyframe",
 				w->camera_name);
 			close_segment(w, false);
@@ -544,20 +544,20 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	dstr_free(&dir);
 
 	if (os_mkdirs(w->camera_dir) == MKDIR_ERROR) {
-		obs_log(LOG_ERROR, "Sports Replay: could not create camera recording directory '%s'", w->camera_dir);
+		blog(LOG_ERROR, "Sports Replay: could not create camera recording directory '%s'", w->camera_dir);
 		sr_segment_writer_destroy(w);
 		return NULL;
 	}
 	w->next_sequence = find_next_sequence(w->camera_dir);
 
 	if (pthread_create(&w->thread, NULL, writer_thread, w) != 0) {
-		obs_log(LOG_ERROR, "Sports Replay: could not start disk writer thread for camera '%s'", w->camera_name);
+		blog(LOG_ERROR, "Sports Replay: could not start disk writer thread for camera '%s'", w->camera_name);
 		sr_segment_writer_destroy(w);
 		return NULL;
 	}
 	w->thread_started = true;
 
-	obs_log(LOG_INFO,
+	blog(LOG_INFO,
 		"Sports Replay: continuous recorder started for '%s' (%ux%u, %.3f fps, segment %.2f s, queue %zu, reserve %.1f GB)",
 		w->camera_name, w->width, w->height, (double)w->fps_num / (double)w->fps_den,
 		(double)w->target_segment_ns / 1e9, w->max_queue_packets,
