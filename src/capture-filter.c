@@ -83,10 +83,11 @@ static void sr_capture_update(void *data, obs_data_t *settings)
 	}
 
 	if (disk_recording != c->disk_recording) {
+		/* Only change intent here. The writer itself is created/destroyed in
+		 * filter_video so it cannot be freed by the UI update callback while
+		 * the video callback is queueing an encoded packet. */
 		c->disk_recording = disk_recording;
 		c->writer_failed = false;
-		if (!disk_recording)
-			destroy_writer(c);
 	}
 }
 
@@ -171,7 +172,7 @@ static void log_buffer_stats(struct sr_capture *c, uint64_t now)
 	struct sr_segment_writer_stats stats;
 	sr_segment_writer_get_stats(c->writer, &stats);
 	obs_log(LOG_INFO,
-		"'%s': replay RAM %.1f MB; disk packets %llu, %.1f MB, segments %llu, queue %zu/%zu, dropped %llu%s",
+		"'%s': replay RAM %.1f MB; disk packets %llu, %.1f MB, segments %llu, queue %zu (peak %zu), dropped %llu%s",
 		obs_source_get_name(c->self), (double)bytes / (1024.0 * 1024.0),
 		(unsigned long long)stats.packets_written, (double)stats.bytes_written / (1024.0 * 1024.0),
 		(unsigned long long)stats.segments_finalized, stats.queue_depth, stats.queue_high_watermark,
@@ -184,6 +185,11 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 
 	if (!frame || !frame->data[0] || c->encoder_failed)
 		return frame;
+
+	/* Apply a recording toggle on the video callback rather than the UI
+	 * settings callback; see sr_capture_update. */
+	if (!c->disk_recording && c->writer)
+		destroy_writer(c);
 
 	if (c->encoder && (c->reset_encoder || frame->width != c->enc_width || frame->height != c->enc_height)) {
 		destroy_writer(c);
@@ -222,10 +228,13 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 		sr_buffer_set_extradata(&c->buffer, extradata, extradata_size);
 	}
 
-	ensure_writer(c, &ovi);
-
 	AVPacket *pkt = sr_encoder_encode(c->encoder, frame);
 	if (pkt) {
+		/* Delay session/writer creation until the encoder has actually emitted
+		 * a packet. Some codec implementations only finalize stream headers
+		 * after encoding begins. */
+		ensure_writer(c, &ovi);
+
 		/* The disk writer clones the packet. The original remains owned by
 		 * the legacy RAM ring buffer, so current replay behavior stays intact
 		 * while the new continuous storage engine is developed. */
