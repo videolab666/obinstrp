@@ -12,6 +12,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-event-db.h"
 #include "sr-session.h"
+#include "sr-storage-cleanup.h"
 
 #include <obs-module.h>
 #include <util/bmem.h>
@@ -248,6 +249,57 @@ bool sr_event_controller_delete_event(struct sr_event_controller *controller, ui
 	const bool ok = ensure_db_locked(controller) && sr_event_db_delete_event(controller->db, event_id);
 	pthread_mutex_unlock(&controller->mutex);
 	return ok;
+}
+
+bool sr_event_controller_has_event_overlap(struct sr_event_controller *controller, uint64_t start_ns, uint64_t end_ns,
+					   bool *overlap)
+{
+	if (!controller || !overlap || end_ns < start_ns)
+		return false;
+
+	pthread_mutex_lock(&controller->mutex);
+	const bool ok = ensure_db_locked(controller) &&
+			sr_event_db_has_event_overlap(controller->db, start_ns, end_ns, overlap);
+	pthread_mutex_unlock(&controller->mutex);
+	return ok;
+}
+
+bool sr_event_controller_delete_event_with_media(struct sr_event_controller *controller, uint64_t event_id,
+						 struct sr_storage_cleanup_result *result)
+{
+	if (!controller || !event_id)
+		return false;
+
+	struct sr_storage_cleanup_result local = {0};
+	pthread_mutex_lock(&controller->mutex);
+	if (!ensure_db_locked(controller)) {
+		pthread_mutex_unlock(&controller->mutex);
+		return false;
+	}
+
+	struct sr_event_record event = {0};
+	if (!sr_event_db_get_event(controller->db, event_id, &event)) {
+		pthread_mutex_unlock(&controller->mutex);
+		return false;
+	}
+	if (event.protected_event) {
+		sr_event_record_free(&event);
+		pthread_mutex_unlock(&controller->mutex);
+		return false;
+	}
+
+	const uint64_t in_ns = event.in_ns;
+	const uint64_t out_ns = event.out_ns;
+	sr_event_record_free(&event);
+
+	const bool deleted = sr_event_db_delete_event(controller->db, event_id);
+	if (deleted && !sr_storage_delete_unreferenced_range(controller->db, in_ns, out_ns, &local))
+		local.errors++;
+
+	pthread_mutex_unlock(&controller->mutex);
+	if (result)
+		*result = local;
+	return deleted;
 }
 
 void sr_event_controller_free_event(struct sr_event_record *event)

@@ -852,6 +852,34 @@ bool sr_event_db_move_event_between_lists(struct sr_event_db *db, uint64_t event
 	return ok;
 }
 
+bool sr_event_db_has_event_overlap(struct sr_event_db *db, uint64_t start_ns, uint64_t end_ns, bool *overlap)
+{
+	if (!db || !overlap || end_ns < start_ns || !valid_u64(start_ns) || !valid_u64(end_ns))
+		return false;
+	*overlap = true;
+
+	pthread_mutex_lock(&db->mutex);
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(db->sql, "SELECT 1 FROM events WHERE in_ns<=? AND out_ns>=? LIMIT 1", -1, &stmt,
+				    NULL);
+	bool ok = rc == SQLITE_OK && sqlite3_bind_int64(stmt, 1, (sqlite3_int64)end_ns) == SQLITE_OK &&
+		  sqlite3_bind_int64(stmt, 2, (sqlite3_int64)start_ns) == SQLITE_OK;
+	if (ok) {
+		rc = sqlite3_step(stmt);
+		if (rc == SQLITE_ROW)
+			*overlap = true;
+		else if (rc == SQLITE_DONE)
+			*overlap = false;
+		else
+			ok = false;
+	}
+	if (!ok)
+		log_sql_error(db, "query Event overlap", rc);
+	sqlite3_finalize(stmt);
+	pthread_mutex_unlock(&db->mutex);
+	return ok;
+}
+
 bool sr_event_db_get_list_events(struct sr_event_db *db, unsigned list_id, uint64_t **event_ids, size_t *count)
 {
 	if (!db || !event_ids || !count || !valid_list_id(list_id))

@@ -138,7 +138,8 @@ static void cleanup_camera_dir(struct sr_event_db *events, const char *camera_di
 		const int index_rc = os_unlink(index_path);
 		if (segment_rc == 0 && index_rc == 0) {
 			result->segments_deleted++;
-			blog(LOG_INFO, "Sports Replay: permanently deleted unreferenced replay segment '%s'", segment_path);
+			blog(LOG_INFO, "Sports Replay: permanently deleted unreferenced replay segment '%s'",
+			     segment_path);
 		} else {
 			result->errors++;
 			blog(LOG_WARNING, "Sports Replay: could not completely delete replay segment pair '%s' / '%s'",

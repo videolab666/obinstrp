@@ -14,6 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-event-controller.h"
 #include "sr-replay-channel.h"
 #include "sr-replay-take.h"
+#include "sr-storage-cleanup.h"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -185,11 +186,13 @@ public:
 		auto *played = new QPushButton(T("EventDock.Played"), this);
 		auto *protect = new QPushButton(T("EventDock.Protect"), this);
 		auto *remove = new QPushButton(T("EventDock.Delete"), this);
+		auto *removeMedia = new QPushButton(T("EventDock.DeleteMedia"), this);
 		actionBar->addWidget(up);
 		actionBar->addWidget(down);
 		actionBar->addWidget(played);
 		actionBar->addWidget(protect);
 		actionBar->addWidget(remove);
+		actionBar->addWidget(removeMedia);
 		actionBar->addStretch(1);
 		actionBar->addWidget(new QLabel(T("EventDock.TargetList"), this));
 		targetCombo = new QComboBox(this);
@@ -274,7 +277,8 @@ public:
 		connect(down, &QPushButton::clicked, this, [this]() { moveRow(1); });
 		connect(played, &QPushButton::clicked, this, [this]() { togglePlayed(); });
 		connect(protect, &QPushButton::clicked, this, [this]() { toggleProtected(); });
-		connect(remove, &QPushButton::clicked, this, [this]() { deleteSelected(); });
+		connect(remove, &QPushButton::clicked, this, [this]() { deleteSelected(false); });
+		connect(removeMedia, &QPushButton::clicked, this, [this]() { deleteSelected(true); });
 		connect(copy, &QPushButton::clicked, this, [this]() { copySelected(); });
 		connect(move, &QPushButton::clicked, this, [this]() { moveSelected(); });
 		connect(duplicate, &QPushButton::clicked, this, [this]() { duplicateSelected(); });
@@ -637,19 +641,57 @@ private:
 		refresh(eventId);
 	}
 
-	void deleteSelected()
+	void deleteSelected(bool deleteMedia)
 	{
 		const uint64_t eventId = selectedEventId();
 		if (!eventId)
 			return;
-		if (QMessageBox::question(this, T("EventDock.DeleteTitle"), T("EventDock.DeleteConfirm")) !=
-		    QMessageBox::Yes)
+
+		if (deleteMedia) {
+			sr_event_record event = {};
+			if (!sr_event_controller_get_event(controller, eventId, &event)) {
+				setStatus("EventDock.Failed");
+				return;
+			}
+			const bool protectedEvent = event.protected_event;
+			sr_event_controller_free_event(&event);
+			if (protectedEvent) {
+				setStatus("EventDock.ProtectedMedia");
+				return;
+			}
+		}
+
+		const char *confirmKey = deleteMedia ? "EventDock.DeleteMediaConfirm" : "EventDock.DeleteConfirm";
+		if (QMessageBox::question(this, T("EventDock.DeleteTitle"), T(confirmKey)) != QMessageBox::Yes)
 			return;
-		if (!sr_event_controller_delete_event(controller, eventId)) {
-			setStatus("EventDock.Failed");
+
+		if (!deleteMedia) {
+			if (!sr_event_controller_delete_event(controller, eventId)) {
+				setStatus("EventDock.Failed");
+				return;
+			}
+			setStatus("EventDock.Deleted");
+			refresh();
 			return;
 		}
-		setStatus("EventDock.Deleted");
+
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			sr_replay_channel_state state = {};
+			const auto bus = static_cast<sr_replay_bus>(i);
+			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.event_id == eventId)
+				sr_replay_channel_clear(bus);
+		}
+
+		sr_storage_cleanup_result cleanup = {};
+		if (!sr_event_controller_delete_event_with_media(controller, eventId, &cleanup)) {
+			setStatus("EventDock.MediaCleanupFailed");
+			return;
+		}
+
+		status->setText(T("EventDock.MediaDeleted")
+					.arg(cleanup.segments_deleted)
+					.arg(cleanup.segments_pinned)
+					.arg(cleanup.errors));
 		refresh();
 	}
 
