@@ -1,4 +1,4 @@
-name: One-shot format replay angle switch
+name: One-shot apply replay operator checkpoint
 
 on:
   push:
@@ -11,13 +11,16 @@ permissions:
   contents: write
 
 jobs:
-  format:
+  apply:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feature/disk-replay-core
           fetch-depth: 0
+
+      - name: Add replay storage settings UI
+        run: python3 .github/scripts/add_storage_settings.py
 
       - name: Install clang-format 19
         shell: bash
@@ -33,13 +36,20 @@ jobs:
         shell: bash
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          ./build-aux/run-clang-format src/sr-replay-channel.c src/sr-replay-channel.h
+          ./build-aux/run-clang-format \
+            src/sr-replay-channel.c \
+            src/sr-replay-channel.h \
+            src/sr-dock.cpp
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/sr-replay-channel.c src/sr-replay-channel.h
+          git add \
+            src/sr-replay-channel.c \
+            src/sr-replay-channel.h \
+            src/sr-dock.cpp \
+            data/locale/en-US.ini
           if git diff --cached --quiet; then
             echo "Nothing to change"
             exit 0
           fi
-          git commit -m "style: format replay angle switching"
+          git commit -m "feat: expose replay storage safety settings"
           git push origin HEAD:feature/disk-replay-core
