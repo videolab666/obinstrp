@@ -1,0 +1,65 @@
+name: One-shot master audio playback integration
+
+on:
+  push:
+    branches:
+      - feature/disk-replay-core
+    paths:
+      - '.github/workflows/apply-master-audio-playback-once.yaml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/disk-replay-core
+          fetch-depth: 0
+
+      - name: Apply integration
+        run: python3 .github/scripts/apply_master_audio_playback.py
+
+      - name: Install formatters
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install --quiet zsh
+          brew tap obsproject/tools
+          brew install --quiet obsproject/tools/clang-format@19 obsproject/tools/gersemi
+          echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> "$GITHUB_PATH"
+          echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> "$GITHUB_PATH"
+
+      - name: Format changed sources
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          ./build-aux/run-clang-format \
+            src/sr-master-audio.c \
+            src/sr-master-audio-player.c \
+            src/sr-master-audio-player.h \
+            src/sr-event-output.c \
+            src/sr-event-output.h
+          ./build-aux/run-gersemi CMakeLists.txt
+
+      - name: Commit integration
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            CMakeLists.txt \
+            data/locale/en-US.ini \
+            src/sr-master-audio.c \
+            src/sr-master-audio-player.c \
+            src/sr-master-audio-player.h \
+            src/sr-event-output.c \
+            src/sr-event-output.h
+          if git diff --cached --quiet; then
+            echo "Nothing to change"
+            exit 0
+          fi
+          git commit -m "feat: play master replay audio on event outputs"
+          git push origin HEAD:feature/disk-replay-core
