@@ -273,9 +273,8 @@ bool sr_disk_player_decode_at(struct sr_disk_player *p, uint64_t target_ns, AVFr
 		if (sequential && (record_flags & SR_PACKET_FLAG_DISCONTINUITY)) {
 			if (!(record_flags & SR_PACKET_FLAG_KEYFRAME)) {
 				av_packet_free(&packet);
-				blog(LOG_WARNING,
-					"Sports Replay: non-keyframe discontinuity in disk replay for '%s'",
-					p->camera_name);
+				blog(LOG_WARNING, "Sports Replay: non-keyframe discontinuity in disk replay for '%s'",
+				     p->camera_name);
 				return false;
 			}
 			sr_decoder_flush(p->decoder);

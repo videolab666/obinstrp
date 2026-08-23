@@ -223,9 +223,9 @@ static bool storage_reserve_allows(struct sr_segment_writer *w, uint64_t timesta
 	if (free_bytes < w->min_free_bytes) {
 		if (!w->reserve_blocked) {
 			blog(LOG_ERROR,
-				"Sports Replay: continuous recording paused for '%s': disk free space %.1f GB is below the %.1f GB reserve",
-				w->camera_name, (double)free_bytes / (1024.0 * 1024.0 * 1024.0),
-				(double)w->min_free_bytes / (1024.0 * 1024.0 * 1024.0));
+			     "Sports Replay: continuous recording paused for '%s': disk free space %.1f GB is below the %.1f GB reserve",
+			     w->camera_name, (double)free_bytes / (1024.0 * 1024.0 * 1024.0),
+			     (double)w->min_free_bytes / (1024.0 * 1024.0 * 1024.0));
 		}
 		w->reserve_blocked = true;
 		w->reserve_recheck_after_ns = timestamp_ns + 1000000000ULL;
@@ -235,7 +235,7 @@ static bool storage_reserve_allows(struct sr_segment_writer *w, uint64_t timesta
 
 	if (w->reserve_blocked) {
 		blog(LOG_INFO, "Sports Replay: disk reserve restored for '%s'; continuous recording resumed",
-			w->camera_name);
+		     w->camera_name);
 		w->reserve_blocked = false;
 		w->reserve_recheck_after_ns = 0;
 		stats_set_reserve_blocked(w, false);
@@ -490,9 +490,8 @@ static void *writer_thread(void *param)
 		}
 
 		if (!write_video_packet(w, node)) {
-			blog(LOG_ERROR,
-				"Sports Replay: disk write failed for camera '%s'; waiting for next keyframe",
-				w->camera_name);
+			blog(LOG_ERROR, "Sports Replay: disk write failed for camera '%s'; waiting for next keyframe",
+			     w->camera_name);
 			close_segment(w, false);
 			w->need_keyframe = true;
 			w->discontinuity_for_next_packet = true;
@@ -558,10 +557,10 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	w->thread_started = true;
 
 	blog(LOG_INFO,
-		"Sports Replay: continuous recorder started for '%s' (%ux%u, %.3f fps, segment %.2f s, queue %zu, reserve %.1f GB)",
-		w->camera_name, w->width, w->height, (double)w->fps_num / (double)w->fps_den,
-		(double)w->target_segment_ns / 1e9, w->max_queue_packets,
-		(double)w->min_free_bytes / (1024.0 * 1024.0 * 1024.0));
+	     "Sports Replay: continuous recorder started for '%s' (%ux%u, %.3f fps, segment %.2f s, queue %zu, reserve %.1f GB)",
+	     w->camera_name, w->width, w->height, (double)w->fps_num / (double)w->fps_den,
+	     (double)w->target_segment_ns / 1e9, w->max_queue_packets,
+	     (double)w->min_free_bytes / (1024.0 * 1024.0 * 1024.0));
 	return w;
 }
 

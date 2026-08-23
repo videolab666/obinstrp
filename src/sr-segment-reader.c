@@ -117,7 +117,7 @@ struct sr_segment_reader *sr_segment_reader_open(const char *segment_path, const
 	r->index_file = os_fopen(index_path, "rb");
 	if (!r->segment_file || !r->index_file) {
 		blog(LOG_WARNING, "Sports Replay: could not open replay segment/index '%s' / '%s'", segment_path,
-			index_path);
+		     index_path);
 		sr_segment_reader_close(r);
 		return NULL;
 	}
