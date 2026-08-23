@@ -21,6 +21,7 @@ extern "C" {
 #endif
 
 struct sr_event_controller;
+struct sr_storage_cleanup_result;
 
 struct sr_event_controller *sr_event_controller_create(void);
 void sr_event_controller_destroy(struct sr_event_controller *controller);
@@ -57,6 +58,13 @@ void sr_event_controller_free_event(struct sr_event_record *event);
  * treat that as pinned/unknown and keep media. */
 bool sr_event_controller_has_event_overlap(struct sr_event_controller *controller, uint64_t start_ns, uint64_t end_ns,
 					   bool *overlap);
+
+/* Deletes an unprotected Event and, while keeping the controller mutation lock
+ * held, conservatively removes finalized segment/index pairs that are wholly
+ * inside that Event and no longer referenced by any other Event. The result
+ * reports physical cleanup progress/errors; a protected Event is rejected. */
+bool sr_event_controller_delete_event_with_media(struct sr_event_controller *controller, uint64_t event_id,
+						 struct sr_storage_cleanup_result *result);
 
 bool sr_event_controller_get_list_events(struct sr_event_controller *controller, unsigned list_id, uint64_t **event_ids,
 					 size_t *count);
