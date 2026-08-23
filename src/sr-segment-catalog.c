@@ -15,6 +15,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <util/dstr.h>
 #include <util/platform.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -110,7 +111,7 @@ static bool append_descriptor(struct sr_segment_descriptor **items, size_t *coun
 	}
 
 	if (*count == *capacity) {
-		size_t next_capacity = *capacity ? *capacity * 2 : 32;
+		const size_t next_capacity = *capacity ? *capacity * 2 : 32;
 		struct sr_segment_descriptor *next = brealloc(*items, next_capacity * sizeof(**items));
 		if (!next) {
 			sr_segment_reader_close(reader);
@@ -146,11 +147,11 @@ bool sr_segment_catalog_scan(const char *session_dir, const char *camera_name,
 		return false;
 
 	char *camera_dir = camera_directory(session_dir, camera_name);
-	if (!camera_dir || !os_file_exists(camera_dir)) {
-		bfree(camera_dir);
-		return true;
-	}
+	if (!camera_dir)
+		return false;
 
+	/* A missing camera directory is a valid empty catalog. os_glob() simply
+	 * returns no matches, avoiding a file-vs-directory existence assumption. */
 	struct dstr pattern = {0};
 	dstr_copy(&pattern, camera_dir);
 	dstr_replace(&pattern, "\\", "/");
