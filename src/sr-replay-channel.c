@@ -149,6 +149,15 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	if (!channel || !event_id || !camera_name || !*camera_name)
 		return false;
 
+	bool switch_existing = false;
+	pthread_mutex_lock(&channel->mutex);
+	if (channel->cued && channel->event_id == event_id && channel->camera_name &&
+	    strcmp(channel->camera_name, camera_name) != 0)
+		switch_existing = true;
+	pthread_mutex_unlock(&channel->mutex);
+	if (switch_existing)
+		return sr_replay_channel_switch_camera(bus, camera_name);
+
 	struct sr_event_record event;
 	if (!sr_event_controller_get_event(g_channels->events, event_id, &event))
 		return false;
