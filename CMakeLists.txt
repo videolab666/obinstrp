@@ -97,6 +97,7 @@ target_sources(
     src/sr-event-controller.c
     src/sr-event-dock.cpp
     src/sr-replay-channel.c
+    src/sr-replay-take.c
     src/sr-event-output.c
     src/sr-segment-writer.c
     src/sr-segment-reader.c
