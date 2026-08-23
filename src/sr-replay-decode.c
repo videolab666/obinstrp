@@ -29,9 +29,8 @@ static bool find_previous_keyframe(const struct sr_replay *replay, size_t target
 	return false;
 }
 
-bool sr_replay_decode_frame_at(struct sr_decoder *decoder, const struct sr_replay *replay,
-			       struct sr_frame_cache *cache, int64_t *current_index, size_t target_index,
-			       AVFrame **frame)
+bool sr_replay_decode_frame_at(struct sr_decoder *decoder, const struct sr_replay *replay, struct sr_frame_cache *cache,
+			       int64_t *current_index, size_t target_index, AVFrame **frame)
 {
 	if (!decoder || !replay || !current_index || !frame || target_index >= replay->video.num)
 		return false;

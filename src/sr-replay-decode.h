@@ -35,9 +35,8 @@ extern "C" {
  * the decoder's newer forward reference state, which makes reverse and jog
  * practical with short GOPs. The returned AVFrame is owned by either the
  * decoder or cache and must not be freed by the caller. */
-bool sr_replay_decode_frame_at(struct sr_decoder *decoder, const struct sr_replay *replay,
-			       struct sr_frame_cache *cache, int64_t *current_index, size_t target_index,
-			       AVFrame **frame);
+bool sr_replay_decode_frame_at(struct sr_decoder *decoder, const struct sr_replay *replay, struct sr_frame_cache *cache,
+			       int64_t *current_index, size_t target_index, AVFrame **frame);
 
 #ifdef __cplusplus
 }
