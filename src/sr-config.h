@@ -16,7 +16,7 @@ the Free Software Foundation; either version 2 of the License, or
 extern "C" {
 #endif
 
-#define SR_CONFIG_SCHEMA_VERSION 3
+#define SR_CONFIG_SCHEMA_VERSION 4
 
 enum sr_storage_low_space_action {
 	SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED = 0,
@@ -49,6 +49,15 @@ void sr_config_set_low_space_action(enum sr_storage_low_space_action action);
 
 uint32_t sr_config_get_segment_duration_ms(void);
 void sr_config_set_segment_duration_ms(uint32_t milliseconds);
+
+/* Optional names of existing native OBS Stinger transitions used when the
+ * operator enters replay from live and explicitly returns to live. An empty
+ * string means keep the transition currently selected in OBS. Returned
+ * strings are bstrdup allocations owned by the caller. */
+char *sr_config_get_take_in_transition(void);
+void sr_config_set_take_in_transition(const char *transition_name);
+char *sr_config_get_take_out_transition(void);
+void sr_config_set_take_out_transition(const char *transition_name);
 
 #ifdef __cplusplus
 }

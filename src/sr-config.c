@@ -29,6 +29,8 @@ static uint64_t g_min_free_bytes;
 static uint64_t g_purge_target_bytes;
 static enum sr_storage_low_space_action g_low_space_action;
 static uint32_t g_segment_duration_ms;
+static char *g_take_in_transition;
+static char *g_take_out_transition;
 
 /* Default location when the user hasn't chosen one: <Videos>/Sports Replay,
  * created if needed. Falls back to the plugin config dir. */
@@ -81,6 +83,8 @@ static void save_locked(void)
 	obs_data_set_int(data, "purge_target_bytes", (long long)g_purge_target_bytes);
 	obs_data_set_int(data, "low_space_action", (long long)g_low_space_action);
 	obs_data_set_int(data, "segment_duration_ms", g_segment_duration_ms);
+	obs_data_set_string(data, "take_in_transition", g_take_in_transition ? g_take_in_transition : "");
+	obs_data_set_string(data, "take_out_transition", g_take_out_transition ? g_take_out_transition : "");
 
 	char *path = obs_module_config_path("config.json");
 	if (path)
@@ -123,6 +127,11 @@ void sr_config_init(void)
 	g_segment_duration_ms = segment_ms >= 1000 && segment_ms <= 60000 ? (uint32_t)segment_ms
 									  : DEFAULT_SEGMENT_DURATION_MS;
 
+	const char *take_in = data ? obs_data_get_string(data, "take_in_transition") : "";
+	const char *take_out = data ? obs_data_get_string(data, "take_out_transition") : "";
+	g_take_in_transition = bstrdup(take_in ? take_in : "");
+	g_take_out_transition = bstrdup(take_out ? take_out : "");
+
 	os_mkdirs(g_save_dir);
 	os_mkdirs(g_session_root);
 
@@ -134,8 +143,12 @@ void sr_config_free(void)
 {
 	bfree(g_save_dir);
 	bfree(g_session_root);
+	bfree(g_take_in_transition);
+	bfree(g_take_out_transition);
 	g_save_dir = NULL;
 	g_session_root = NULL;
+	g_take_in_transition = NULL;
+	g_take_out_transition = NULL;
 	pthread_mutex_destroy(&g_mutex);
 }
 
@@ -260,6 +273,45 @@ void sr_config_set_segment_duration_ms(uint32_t milliseconds)
 
 	pthread_mutex_lock(&g_mutex);
 	g_segment_duration_ms = milliseconds;
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+static char *get_transition_name(char *value)
+{
+	return bstrdup(value ? value : "");
+}
+
+char *sr_config_get_take_in_transition(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	char *result = get_transition_name(g_take_in_transition);
+	pthread_mutex_unlock(&g_mutex);
+	return result;
+}
+
+void sr_config_set_take_in_transition(const char *transition_name)
+{
+	pthread_mutex_lock(&g_mutex);
+	bfree(g_take_in_transition);
+	g_take_in_transition = bstrdup(transition_name ? transition_name : "");
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+char *sr_config_get_take_out_transition(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	char *result = get_transition_name(g_take_out_transition);
+	pthread_mutex_unlock(&g_mutex);
+	return result;
+}
+
+void sr_config_set_take_out_transition(const char *transition_name)
+{
+	pthread_mutex_lock(&g_mutex);
+	bfree(g_take_out_transition);
+	g_take_out_transition = bstrdup(transition_name ? transition_name : "");
 	save_locked();
 	pthread_mutex_unlock(&g_mutex);
 }

@@ -33,6 +33,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QComboBox>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -78,6 +79,38 @@ static QLabel *makeCreditLabel(QWidget *parent)
 }
 
 namespace {
+
+QStringList nativeStingerTransitions()
+{
+	QStringList names;
+	obs_frontend_source_list transitions = {};
+	obs_frontend_get_transitions(&transitions);
+	for (size_t i = 0; i < transitions.sources.num; i++) {
+		obs_source_t *transition = transitions.sources.array[i];
+		if (strcmp(obs_source_get_unversioned_id(transition), "obs_stinger_transition") != 0)
+			continue;
+		const QString name = QString::fromUtf8(obs_source_get_name(transition));
+		if (!name.isEmpty() && !names.contains(name))
+			names.append(name);
+	}
+	obs_frontend_source_list_free(&transitions);
+	names.sort(Qt::CaseInsensitive);
+	return names;
+}
+
+void populateStingerCombo(QComboBox *combo, const QStringList &names, const QString &saved)
+{
+	combo->addItem(T("Dock.StingerUseCurrent"), QString());
+	for (const QString &name : names)
+		combo->addItem(name, name);
+
+	int index = combo->findData(saved);
+	if (!saved.isEmpty() && index < 0) {
+		combo->addItem(T("Dock.StingerMissing").arg(saved), saved);
+		index = combo->count() - 1;
+	}
+	combo->setCurrentIndex(index >= 0 ? index : 0);
+}
 
 bool enum_replay_sources(void *param, obs_source_t *source)
 {
@@ -309,6 +342,29 @@ private:
 		lay->addWidget(new QLabel(T("Dock.SegmentDuration"), &dlg));
 		lay->addWidget(segmentSeconds);
 
+		char *takeInRaw = sr_config_get_take_in_transition();
+		char *takeOutRaw = sr_config_get_take_out_transition();
+		const QString takeIn = QString::fromUtf8(takeInRaw ? takeInRaw : "");
+		const QString takeOut = QString::fromUtf8(takeOutRaw ? takeOutRaw : "");
+		bfree(takeInRaw);
+		bfree(takeOutRaw);
+		const QStringList stingers = nativeStingerTransitions();
+
+		lay->addWidget(new QLabel(T("Dock.StingerIn"), &dlg));
+		auto *stingerIn = new QComboBox(&dlg);
+		populateStingerCombo(stingerIn, stingers, takeIn);
+		lay->addWidget(stingerIn);
+
+		lay->addWidget(new QLabel(T("Dock.StingerOut"), &dlg));
+		auto *stingerOut = new QComboBox(&dlg);
+		populateStingerCombo(stingerOut, stingers, takeOut);
+		lay->addWidget(stingerOut);
+
+		auto *stingerHint = new QLabel(T("Dock.StingerHint"), &dlg);
+		stingerHint->setWordWrap(true);
+		stingerHint->setStyleSheet(QStringLiteral("color: gray;"));
+		lay->addWidget(stingerHint);
+
 		auto *freeSpace = new QLabel(&dlg);
 		freeSpace->setStyleSheet(QStringLiteral("color: gray;"));
 		lay->addWidget(freeSpace);
@@ -357,6 +413,11 @@ private:
 			sr_config_set_session_root(sessionPath.constData());
 			sr_config_set_min_free_bytes((uint64_t)(minFree->value() * gib));
 			sr_config_set_segment_duration_ms((uint32_t)(segmentSeconds->value() * 1000.0));
+
+			const QByteArray stingerInName = stingerIn->currentData().toString().toUtf8();
+			const QByteArray stingerOutName = stingerOut->currentData().toString().toUtf8();
+			sr_config_set_take_in_transition(stingerInName.constData());
+			sr_config_set_take_out_transition(stingerOutName.constData());
 
 			watchFolder();
 			refreshList();

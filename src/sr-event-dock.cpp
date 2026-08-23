@@ -311,9 +311,11 @@ public:
 		auto *takeA = new QPushButton(T("EventDock.TakeA"), this);
 		auto *takeB = new QPushButton(T("EventDock.TakeB"), this);
 		auto *takeToggle = new QPushButton(T("EventDock.TakeToggle"), this);
+		auto *returnLive = new QPushButton(T("EventDock.ReturnLive"), this);
 		takeBar->addWidget(takeA);
 		takeBar->addWidget(takeB);
 		takeBar->addWidget(takeToggle);
+		takeBar->addWidget(returnLive);
 		root->addLayout(takeBar);
 
 		transportStatus = new QLabel(this);
@@ -389,6 +391,7 @@ public:
 		connect(takeA, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_A); });
 		connect(takeB, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_B); });
 		connect(takeToggle, &QPushButton::clicked, this, [this]() { takeToggleBus(); });
+		connect(returnLive, &QPushButton::clicked, this, [this]() { returnLiveBus(); });
 
 		refreshTimer = new QTimer(this);
 		refreshTimer->setInterval(750);
@@ -682,6 +685,16 @@ private:
 		}
 		setStatus("EventDock.ToggleTaken");
 		refresh();
+		refreshTransportStatus();
+	}
+
+	void returnLiveBus()
+	{
+		if (!controller || !sr_replay_take_return(controller)) {
+			setStatus("EventDock.ReturnFailed");
+			return;
+		}
+		setStatus("EventDock.Returned");
 		refreshTransportStatus();
 	}
 

@@ -29,6 +29,13 @@ bool sr_replay_take_bus(struct sr_event_controller *events, enum sr_replay_bus b
  * replay scene, prefer A when cued, otherwise B. */
 bool sr_replay_take_toggle(struct sr_event_controller *events);
 
+/* Explicit operator return from either replay bus to the program scene that
+ * was live before replay. Uses the configured OUT native Stinger when set. */
+bool sr_replay_take_return(struct sr_event_controller *events);
+
+/* Releases process-local TAKE state during module shutdown. */
+void sr_replay_take_reset(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -10,6 +10,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-replay-take.h"
 
+#include "sr-config.h"
 #include "sr-event-controller.h"
 #include "sr-event-output.h"
 #include "sr-scene-tracker.h"
@@ -19,6 +20,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <util/bmem.h>
 
 #include <string.h>
+
+static char *g_return_scene;
 
 struct find_output_ctx {
 	enum sr_replay_bus bus;
@@ -60,6 +63,11 @@ static char *output_scene_name(enum sr_replay_bus bus)
 	return scene_name;
 }
 
+static bool scene_name_matches(const char *current_name, const char *a, const char *b)
+{
+	return current_name && ((a && strcmp(current_name, a) == 0) || (b && strcmp(current_name, b) == 0));
+}
+
 bool sr_replay_take_bus(struct sr_event_controller *events, enum sr_replay_bus bus)
 {
 	if (!events || (bus != SR_REPLAY_BUS_A && bus != SR_REPLAY_BUS_B))
@@ -77,21 +85,85 @@ bool sr_replay_take_bus(struct sr_event_controller *events, enum sr_replay_bus b
 		return false;
 	}
 
+	char *scene_a = output_scene_name(SR_REPLAY_BUS_A);
+	char *scene_b = output_scene_name(SR_REPLAY_BUS_B);
+	obs_source_t *current = obs_frontend_get_current_scene();
+	const char *current_name = current ? obs_source_get_name(current) : NULL;
+	const bool already_in_replay = scene_name_matches(current_name, scene_a, scene_b);
+
+	if (!already_in_replay && current_name && *current_name) {
+		bfree(g_return_scene);
+		g_return_scene = bstrdup(current_name);
+	}
+
 	if (!sr_replay_channel_play(bus)) {
+		obs_source_release(current);
+		bfree(scene_a);
+		bfree(scene_b);
 		bfree(scene_name);
 		return false;
 	}
 
-	/* Arm the same Studio Mode preview guard used by the legacy replay path
-	 * before program moves to the Event Output scene. */
-	sr_scene_tracker_note_replay_launch();
-	sr_switch_to_scene(scene_name);
+	char *take_in = already_in_replay ? NULL : sr_config_get_take_in_transition();
+	if (take_in && *take_in)
+		sr_switch_to_scene_with_transition(scene_name, take_in);
+	else
+		sr_switch_to_scene(scene_name);
+	bfree(take_in);
+	obs_source_release(current);
+	bfree(scene_a);
+	bfree(scene_b);
 	bfree(scene_name);
 
 	if (!sr_event_controller_set_played(events, state.event_id, true))
 		blog(LOG_WARNING, "Sports Replay: TAKE %c succeeded but Event %llu could not be marked played",
 		     bus == SR_REPLAY_BUS_A ? 'A' : 'B', (unsigned long long)state.event_id);
 	return true;
+}
+
+bool sr_replay_take_return(struct sr_event_controller *events)
+{
+	if (!events || !g_return_scene || !*g_return_scene)
+		return false;
+
+	char *scene_a = output_scene_name(SR_REPLAY_BUS_A);
+	char *scene_b = output_scene_name(SR_REPLAY_BUS_B);
+	obs_source_t *current = obs_frontend_get_current_scene();
+	const char *current_name = current ? obs_source_get_name(current) : NULL;
+	const bool in_replay = scene_name_matches(current_name, scene_a, scene_b);
+	obs_source_release(current);
+	bfree(scene_a);
+	bfree(scene_b);
+	if (!in_replay) {
+		bfree(g_return_scene);
+		g_return_scene = NULL;
+		return false;
+	}
+
+	char *target = bstrdup(g_return_scene);
+	bfree(g_return_scene);
+	g_return_scene = NULL;
+	if (!target)
+		return false;
+
+	sr_replay_channel_stop(SR_REPLAY_BUS_A);
+	sr_replay_channel_stop(SR_REPLAY_BUS_B);
+	sr_scene_tracker_end_replay_guard();
+
+	char *take_out = sr_config_get_take_out_transition();
+	if (take_out && *take_out)
+		sr_switch_to_scene_return_with_transition(target, take_out);
+	else
+		sr_switch_to_scene_return(target);
+	bfree(take_out);
+	bfree(target);
+	return true;
+}
+
+void sr_replay_take_reset(void)
+{
+	bfree(g_return_scene);
+	g_return_scene = NULL;
 }
 
 bool sr_replay_take_toggle(struct sr_event_controller *events)

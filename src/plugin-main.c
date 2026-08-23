@@ -41,6 +41,7 @@ static obs_hotkey_id hk_event_20 = OBS_INVALID_HOTKEY_ID;
 static obs_hotkey_id hk_take_a = OBS_INVALID_HOTKEY_ID;
 static obs_hotkey_id hk_take_b = OBS_INVALID_HOTKEY_ID;
 static obs_hotkey_id hk_take_toggle = OBS_INVALID_HOTKEY_ID;
+static obs_hotkey_id hk_return_live = OBS_INVALID_HOTKEY_ID;
 
 static void log_created_event(const char *action, uint64_t event_id)
 {
@@ -149,6 +150,15 @@ static void take_toggle_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, b
 		obs_log(LOG_WARNING, "Sports Replay: TAKE A/B toggle failed");
 }
 
+static void return_live_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (pressed && event_controller && !sr_replay_take_return(event_controller))
+		obs_log(LOG_WARNING, "Sports Replay: RETURN LIVE failed");
+}
+
 static void register_event_hotkeys(void)
 {
 	hk_event_in = obs_hotkey_register_frontend("SportsReplay.EventIn", obs_module_text("Hotkey.EventIn"),
@@ -167,6 +177,8 @@ static void register_event_hotkeys(void)
 		obs_hotkey_register_frontend("SportsReplay.TakeB", obs_module_text("Hotkey.TakeB"), take_b_cb, NULL);
 	hk_take_toggle = obs_hotkey_register_frontend("SportsReplay.TakeToggle", obs_module_text("Hotkey.TakeToggle"),
 						      take_toggle_cb, NULL);
+	hk_return_live = obs_hotkey_register_frontend("SportsReplay.ReturnLive", obs_module_text("Hotkey.ReturnLive"),
+						      return_live_cb, NULL);
 }
 
 static void unregister_event_hotkeys(void)
@@ -187,6 +199,8 @@ static void unregister_event_hotkeys(void)
 		obs_hotkey_unregister(hk_take_b);
 	if (hk_take_toggle != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(hk_take_toggle);
+	if (hk_return_live != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(hk_return_live);
 
 	hk_event_in = OBS_INVALID_HOTKEY_ID;
 	hk_event_out = OBS_INVALID_HOTKEY_ID;
@@ -196,6 +210,7 @@ static void unregister_event_hotkeys(void)
 	hk_take_a = OBS_INVALID_HOTKEY_ID;
 	hk_take_b = OBS_INVALID_HOTKEY_ID;
 	hk_take_toggle = OBS_INVALID_HOTKEY_ID;
+	hk_return_live = OBS_INVALID_HOTKEY_ID;
 }
 
 bool obs_module_load(void)
@@ -249,6 +264,7 @@ void obs_module_unload(void)
 	sr_scene_tracker_stop();
 	unregister_event_hotkeys();
 	sr_storage_manager_stop();
+	sr_replay_take_reset();
 	sr_replay_channels_shutdown();
 	sr_event_controller_destroy(event_controller);
 	event_controller = NULL;
