@@ -52,6 +52,13 @@ bool sr_replay_channels_init(struct sr_event_controller *events);
 void sr_replay_channels_shutdown(void);
 
 bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char *camera_name);
+
+/* Replaces only the camera backing an already-cued Event. The Event, playhead,
+ * speed, direction, loop and play/pause state are preserved atomically. The
+ * switch is rejected when the requested camera does not contain the current
+ * playhead, so an on-air angle change never jumps in time. */
+bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_name);
+
 void sr_replay_channel_clear(enum sr_replay_bus bus);
 
 bool sr_replay_channel_play(enum sr_replay_bus bus);
