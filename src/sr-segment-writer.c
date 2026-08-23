@@ -24,6 +24,7 @@ struct sr_writer_packet {
 	struct sr_writer_packet *next;
 	AVPacket *pkt;
 	uint64_t timestamp_ns;
+	uint64_t epoch;
 	bool keyframe;
 };
 
@@ -38,7 +39,13 @@ struct sr_segment_writer {
 	struct sr_writer_packet *tail;
 	size_t queue_depth;
 	size_t max_queue_packets;
-	bool overflow_pending;
+
+	/* Incremented whenever an input packet is dropped before enqueue. Packets
+	 * already queued keep their old epoch; the writer sees the epoch change
+	 * exactly at the first packet after the gap, not prematurely. */
+	uint64_t enqueue_epoch;
+	uint64_t write_epoch;
+	bool have_write_epoch;
 
 	char *camera_name;
 	char *camera_dir;
@@ -337,7 +344,7 @@ static bool write_video_packet(struct sr_segment_writer *w, struct sr_writer_pac
 	return true;
 }
 
-static struct sr_writer_packet *pop_packet(struct sr_segment_writer *w, bool *overflow)
+static struct sr_writer_packet *pop_packet(struct sr_segment_writer *w)
 {
 	pthread_mutex_lock(&w->mutex);
 	while (!w->head && !w->stopping)
@@ -354,8 +361,6 @@ static struct sr_writer_packet *pop_packet(struct sr_segment_writer *w, bool *ov
 		w->tail = NULL;
 	w->queue_depth--;
 	w->stats.queue_depth = w->queue_depth;
-	*overflow = w->overflow_pending;
-	w->overflow_pending = false;
 	pthread_mutex_unlock(&w->mutex);
 	return node;
 }
@@ -363,14 +368,21 @@ static struct sr_writer_packet *pop_packet(struct sr_segment_writer *w, bool *ov
 static void *writer_thread(void *param)
 {
 	struct sr_segment_writer *w = param;
+	os_set_thread_name("sports-replay-writer");
 
 	for (;;) {
-		bool overflow = false;
-		struct sr_writer_packet *node = pop_packet(w, &overflow);
+		struct sr_writer_packet *node = pop_packet(w);
 		if (!node)
 			break;
 
-		if (overflow) {
+		if (!w->have_write_epoch) {
+			w->write_epoch = node->epoch;
+			w->have_write_epoch = true;
+		} else if (node->epoch != w->write_epoch) {
+			/* At least one packet was dropped between the last written epoch
+			 * and this packet. The discontinuity belongs immediately before
+			 * this node, so resynchronize here at the next keyframe. */
+			w->write_epoch = node->epoch;
 			w->need_keyframe = true;
 			w->discontinuity_for_next_packet = true;
 		}
@@ -548,13 +560,14 @@ bool sr_segment_writer_push_video(struct sr_segment_writer *w, const AVPacket *p
 	if (w->stopping || w->queue_depth >= w->max_queue_packets) {
 		if (!w->stopping) {
 			w->stats.packets_dropped++;
-			w->overflow_pending = true;
+			w->enqueue_epoch++;
 		}
 		pthread_mutex_unlock(&w->mutex);
 		free_packet_node(node);
 		return false;
 	}
 
+	node->epoch = w->enqueue_epoch;
 	if (w->tail)
 		w->tail->next = node;
 	else
