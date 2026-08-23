@@ -29,8 +29,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 extern "C" {
 #endif
 
-/* One encoded video frame kept in the ring buffer. Because every frame is
- * encoded as an intra frame, any packet can be decoded on its own. */
+/* One encoded video frame kept in the ring buffer. pkt->flags preserves the
+ * encoder's keyframe marker so short-GOP replay can seek from the preceding
+ * IDR instead of assuming every packet is independently decodable. */
 struct sr_packet {
 	AVPacket *pkt;
 	uint64_t ts; /* OBS timestamp in nanoseconds */
@@ -90,7 +91,9 @@ void sr_buffer_push_video(struct sr_buffer *b, AVPacket *pkt, uint64_t ts);
 void sr_buffer_push_audio(struct sr_buffer *b, const struct obs_audio_data *audio, uint32_t channels);
 
 /* Copies the current buffer contents into out (packets are ref-counted
- * clones, audio is duplicated). Returns false if there is no video yet. */
+ * clones, audio is duplicated). A snapshot always starts on a keyframe;
+ * non-key packets before the first retained IDR are omitted. Returns false if
+ * there is no decodable video yet. */
 bool sr_buffer_snapshot(struct sr_buffer *b, struct sr_replay *out);
 
 void sr_replay_free(struct sr_replay *r);
