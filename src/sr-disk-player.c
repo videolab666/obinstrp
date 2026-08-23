@@ -11,12 +11,15 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-disk-player.h"
 
 #include "sr-codec.h"
+#include "sr-frame-cache.h"
 #include "sr-segment-catalog.h"
 #include "sr-segment-reader.h"
 
 #include <obs-module.h>
 
 #include <string.h>
+
+#define SR_DISK_PLAYER_FRAME_CACHE_BYTES (192ULL * 1024ULL * 1024ULL)
 
 struct sr_disk_player {
 	char *session_dir;
@@ -27,9 +30,13 @@ struct sr_disk_player {
 
 	struct sr_segment_reader *reader;
 	struct sr_decoder *decoder;
+	struct sr_frame_cache frame_cache;
 	uint32_t opened_sequence;
 	bool opened_active;
 
+	/* Decoder state can remain newer than the picture just returned from the
+	 * frame cache. These fields therefore describe the decoder's warm reference
+	 * chain, not the operator-visible playhead. */
 	int64_t current_position;
 	uint64_t current_timestamp_ns;
 	AVFrame *current_frame;
@@ -112,6 +119,7 @@ struct sr_disk_player *sr_disk_player_create(const char *session_dir, const char
 	p->session_dir = bstrdup(session_dir);
 	p->camera_name = bstrdup(camera_name);
 	p->current_position = -1;
+	sr_frame_cache_init(&p->frame_cache, (size_t)SR_DISK_PLAYER_FRAME_CACHE_BYTES);
 
 	if (!sr_disk_player_refresh(p)) {
 		sr_disk_player_destroy(p);
@@ -126,6 +134,7 @@ void sr_disk_player_destroy(struct sr_disk_player *p)
 		return;
 
 	close_stream(p);
+	sr_frame_cache_free(&p->frame_cache);
 	sr_segment_catalog_free(p->segments, p->segment_count);
 	bfree(p->session_dir);
 	bfree(p->camera_name);
@@ -201,6 +210,35 @@ static bool output_current_clone(struct sr_disk_player *p, AVFrame **frame, uint
 	return true;
 }
 
+static bool cache_key(uint32_t sequence, size_t position, uint64_t *key)
+{
+	if (!key || position > UINT32_MAX)
+		return false;
+	*key = ((uint64_t)sequence << 32) | (uint64_t)(uint32_t)position;
+	return true;
+}
+
+static bool output_cached_clone(struct sr_disk_player *p, size_t position, uint64_t timestamp_ns, AVFrame **frame,
+				uint64_t *actual_timestamp_ns)
+{
+	uint64_t key = 0;
+	if (!cache_key(p->opened_sequence, position, &key))
+		return false;
+
+	AVFrame *cached = sr_frame_cache_find(&p->frame_cache, key);
+	if (!cached)
+		return false;
+
+	AVFrame *copy = av_frame_clone(cached);
+	if (!copy)
+		return false;
+
+	*frame = copy;
+	if (actual_timestamp_ns)
+		*actual_timestamp_ns = timestamp_ns;
+	return true;
+}
+
 bool sr_disk_player_decode_at(struct sr_disk_player *p, uint64_t target_ns, AVFrame **frame,
 			      uint64_t *actual_timestamp_ns)
 {
@@ -238,6 +276,12 @@ bool sr_disk_player_decode_at(struct sr_disk_player *p, uint64_t target_ns, AVFr
 	if (p->current_position >= 0 && (size_t)p->current_position == target_pos &&
 	    p->current_timestamp_ns == target_entry.timestamp_ns)
 		return output_current_clone(p, frame, actual_timestamp_ns);
+
+	/* A cached picture can satisfy backward/jog/random access without moving
+	 * decoder state backwards. Keeping the newer reference chain warm makes a
+	 * direction change back to forward playback cheap. */
+	if (output_cached_clone(p, target_pos, target_entry.timestamp_ns, frame, actual_timestamp_ns))
+		return true;
 
 	size_t start_pos = 0;
 	bool sequential = false;
@@ -285,6 +329,10 @@ bool sr_disk_player_decode_at(struct sr_disk_player *p, uint64_t target_ns, AVFr
 		av_packet_free(&packet);
 		if (!got_frame || !decoded)
 			continue;
+
+		uint64_t key = 0;
+		if (cache_key(p->opened_sequence, pos, &key))
+			sr_frame_cache_store(&p->frame_cache, key, decoded);
 
 		AVFrame *copy = av_frame_clone(decoded);
 		if (!copy)
