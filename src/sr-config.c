@@ -6,14 +6,6 @@ This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License, or
 (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along
-with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "sr-config.h"
@@ -24,8 +16,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/dstr.h>
 #include <util/threading.h>
 
+#define DEFAULT_MIN_FREE_BYTES (100ULL * 1024ULL * 1024ULL * 1024ULL)
+#define DEFAULT_PURGE_TARGET_BYTES (110ULL * 1024ULL * 1024ULL * 1024ULL)
+#define DEFAULT_SEGMENT_DURATION_MS 4000u
+
 static pthread_mutex_t g_mutex;
 static char *g_save_dir;
+static char *g_session_root;
+static uint64_t g_min_free_bytes;
+static uint64_t g_purge_target_bytes;
+static uint32_t g_segment_duration_ms;
 
 /* Default location when the user hasn't chosen one: <Videos>/Sports Replay,
  * created if needed. Falls back to the plugin config dir. */
@@ -48,6 +48,42 @@ static char *default_save_dir(void)
 	return result;
 }
 
+static char *default_session_root(const char *save_dir)
+{
+	struct dstr d = {0};
+	dstr_copy(&d, save_dir && *save_dir ? save_dir : "replays");
+	dstr_replace(&d, "\\", "/");
+	if (d.len && dstr_end(&d) != '/')
+		dstr_cat_ch(&d, '/');
+	dstr_cat(&d, "Sessions");
+	char *result = bstrdup(d.array);
+	dstr_free(&d);
+	return result;
+}
+
+static void save_locked(void)
+{
+	char *dir = obs_module_config_path("");
+	if (dir) {
+		os_mkdirs(dir);
+		bfree(dir);
+	}
+
+	obs_data_t *data = obs_data_create();
+	obs_data_set_int(data, "schema_version", SR_CONFIG_SCHEMA_VERSION);
+	obs_data_set_string(data, "save_dir", g_save_dir ? g_save_dir : "");
+	obs_data_set_string(data, "session_root", g_session_root ? g_session_root : "");
+	obs_data_set_int(data, "min_free_bytes", (long long)g_min_free_bytes);
+	obs_data_set_int(data, "purge_target_bytes", (long long)g_purge_target_bytes);
+	obs_data_set_int(data, "segment_duration_ms", g_segment_duration_ms);
+
+	char *path = obs_module_config_path("config.json");
+	if (path)
+		obs_data_save_json(data, path);
+	bfree(path);
+	obs_data_release(data);
+}
+
 void sr_config_init(void)
 {
 	pthread_mutex_init(&g_mutex, NULL);
@@ -58,6 +94,25 @@ void sr_config_init(void)
 
 	const char *saved = data ? obs_data_get_string(data, "save_dir") : "";
 	g_save_dir = (saved && *saved) ? bstrdup(saved) : default_save_dir();
+
+	const char *session_root = data ? obs_data_get_string(data, "session_root") : "";
+	g_session_root = (session_root && *session_root) ? bstrdup(session_root) : default_session_root(g_save_dir);
+
+	const int64_t min_free = data ? obs_data_get_int(data, "min_free_bytes") : 0;
+	const int64_t purge_target = data ? obs_data_get_int(data, "purge_target_bytes") : 0;
+	const int64_t segment_ms = data ? obs_data_get_int(data, "segment_duration_ms") : 0;
+
+	g_min_free_bytes = min_free > 0 ? (uint64_t)min_free : DEFAULT_MIN_FREE_BYTES;
+	g_purge_target_bytes = purge_target > 0 ? (uint64_t)purge_target : DEFAULT_PURGE_TARGET_BYTES;
+	if (g_purge_target_bytes < g_min_free_bytes)
+		g_purge_target_bytes = g_min_free_bytes;
+
+	g_segment_duration_ms = segment_ms >= 1000 && segment_ms <= 60000 ? (uint32_t)segment_ms
+								       : DEFAULT_SEGMENT_DURATION_MS;
+
+	os_mkdirs(g_save_dir);
+	os_mkdirs(g_session_root);
+
 	if (data)
 		obs_data_release(data);
 }
@@ -65,7 +120,9 @@ void sr_config_init(void)
 void sr_config_free(void)
 {
 	bfree(g_save_dir);
+	bfree(g_session_root);
 	g_save_dir = NULL;
+	g_session_root = NULL;
 	pthread_mutex_destroy(&g_mutex);
 }
 
@@ -82,19 +139,82 @@ void sr_config_set_save_dir(const char *save_dir)
 	pthread_mutex_lock(&g_mutex);
 	bfree(g_save_dir);
 	g_save_dir = bstrdup(save_dir ? save_dir : "");
+	if (g_save_dir && *g_save_dir)
+		os_mkdirs(g_save_dir);
+	save_locked();
 	pthread_mutex_unlock(&g_mutex);
+}
 
-	char *dir = obs_module_config_path("");
-	if (dir) {
-		os_mkdirs(dir);
-		bfree(dir);
-	}
+char *sr_config_get_session_root(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	char *r = bstrdup(g_session_root ? g_session_root : "");
+	pthread_mutex_unlock(&g_mutex);
+	return r;
+}
 
-	obs_data_t *data = obs_data_create();
-	obs_data_set_string(data, "save_dir", save_dir ? save_dir : "");
-	char *path = obs_module_config_path("config.json");
-	if (path)
-		obs_data_save_json(data, path);
-	bfree(path);
-	obs_data_release(data);
+void sr_config_set_session_root(const char *session_root)
+{
+	pthread_mutex_lock(&g_mutex);
+	bfree(g_session_root);
+	g_session_root = bstrdup(session_root ? session_root : "");
+	if (g_session_root && *g_session_root)
+		os_mkdirs(g_session_root);
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+uint64_t sr_config_get_min_free_bytes(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const uint64_t value = g_min_free_bytes;
+	pthread_mutex_unlock(&g_mutex);
+	return value;
+}
+
+void sr_config_set_min_free_bytes(uint64_t bytes)
+{
+	pthread_mutex_lock(&g_mutex);
+	g_min_free_bytes = bytes;
+	if (g_purge_target_bytes < g_min_free_bytes)
+		g_purge_target_bytes = g_min_free_bytes;
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+uint64_t sr_config_get_purge_target_bytes(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const uint64_t value = g_purge_target_bytes;
+	pthread_mutex_unlock(&g_mutex);
+	return value;
+}
+
+void sr_config_set_purge_target_bytes(uint64_t bytes)
+{
+	pthread_mutex_lock(&g_mutex);
+	g_purge_target_bytes = bytes < g_min_free_bytes ? g_min_free_bytes : bytes;
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+uint32_t sr_config_get_segment_duration_ms(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const uint32_t value = g_segment_duration_ms;
+	pthread_mutex_unlock(&g_mutex);
+	return value;
+}
+
+void sr_config_set_segment_duration_ms(uint32_t milliseconds)
+{
+	if (milliseconds < 1000)
+		milliseconds = 1000;
+	if (milliseconds > 60000)
+		milliseconds = 60000;
+
+	pthread_mutex_lock(&g_mutex);
+	g_segment_duration_ms = milliseconds;
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
 }
