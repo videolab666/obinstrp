@@ -95,6 +95,7 @@ target_sources(
     src/sr-session.c
     src/sr-event-db.c
     src/sr-event-controller.c
+    src/sr-event-dock.cpp
     src/sr-segment-writer.c
     src/sr-segment-reader.c
     src/sr-segment-catalog.c
