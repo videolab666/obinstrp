@@ -701,6 +701,157 @@ bool sr_event_db_delete_event(struct sr_event_db *db, uint64_t event_id)
 	return ok;
 }
 
+bool sr_event_db_create_event_in_list(struct sr_event_db *db, const struct sr_event_write *event, unsigned list_id,
+				      int position, uint64_t *event_id)
+{
+	if (!db || !valid_event(event) || !valid_list_id(list_id))
+		return false;
+
+	pthread_mutex_lock(&db->mutex);
+	if (!begin_transaction(db)) {
+		pthread_mutex_unlock(&db->mutex);
+		return false;
+	}
+
+	sqlite3_stmt *stmt = NULL;
+	const char *event_sql =
+		"INSERT INTO events(in_ns,out_ns,preferred_camera_id,speed_percent,audio_mode,protected_event,played,pending,name,tag) "
+		"VALUES(?,?,?,?,?,?,?,?,?,?)";
+	int rc = sqlite3_prepare_v2(db->sql, event_sql, -1, &stmt, NULL);
+	bool ok = rc == SQLITE_OK && bind_event(stmt, 1, event);
+	if (ok) {
+		rc = sqlite3_step(stmt);
+		ok = rc == SQLITE_DONE;
+	}
+	if (!ok)
+		log_sql_error(db, "create event in list", rc);
+	sqlite3_finalize(stmt);
+
+	uint64_t id = 0;
+	if (ok) {
+		id = (uint64_t)sqlite3_last_insert_rowid(db->sql);
+		int count = 0;
+		ok = list_count_locked(db, list_id, &count);
+		if (ok) {
+			if (position < 0 || position > count)
+				position = count;
+			ok = shift_positions_locked(db, list_id, 1, position, true, 0, false, false);
+		}
+	}
+
+	if (ok) {
+		stmt = NULL;
+		rc = sqlite3_prepare_v2(db->sql,
+					"INSERT INTO event_list_items(list_id,event_id,position) VALUES(?,?,?)", -1,
+					&stmt, NULL);
+		ok = rc == SQLITE_OK && sqlite3_bind_int(stmt, 1, (int)list_id) == SQLITE_OK &&
+		     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)id) == SQLITE_OK &&
+		     sqlite3_bind_int(stmt, 3, position) == SQLITE_OK;
+		if (ok) {
+			rc = sqlite3_step(stmt);
+			ok = rc == SQLITE_DONE;
+		}
+		if (!ok)
+			log_sql_error(db, "insert first event list membership", rc);
+		sqlite3_finalize(stmt);
+	}
+
+	if (ok)
+		ok = commit_transaction(db);
+	else
+		rollback_transaction(db);
+	if (ok && event_id)
+		*event_id = id;
+	pthread_mutex_unlock(&db->mutex);
+	return ok;
+}
+
+bool sr_event_db_move_event_between_lists(struct sr_event_db *db, uint64_t event_id, unsigned source_list,
+					  unsigned target_list, int position)
+{
+	if (!db || !event_id || !valid_u64(event_id) || !valid_list_id(source_list) || !valid_list_id(target_list))
+		return false;
+
+	pthread_mutex_lock(&db->mutex);
+	if (!event_exists_locked(db, event_id)) {
+		pthread_mutex_unlock(&db->mutex);
+		return false;
+	}
+
+	int source_position = -1;
+	bool source_found = false;
+	if (!list_position_locked(db, source_list, event_id, &source_position, &source_found) || !source_found) {
+		pthread_mutex_unlock(&db->mutex);
+		return false;
+	}
+	if (!begin_transaction(db)) {
+		pthread_mutex_unlock(&db->mutex);
+		return false;
+	}
+
+	bool ok = true;
+	if (source_list == target_list) {
+		ok = reorder_existing_locked(db, source_list, event_id, source_position, position);
+	} else {
+		int target_position = -1;
+		bool target_found = false;
+		ok = list_position_locked(db, target_list, event_id, &target_position, &target_found);
+		if (ok && target_found) {
+			ok = reorder_existing_locked(db, target_list, event_id, target_position, position);
+		} else if (ok) {
+			int count = 0;
+			ok = list_count_locked(db, target_list, &count);
+			if (ok) {
+				if (position < 0 || position > count)
+					position = count;
+				ok = shift_positions_locked(db, target_list, 1, position, true, 0, false, false);
+			}
+			if (ok) {
+				sqlite3_stmt *stmt = NULL;
+				int rc = sqlite3_prepare_v2(
+					db->sql,
+					"INSERT INTO event_list_items(list_id,event_id,position) VALUES(?,?,?)", -1,
+					&stmt, NULL);
+				ok = rc == SQLITE_OK && sqlite3_bind_int(stmt, 1, (int)target_list) == SQLITE_OK &&
+				     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event_id) == SQLITE_OK &&
+				     sqlite3_bind_int(stmt, 3, position) == SQLITE_OK;
+				if (ok) {
+					rc = sqlite3_step(stmt);
+					ok = rc == SQLITE_DONE;
+				}
+				if (!ok)
+					log_sql_error(db, "move event: insert target membership", rc);
+				sqlite3_finalize(stmt);
+			}
+		}
+
+		if (ok) {
+			sqlite3_stmt *stmt = NULL;
+			int rc = sqlite3_prepare_v2(db->sql,
+						    "DELETE FROM event_list_items WHERE list_id=? AND event_id=?", -1,
+						    &stmt, NULL);
+			ok = rc == SQLITE_OK && sqlite3_bind_int(stmt, 1, (int)source_list) == SQLITE_OK &&
+			     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event_id) == SQLITE_OK;
+			if (ok) {
+				rc = sqlite3_step(stmt);
+				ok = rc == SQLITE_DONE && sqlite3_changes(db->sql) == 1;
+			}
+			if (!ok)
+				log_sql_error(db, "move event: remove source membership", rc);
+			sqlite3_finalize(stmt);
+		}
+		if (ok)
+			ok = shift_positions_locked(db, source_list, -1, source_position, false, 0, false, false);
+	}
+
+	if (ok)
+		ok = commit_transaction(db);
+	else
+		rollback_transaction(db);
+	pthread_mutex_unlock(&db->mutex);
+	return ok;
+}
+
 bool sr_event_db_get_list_events(struct sr_event_db *db, unsigned list_id, uint64_t **event_ids, size_t *count)
 {
 	if (!db || !event_ids || !count || !valid_list_id(list_id))

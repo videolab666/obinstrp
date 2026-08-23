@@ -69,24 +69,8 @@ static struct sr_event_write default_event(uint64_t in_ns, uint64_t out_ns, bool
 static bool create_in_current_list_locked(struct sr_event_controller *controller, const struct sr_event_write *event,
 					  uint64_t *event_id)
 {
-	if (!ensure_db_locked(controller))
-		return false;
-
-	uint64_t id = 0;
-	if (!sr_event_db_create_event(controller->db, event, &id))
-		return false;
-
-	if (!sr_event_db_add_event_to_list(controller->db, controller->current_list, id, -1)) {
-		/* Keep the operator action all-or-nothing from the caller's point of
-		 * view. This compensating delete also removes any accidental list
-		 * membership through the DB foreign-key cascade. */
-		sr_event_db_delete_event(controller->db, id);
-		return false;
-	}
-
-	if (event_id)
-		*event_id = id;
-	return true;
+	return ensure_db_locked(controller) &&
+	       sr_event_db_create_event_in_list(controller->db, event, controller->current_list, -1, event_id);
 }
 
 static bool update_flag_locked(struct sr_event_controller *controller, uint64_t event_id, bool played,
@@ -304,14 +288,9 @@ bool sr_event_controller_move_to_list(struct sr_event_controller *controller, ui
 		return false;
 
 	pthread_mutex_lock(&controller->mutex);
-	bool ok = ensure_db_locked(controller);
-	if (ok && source_list == target_list) {
-		ok = sr_event_db_set_event_position(controller->db, source_list, event_id, position);
-	} else if (ok) {
-		ok = sr_event_db_add_event_to_list(controller->db, target_list, event_id, position);
-		if (ok)
-			ok = sr_event_db_remove_event_from_list(controller->db, source_list, event_id);
-	}
+	const bool ok =
+		ensure_db_locked(controller) &&
+		sr_event_db_move_event_between_lists(controller->db, event_id, source_list, target_list, position);
 	pthread_mutex_unlock(&controller->mutex);
 	return ok;
 }
@@ -361,12 +340,7 @@ bool sr_event_controller_duplicate(struct sr_event_controller *controller, uint6
 	};
 
 	uint64_t duplicate_id = 0;
-	bool ok = sr_event_db_create_event(controller->db, &write, &duplicate_id);
-	if (ok) {
-		ok = sr_event_db_add_event_to_list(controller->db, target_list, duplicate_id, position);
-		if (!ok)
-			sr_event_db_delete_event(controller->db, duplicate_id);
-	}
+	const bool ok = sr_event_db_create_event_in_list(controller->db, &write, target_list, position, &duplicate_id);
 	sr_event_record_free(&record);
 
 	if (ok && new_event_id)
