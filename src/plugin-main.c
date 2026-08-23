@@ -19,6 +19,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-replay-take.h"
 #include "sr-scene-tracker.h"
 #include "sr-session.h"
+#include "sr-storage-cleanup.h"
+#include "sr-storage-manager.h"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -199,10 +201,19 @@ bool obs_module_load(void)
 {
 	sr_config_init();
 	sr_session_init();
+	if (!sr_storage_cleanup_init()) {
+		sr_session_free();
+		sr_config_free();
+		obs_log(LOG_ERROR, "Sports Replay: could not initialize storage synchronization");
+		return false;
+	}
 	event_controller = sr_event_controller_create();
-	if (!event_controller || !sr_replay_channels_init(event_controller)) {
+	if (!event_controller || !sr_replay_channels_init(event_controller) || !sr_storage_manager_start()) {
+		sr_storage_manager_stop();
+		sr_replay_channels_shutdown();
 		sr_event_controller_destroy(event_controller);
 		event_controller = NULL;
+		sr_storage_cleanup_free();
 		sr_session_free();
 		sr_config_free();
 		obs_log(LOG_ERROR, "Sports Replay: could not initialize replay Event controller");
@@ -228,9 +239,11 @@ void obs_module_unload(void)
 {
 	sr_scene_tracker_stop();
 	unregister_event_hotkeys();
+	sr_storage_manager_stop();
 	sr_replay_channels_shutdown();
 	sr_event_controller_destroy(event_controller);
 	event_controller = NULL;
+	sr_storage_cleanup_free();
 	sr_session_free();
 	sr_config_free();
 	obs_log(LOG_INFO, "Sports Replay unloaded");

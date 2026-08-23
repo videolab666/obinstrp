@@ -27,6 +27,7 @@ static char *g_session_root;
 static bool g_session_root_follows_save_dir;
 static uint64_t g_min_free_bytes;
 static uint64_t g_purge_target_bytes;
+static enum sr_storage_low_space_action g_low_space_action;
 static uint32_t g_segment_duration_ms;
 
 /* Default location when the user hasn't chosen one: <Videos>/Sports Replay,
@@ -78,6 +79,7 @@ static void save_locked(void)
 	obs_data_set_bool(data, "session_root_follows_save_dir", g_session_root_follows_save_dir);
 	obs_data_set_int(data, "min_free_bytes", (long long)g_min_free_bytes);
 	obs_data_set_int(data, "purge_target_bytes", (long long)g_purge_target_bytes);
+	obs_data_set_int(data, "low_space_action", (long long)g_low_space_action);
 	obs_data_set_int(data, "segment_duration_ms", g_segment_duration_ms);
 
 	char *path = obs_module_config_path("config.json");
@@ -106,11 +108,17 @@ void sr_config_init(void)
 	const int64_t min_free = data ? obs_data_get_int(data, "min_free_bytes") : 0;
 	const int64_t purge_target = data ? obs_data_get_int(data, "purge_target_bytes") : 0;
 	const int64_t segment_ms = data ? obs_data_get_int(data, "segment_duration_ms") : 0;
+	const int64_t low_space_action = data ? obs_data_get_int(data, "low_space_action") : 0;
 
 	g_min_free_bytes = min_free > 0 ? (uint64_t)min_free : DEFAULT_MIN_FREE_BYTES;
 	g_purge_target_bytes = purge_target > 0 ? (uint64_t)purge_target : DEFAULT_PURGE_TARGET_BYTES;
 	if (g_purge_target_bytes < g_min_free_bytes)
 		g_purge_target_bytes = g_min_free_bytes;
+
+	g_low_space_action = low_space_action >= SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED &&
+				     low_space_action <= SR_STORAGE_LOW_SPACE_WARN_ONLY
+				     ? (enum sr_storage_low_space_action)low_space_action
+				     : SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED;
 
 	g_segment_duration_ms = segment_ms >= 1000 && segment_ms <= 60000 ? (uint32_t)segment_ms
 									  : DEFAULT_SEGMENT_DURATION_MS;
@@ -212,6 +220,25 @@ void sr_config_set_purge_target_bytes(uint64_t bytes)
 {
 	pthread_mutex_lock(&g_mutex);
 	g_purge_target_bytes = bytes < g_min_free_bytes ? g_min_free_bytes : bytes;
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+enum sr_storage_low_space_action sr_config_get_low_space_action(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const enum sr_storage_low_space_action value = g_low_space_action;
+	pthread_mutex_unlock(&g_mutex);
+	return value;
+}
+
+void sr_config_set_low_space_action(enum sr_storage_low_space_action action)
+{
+	if (action < SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED || action > SR_STORAGE_LOW_SPACE_WARN_ONLY)
+		action = SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED;
+
+	pthread_mutex_lock(&g_mutex);
+	g_low_space_action = action;
 	save_locked();
 	pthread_mutex_unlock(&g_mutex);
 }

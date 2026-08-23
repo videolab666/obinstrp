@@ -16,7 +16,13 @@ the Free Software Foundation; either version 2 of the License, or
 extern "C" {
 #endif
 
-#define SR_CONFIG_SCHEMA_VERSION 2
+#define SR_CONFIG_SCHEMA_VERSION 3
+
+enum sr_storage_low_space_action {
+	SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED = 0,
+	SR_STORAGE_LOW_SPACE_STOP_RECORDING = 1,
+	SR_STORAGE_LOW_SPACE_WARN_ONLY = 2,
+};
 
 void sr_config_init(void);
 void sr_config_free(void);
@@ -37,6 +43,9 @@ void sr_config_set_min_free_bytes(uint64_t bytes);
 
 uint64_t sr_config_get_purge_target_bytes(void);
 void sr_config_set_purge_target_bytes(uint64_t bytes);
+
+enum sr_storage_low_space_action sr_config_get_low_space_action(void);
+void sr_config_set_low_space_action(enum sr_storage_low_space_action action);
 
 uint32_t sr_config_get_segment_duration_ms(void);
 void sr_config_set_segment_duration_ms(uint32_t milliseconds);

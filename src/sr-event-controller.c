@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-event-controller.h"
 
 #include "sr-event-db.h"
+#include "sr-media-guard.h"
 #include "sr-session.h"
 #include "sr-storage-cleanup.h"
 
@@ -70,8 +71,11 @@ static struct sr_event_write default_event(uint64_t in_ns, uint64_t out_ns, bool
 static bool create_in_current_list_locked(struct sr_event_controller *controller, const struct sr_event_write *event,
 					  uint64_t *event_id)
 {
-	return ensure_db_locked(controller) &&
-	       sr_event_db_create_event_in_list(controller->db, event, controller->current_list, -1, event_id);
+	sr_media_guard_lock();
+	const bool ok = ensure_db_locked(controller) &&
+			sr_event_db_create_event_in_list(controller->db, event, controller->current_list, -1, event_id);
+	sr_media_guard_unlock();
+	return ok;
 }
 
 static bool update_flag_locked(struct sr_event_controller *controller, uint64_t event_id, bool played,
@@ -235,7 +239,9 @@ bool sr_event_controller_update_event(struct sr_event_controller *controller, ui
 		return false;
 
 	pthread_mutex_lock(&controller->mutex);
+	sr_media_guard_lock();
 	const bool ok = ensure_db_locked(controller) && sr_event_db_update_event(controller->db, event_id, event);
+	sr_media_guard_unlock();
 	pthread_mutex_unlock(&controller->mutex);
 	return ok;
 }
@@ -271,6 +277,10 @@ bool sr_event_controller_delete_event_with_media(struct sr_event_controller *con
 		return false;
 
 	struct sr_storage_cleanup_result local = {0};
+	struct sr_event_db *db = NULL;
+	uint64_t in_ns = 0;
+	uint64_t out_ns = 0;
+
 	pthread_mutex_lock(&controller->mutex);
 	if (!ensure_db_locked(controller)) {
 		pthread_mutex_unlock(&controller->mutex);
@@ -288,15 +298,15 @@ bool sr_event_controller_delete_event_with_media(struct sr_event_controller *con
 		return false;
 	}
 
-	const uint64_t in_ns = event.in_ns;
-	const uint64_t out_ns = event.out_ns;
+	in_ns = event.in_ns;
+	out_ns = event.out_ns;
 	sr_event_record_free(&event);
-
 	const bool deleted = sr_event_db_delete_event(controller->db, event_id);
-	if (deleted && !sr_storage_delete_unreferenced_range(controller->db, in_ns, out_ns, &local))
-		local.errors++;
-
+	db = controller->db;
 	pthread_mutex_unlock(&controller->mutex);
+
+	if (deleted && !sr_storage_delete_unreferenced_range(db, in_ns, out_ns, &local))
+		local.errors++;
 	if (result)
 		*result = local;
 	return deleted;
@@ -392,7 +402,9 @@ bool sr_event_controller_duplicate(struct sr_event_controller *controller, uint6
 	};
 
 	uint64_t duplicate_id = 0;
+	sr_media_guard_lock();
 	const bool ok = sr_event_db_create_event_in_list(controller->db, &write, target_list, position, &duplicate_id);
+	sr_media_guard_unlock();
 	sr_event_record_free(&record);
 
 	if (ok && new_event_id)
