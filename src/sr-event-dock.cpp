@@ -61,9 +61,9 @@ QString durationText(const sr_event_record &event)
 
 class SrEventDock : public QWidget {
 public:
-	explicit SrEventDock(sr_event_controller *controller, QWidget *parent = nullptr)
+	explicit SrEventDock(sr_event_controller *eventController, QWidget *parent = nullptr)
 		: QWidget(parent),
-		  controller(controller)
+		  controller(eventController)
 	{
 		auto *root = new QVBoxLayout(this);
 		root->setContentsMargins(4, 4, 4, 4);
