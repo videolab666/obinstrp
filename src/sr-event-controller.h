@@ -42,10 +42,10 @@ bool sr_event_controller_quick_mark(struct sr_event_controller *controller, uint
 				    uint64_t post_roll_ns, uint64_t *event_id);
 
 /* vMix-style list operations. Event media is never copied. */
-bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, uint64_t event_id,
+bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, uint64_t event_id, unsigned target_list,
+				      int position);
+bool sr_event_controller_move_to_list(struct sr_event_controller *controller, uint64_t event_id, unsigned source_list,
 				      unsigned target_list, int position);
-bool sr_event_controller_move_to_list(struct sr_event_controller *controller, uint64_t event_id,
-				      unsigned source_list, unsigned target_list, int position);
 bool sr_event_controller_reorder(struct sr_event_controller *controller, uint64_t event_id, unsigned list_id,
 				 int position);
 bool sr_event_controller_duplicate(struct sr_event_controller *controller, uint64_t event_id, unsigned target_list,

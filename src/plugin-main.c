@@ -108,15 +108,15 @@ static void event_mark_20_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey,
 static void register_event_hotkeys(void)
 {
 	hk_event_in = obs_hotkey_register_frontend("SportsReplay.EventIn", obs_module_text("Hotkey.EventIn"),
-		event_mark_in_cb, NULL);
+						   event_mark_in_cb, NULL);
 	hk_event_out = obs_hotkey_register_frontend("SportsReplay.EventOut", obs_module_text("Hotkey.EventOut"),
-		event_mark_out_cb, NULL);
+						    event_mark_out_cb, NULL);
 	hk_event_5 = obs_hotkey_register_frontend("SportsReplay.EventLast5", obs_module_text("Hotkey.EventLast5"),
-		event_mark_5_cb, NULL);
+						  event_mark_5_cb, NULL);
 	hk_event_10 = obs_hotkey_register_frontend("SportsReplay.EventLast10", obs_module_text("Hotkey.EventLast10"),
-		event_mark_10_cb, NULL);
+						   event_mark_10_cb, NULL);
 	hk_event_20 = obs_hotkey_register_frontend("SportsReplay.EventLast20", obs_module_text("Hotkey.EventLast20"),
-		event_mark_20_cb, NULL);
+						   event_mark_20_cb, NULL);
 }
 
 static void unregister_event_hotkeys(void)

@@ -231,8 +231,8 @@ bool sr_event_controller_quick_mark(struct sr_event_controller *controller, uint
 	return ok;
 }
 
-bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, uint64_t event_id,
-				      unsigned target_list, int position)
+bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, uint64_t event_id, unsigned target_list,
+				      int position)
 {
 	if (!controller || !event_id || !valid_list_id(target_list))
 		return false;
@@ -244,8 +244,8 @@ bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, ui
 	return ok;
 }
 
-bool sr_event_controller_move_to_list(struct sr_event_controller *controller, uint64_t event_id,
-				      unsigned source_list, unsigned target_list, int position)
+bool sr_event_controller_move_to_list(struct sr_event_controller *controller, uint64_t event_id, unsigned source_list,
+				      unsigned target_list, int position)
 {
 	if (!controller || !event_id || !valid_list_id(source_list) || !valid_list_id(target_list))
 		return false;
