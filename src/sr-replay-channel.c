@@ -28,6 +28,8 @@ struct sr_replay_channel {
 	char *camera_name;
 
 	uint64_t event_id;
+	uint64_t event_in_ns;
+	uint64_t event_out_ns;
 	uint64_t in_ns;
 	uint64_t out_ns;
 	uint64_t playhead_ns;
@@ -71,6 +73,8 @@ static void clear_locked(struct sr_replay_channel *channel)
 	bfree(channel->camera_name);
 	channel->camera_name = NULL;
 	channel->event_id = 0;
+	channel->event_in_ns = 0;
+	channel->event_out_ns = 0;
 	channel->in_ns = 0;
 	channel->out_ns = 0;
 	channel->playhead_ns = 0;
@@ -85,6 +89,25 @@ static void clear_locked(struct sr_replay_channel *channel)
 	channel->loop = false;
 	channel->partial_coverage = false;
 	channel->need_frame = false;
+}
+
+static struct sr_disk_player *open_camera_player(const char *camera_name, uint64_t *first_ns, uint64_t *last_ns)
+{
+	char *session_dir = sr_session_get_or_create_path();
+	if (!session_dir)
+		return NULL;
+
+	struct sr_disk_player *player = sr_disk_player_create(session_dir, camera_name);
+	bfree(session_dir);
+	if (!player)
+		return NULL;
+
+	if (!sr_disk_player_get_bounds(player, first_ns, last_ns)) {
+		sr_disk_player_destroy(player);
+		return NULL;
+	}
+
+	return player;
 }
 
 bool sr_replay_channels_init(struct sr_event_controller *events)
@@ -130,23 +153,15 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	if (!sr_event_controller_get_event(g_channels->events, event_id, &event))
 		return false;
 
-	char *session_dir = sr_session_get_or_create_path();
-	if (!session_dir) {
-		sr_event_controller_free_event(&event);
-		return false;
-	}
-
-	struct sr_disk_player *player = sr_disk_player_create(session_dir, camera_name);
-	bfree(session_dir);
+	uint64_t first_ns = 0;
+	uint64_t last_ns = 0;
+	struct sr_disk_player *player = open_camera_player(camera_name, &first_ns, &last_ns);
 	if (!player) {
 		sr_event_controller_free_event(&event);
 		return false;
 	}
 
-	uint64_t first_ns = 0;
-	uint64_t last_ns = 0;
-	if (!sr_disk_player_get_bounds(player, &first_ns, &last_ns) || event.out_ns < first_ns ||
-	    event.in_ns > last_ns) {
+	if (event.out_ns < first_ns || event.in_ns > last_ns) {
 		sr_disk_player_destroy(player);
 		sr_event_controller_free_event(&event);
 		return false;
@@ -156,13 +171,23 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	const uint64_t out_ns = event.out_ns > last_ns ? last_ns : event.out_ns;
 	const bool partial = in_ns != event.in_ns || out_ns != event.out_ns;
 	const double speed = event.speed_percent;
+	const uint64_t event_in_ns = event.in_ns;
+	const uint64_t event_out_ns = event.out_ns;
 	sr_event_controller_free_event(&event);
+
+	char *new_camera_name = bstrdup(camera_name);
+	if (!new_camera_name) {
+		sr_disk_player_destroy(player);
+		return false;
+	}
 
 	pthread_mutex_lock(&channel->mutex);
 	clear_locked(channel);
 	channel->player = player;
-	channel->camera_name = bstrdup(camera_name);
+	channel->camera_name = new_camera_name;
 	channel->event_id = event_id;
+	channel->event_in_ns = event_in_ns;
+	channel->event_out_ns = event_out_ns;
 	channel->in_ns = in_ns;
 	channel->out_ns = out_ns;
 	channel->playhead_ns = in_ns;
@@ -172,9 +197,94 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	channel->need_frame = true;
 	pthread_mutex_unlock(&channel->mutex);
 
-	blog(LOG_INFO, "Sports Replay: cued Event %llu on bus %c, camera '%s', %.3f s%s", (unsigned long long)event_id,
-	     bus == SR_REPLAY_BUS_A ? 'A' : 'B', camera_name, (double)(out_ns - in_ns) / 1e9,
-	     partial ? " (partial media coverage)" : "");
+	blog(LOG_INFO, "Sports Replay: cued Event %llu on bus %c, camera '%s', %.3f s%s",
+	     (unsigned long long)event_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', camera_name,
+	     (double)(out_ns - in_ns) / 1e9, partial ? " (partial media coverage)" : "");
+	return true;
+}
+
+bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_name)
+{
+	struct sr_replay_channel *channel = get_bus(bus);
+	if (!channel || !camera_name || !*camera_name)
+		return false;
+
+	uint64_t expected_event_id = 0;
+	uint64_t event_in_ns = 0;
+	uint64_t event_out_ns = 0;
+
+	pthread_mutex_lock(&channel->mutex);
+	if (!channel->cued) {
+		pthread_mutex_unlock(&channel->mutex);
+		return false;
+	}
+	if (channel->camera_name && strcmp(channel->camera_name, camera_name) == 0) {
+		pthread_mutex_unlock(&channel->mutex);
+		return true;
+	}
+	expected_event_id = channel->event_id;
+	event_in_ns = channel->event_in_ns;
+	event_out_ns = channel->event_out_ns;
+	pthread_mutex_unlock(&channel->mutex);
+
+	uint64_t first_ns = 0;
+	uint64_t last_ns = 0;
+	struct sr_disk_player *new_player = open_camera_player(camera_name, &first_ns, &last_ns);
+	if (!new_player)
+		return false;
+
+	if (event_out_ns < first_ns || event_in_ns > last_ns) {
+		sr_disk_player_destroy(new_player);
+		return false;
+	}
+
+	const uint64_t new_in_ns = event_in_ns < first_ns ? first_ns : event_in_ns;
+	const uint64_t new_out_ns = event_out_ns > last_ns ? last_ns : event_out_ns;
+	char *new_camera_name = bstrdup(camera_name);
+	if (!new_camera_name) {
+		sr_disk_player_destroy(new_player);
+		return false;
+	}
+
+	struct sr_disk_player *old_player = NULL;
+	char *old_camera_name = NULL;
+	uint64_t switch_playhead_ns = 0;
+	bool partial = false;
+	bool switched = false;
+
+	pthread_mutex_lock(&channel->mutex);
+	if (channel->cued && channel->event_id == expected_event_id && channel->event_in_ns == event_in_ns &&
+	    channel->event_out_ns == event_out_ns && channel->playhead_ns >= new_in_ns &&
+	    channel->playhead_ns <= new_out_ns) {
+		switch_playhead_ns = channel->playhead_ns;
+		old_player = channel->player;
+		old_camera_name = channel->camera_name;
+		channel->player = new_player;
+		channel->camera_name = new_camera_name;
+		channel->in_ns = new_in_ns;
+		channel->out_ns = new_out_ns;
+		channel->width = 0;
+		channel->height = 0;
+		channel->partial_coverage = new_in_ns != event_in_ns || new_out_ns != event_out_ns;
+		partial = channel->partial_coverage;
+		channel->last_clock_ns = 0;
+		channel->need_frame = true;
+		switched = true;
+	}
+	pthread_mutex_unlock(&channel->mutex);
+
+	if (!switched) {
+		sr_disk_player_destroy(new_player);
+		bfree(new_camera_name);
+		return false;
+	}
+
+	sr_disk_player_destroy(old_player);
+	bfree(old_camera_name);
+
+	blog(LOG_INFO, "Sports Replay: switched bus %c Event %llu to camera '%s' at %.3f s%s",
+	     bus == SR_REPLAY_BUS_A ? 'A' : 'B', (unsigned long long)expected_event_id, camera_name,
+	     (double)(switch_playhead_ns - event_in_ns) / 1e9, partial ? " (partial media coverage)" : "");
 	return true;
 }
 
