@@ -81,7 +81,14 @@ struct sr_index_entry {
 };
 #pragma pack(pop)
 
+#ifdef __cplusplus
+static_assert(sizeof(struct sr_segment_file_header) == 56, "unexpected sr_segment_file_header layout");
+static_assert(sizeof(struct sr_segment_packet_header) == 44, "unexpected sr_segment_packet_header layout");
+static_assert(sizeof(struct sr_index_file_header) == 32, "unexpected sr_index_file_header layout");
+static_assert(sizeof(struct sr_index_entry) == 32, "unexpected sr_index_entry layout");
+#else
 _Static_assert(sizeof(struct sr_segment_file_header) == 56, "unexpected sr_segment_file_header layout");
 _Static_assert(sizeof(struct sr_segment_packet_header) == 44, "unexpected sr_segment_packet_header layout");
 _Static_assert(sizeof(struct sr_index_file_header) == 32, "unexpected sr_index_file_header layout");
 _Static_assert(sizeof(struct sr_index_entry) == 32, "unexpected sr_index_entry layout");
+#endif
