@@ -151,7 +151,8 @@ static bool open_catalog_segment(struct sr_master_audio_player *player, size_t i
 		return false;
 	}
 
-	const bool reset_decoder = force_decoder_reset || (info.segment_flags & SR_AUDIO_SEGMENT_FLAG_DISCONTINUITY) != 0;
+	const bool reset_decoder = force_decoder_reset ||
+				   (info.segment_flags & SR_AUDIO_SEGMENT_FLAG_DISCONTINUITY) != 0;
 	if (!open_decoder(player, &info, reset_decoder)) {
 		sr_master_audio_reader_close(reader);
 		return false;
@@ -241,26 +242,6 @@ static bool ensure_next_entry(struct sr_master_audio_player *player)
 	}
 
 	return advance_segment(player) && player->next_entry < sr_master_audio_reader_entry_count(player->reader);
-}
-
-static bool receive_frame(struct sr_master_audio_player *player, AVFrame **frame, uint64_t *timestamp_ns)
-{
-	const int ret = avcodec_receive_frame(player->decoder, player->decode_frame);
-	if (ret < 0)
-		return false;
-
-	uint64_t timestamp = 0;
-	if (player->submitted_timestamps.size >= sizeof(timestamp))
-		deque_pop_front(&player->submitted_timestamps, &timestamp, sizeof(timestamp));
-
-	AVFrame *copy = av_frame_clone(player->decode_frame);
-	av_frame_unref(player->decode_frame);
-	if (!copy)
-		return false;
-	*frame = copy;
-	if (timestamp_ns)
-		*timestamp_ns = timestamp;
-	return true;
 }
 
 bool sr_master_audio_player_decode_next(struct sr_master_audio_player *player, AVFrame **frame, uint64_t *timestamp_ns)

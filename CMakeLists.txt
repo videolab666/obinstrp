@@ -95,6 +95,7 @@ target_sources(
     src/sr-master-audio.c
     src/sr-master-audio-reader.c
     src/sr-master-audio-catalog.c
+    src/sr-master-audio-player.c
     src/sr-session.c
     src/sr-event-db.c
     src/sr-event-controller.c

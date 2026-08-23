@@ -34,6 +34,7 @@ the Free Software Foundation; either version 2 of the License, or
 #define MASTER_AUDIO_CHANNELS 2u
 #define MASTER_AUDIO_BIT_RATE 192000u
 #define MASTER_AUDIO_MAX_QUEUE_CHUNKS 256u
+#define MASTER_AUDIO_PUBLISH_NS 250000000ULL
 
 struct sr_master_audio_chunk {
 	struct sr_master_audio_chunk *next;
@@ -85,6 +86,7 @@ struct sr_master_audio_state {
 	char *index_part_path;
 	char *index_final_path;
 	uint64_t segment_start_ns;
+	uint64_t last_publish_ns;
 
 	struct sr_master_audio_stats stats;
 };
@@ -269,6 +271,7 @@ static void close_segment(struct sr_master_audio_state *state, bool finalize)
 
 	clear_segment_paths(state);
 	state->segment_start_ns = 0;
+	state->last_publish_ns = 0;
 }
 
 static bool open_segment(struct sr_master_audio_state *state, uint64_t start_ns)
@@ -300,17 +303,20 @@ static bool open_segment(struct sr_master_audio_state *state, uint64_t start_ns)
 	header.channels = (uint32_t)state->encoder->ch_layout.nb_channels;
 	header.bit_rate = (uint32_t)state->encoder->bit_rate;
 	header.flags = state->next_segment_discontinuity ? SR_AUDIO_SEGMENT_FLAG_DISCONTINUITY : 0;
+	header.sequence = sequence;
 	header.segment_start_ns = start_ns;
 	header.extradata_size = state->encoder->extradata_size > 0 ? (uint32_t)state->encoder->extradata_size : 0;
 
 	struct sr_audio_index_header index = {0};
 	memcpy(index.magic, SR_AUDIO_INDEX_MAGIC, sizeof(index.magic));
 	index.version = SR_AUDIO_FORMAT_VERSION;
+	index.sequence = sequence;
 	index.segment_start_ns = start_ns;
 
 	const bool ok = write_exact(state->audio_file, &header, sizeof(header)) &&
 			write_exact(state->audio_file, state->encoder->extradata, header.extradata_size) &&
-			write_exact(state->index_file, &index, sizeof(index));
+			write_exact(state->index_file, &index, sizeof(index)) && fflush(state->audio_file) == 0 &&
+			fflush(state->index_file) == 0;
 	if (!ok) {
 		blog(LOG_ERROR, "Sports Replay: could not write master audio segment header");
 		close_segment(state, false);
@@ -319,6 +325,7 @@ static bool open_segment(struct sr_master_audio_state *state, uint64_t start_ns)
 	}
 
 	state->segment_start_ns = start_ns;
+	state->last_publish_ns = start_ns;
 	state->next_segment_discontinuity = false;
 	return true;
 }
@@ -364,6 +371,14 @@ static bool write_packet(struct sr_master_audio_state *state, AVPacket *packet, 
 	}
 
 	stats_add_packet(state, sizeof(header) + (uint64_t)packet->size + sizeof(index));
+	if (timestamp_ns >= state->last_publish_ns &&
+	    timestamp_ns - state->last_publish_ns >= MASTER_AUDIO_PUBLISH_NS) {
+		if (fflush(state->audio_file) != 0 || fflush(state->index_file) != 0) {
+			stats_set_write_failed(state);
+			return false;
+		}
+		state->last_publish_ns = timestamp_ns;
+	}
 	return true;
 }
 

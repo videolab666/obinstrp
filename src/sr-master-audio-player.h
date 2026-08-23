@@ -39,8 +39,7 @@ bool sr_master_audio_player_seek(struct sr_master_audio_player *player, uint64_t
 /* Decodes the next AAC frame in timeline order. The returned AVFrame is owned
  * by the caller and must be released with av_frame_free(). timestamp_ns is the
  * media timestamp corresponding to the beginning of the decoded frame. */
-bool sr_master_audio_player_decode_next(struct sr_master_audio_player *player, AVFrame **frame,
-					uint64_t *timestamp_ns);
+bool sr_master_audio_player_decode_next(struct sr_master_audio_player *player, AVFrame **frame, uint64_t *timestamp_ns);
 
 bool sr_master_audio_player_get_bounds(struct sr_master_audio_player *player, uint64_t *first_ns, uint64_t *last_ns);
 
