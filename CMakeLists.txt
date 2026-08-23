@@ -44,6 +44,7 @@ target_sources(
     src/plugin-main.c
     src/sr-buffer.c
     src/sr-codec.c
+    src/sr-frame-cache.c
     src/sr-replay-decode.c
     src/capture-filter.c
     src/playback-source.c
