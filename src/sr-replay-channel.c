@@ -145,7 +145,8 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 
 	uint64_t first_ns = 0;
 	uint64_t last_ns = 0;
-	if (!sr_disk_player_get_bounds(player, &first_ns, &last_ns) || event.out_ns < first_ns || event.in_ns > last_ns) {
+	if (!sr_disk_player_get_bounds(player, &first_ns, &last_ns) || event.out_ns < first_ns ||
+	    event.in_ns > last_ns) {
 		sr_disk_player_destroy(player);
 		sr_event_controller_free_event(&event);
 		return false;
@@ -171,9 +172,9 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	channel->need_frame = true;
 	pthread_mutex_unlock(&channel->mutex);
 
-	blog(LOG_INFO, "Sports Replay: cued Event %llu on bus %c, camera '%s', %.3f s%s",
-	     (unsigned long long)event_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', camera_name,
-	     (double)(out_ns - in_ns) / 1e9, partial ? " (partial media coverage)" : "");
+	blog(LOG_INFO, "Sports Replay: cued Event %llu on bus %c, camera '%s', %.3f s%s", (unsigned long long)event_id,
+	     bus == SR_REPLAY_BUS_A ? 'A' : 'B', camera_name, (double)(out_ns - in_ns) / 1e9,
+	     partial ? " (partial media coverage)" : "");
 	return true;
 }
 
@@ -428,8 +429,8 @@ static bool advance_locked(struct sr_replay_channel *channel, uint64_t clock_ns,
 	return true;
 }
 
-bool sr_replay_channel_render(enum sr_replay_bus bus, uint64_t clock_ns, AVFrame **frame,
-			      uint64_t *media_timestamp_ns, bool *ended)
+bool sr_replay_channel_render(enum sr_replay_bus bus, uint64_t clock_ns, AVFrame **frame, uint64_t *media_timestamp_ns,
+			      bool *ended)
 {
 	struct sr_replay_channel *channel = get_bus(bus);
 	if (!channel || !frame)

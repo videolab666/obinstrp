@@ -107,8 +107,9 @@ static obs_properties_t *sr_event_output_properties(void *unused)
 {
 	UNUSED_PARAMETER(unused);
 	obs_properties_t *props = obs_properties_create();
-	obs_property_t *bus = obs_properties_add_list(props, SR_EVENT_OUTPUT_SETTING_BUS, obs_module_text("EventOutput.Bus"),
-					      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_t *bus = obs_properties_add_list(props, SR_EVENT_OUTPUT_SETTING_BUS,
+						      obs_module_text("EventOutput.Bus"), OBS_COMBO_TYPE_LIST,
+						      OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(bus, obs_module_text("EventOutput.BusA"), SR_REPLAY_BUS_A);
 	obs_property_list_add_int(bus, obs_module_text("EventOutput.BusB"), SR_REPLAY_BUS_B);
 	return props;

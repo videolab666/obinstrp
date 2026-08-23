@@ -72,8 +72,8 @@ bool sr_replay_channel_get_state(enum sr_replay_bus bus, struct sr_replay_channe
  * at one bus: clock_ns makes repeated calls effectively idempotent instead of
  * advancing the transport once per source instance. The returned frame is
  * owned by the caller and must be released with av_frame_free(). */
-bool sr_replay_channel_render(enum sr_replay_bus bus, uint64_t clock_ns, AVFrame **frame,
-			      uint64_t *media_timestamp_ns, bool *ended);
+bool sr_replay_channel_render(enum sr_replay_bus bus, uint64_t clock_ns, AVFrame **frame, uint64_t *media_timestamp_ns,
+			      bool *ended);
 
 #ifdef __cplusplus
 }

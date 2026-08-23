@@ -102,7 +102,8 @@ QString channelSummary(enum sr_replay_bus bus, const QString &label)
 		return QStringLiteral("%1: —").arg(label);
 
 	const double duration = state.out_ns >= state.in_ns ? (double)(state.out_ns - state.in_ns) / 1e9 : 0.0;
-	const double position = state.playhead_ns >= state.in_ns ? (double)(state.playhead_ns - state.in_ns) / 1e9 : 0.0;
+	const double position = state.playhead_ns >= state.in_ns ? (double)(state.playhead_ns - state.in_ns) / 1e9
+								 : 0.0;
 	QString mode = T("EventDock.Transport.Cued");
 	if (state.playing)
 		mode = state.paused ? T("EventDock.Transport.Paused") : T("EventDock.Transport.Playing");
@@ -322,7 +323,8 @@ private:
 
 	enum sr_replay_bus transportBus() const
 	{
-		return busCombo && busCombo->currentData().toInt() == SR_REPLAY_BUS_B ? SR_REPLAY_BUS_B : SR_REPLAY_BUS_A;
+		return busCombo && busCombo->currentData().toInt() == SR_REPLAY_BUS_B ? SR_REPLAY_BUS_B
+										      : SR_REPLAY_BUS_A;
 	}
 
 	QString selectedCamera() const { return cameraCombo ? cameraCombo->currentData().toString() : QString(); }
@@ -405,7 +407,8 @@ private:
 			setStatus("EventDock.CueFailed");
 			return;
 		}
-		status->setText(T("EventDock.Cued").arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"))
+		status->setText(T("EventDock.Cued")
+					.arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"))
 					.arg(eventId));
 		if (transportBus() == bus)
 			syncTransportControls();
@@ -418,7 +421,8 @@ private:
 			setStatus("EventDock.TakeFailed");
 			return;
 		}
-		status->setText(T("EventDock.Taken").arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B")));
+		status->setText(
+			T("EventDock.Taken").arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B")));
 		refresh();
 		refreshTransportStatus();
 	}
@@ -443,8 +447,8 @@ private:
 			return;
 		}
 		const bool ok = state.playing && !state.paused ? sr_replay_channel_pause(bus, true)
-									: state.paused ? sr_replay_channel_pause(bus, false)
-										       : sr_replay_channel_play(bus);
+				: state.paused                 ? sr_replay_channel_pause(bus, false)
+							       : sr_replay_channel_play(bus);
 		if (!ok)
 			setStatus("EventDock.TransportFailed");
 		refreshTransportStatus();

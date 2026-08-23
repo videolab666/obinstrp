@@ -158,8 +158,10 @@ static void register_event_hotkeys(void)
 						   event_mark_10_cb, NULL);
 	hk_event_20 = obs_hotkey_register_frontend("SportsReplay.EventLast20", obs_module_text("Hotkey.EventLast20"),
 						   event_mark_20_cb, NULL);
-	hk_take_a = obs_hotkey_register_frontend("SportsReplay.TakeA", obs_module_text("Hotkey.TakeA"), take_a_cb, NULL);
-	hk_take_b = obs_hotkey_register_frontend("SportsReplay.TakeB", obs_module_text("Hotkey.TakeB"), take_b_cb, NULL);
+	hk_take_a =
+		obs_hotkey_register_frontend("SportsReplay.TakeA", obs_module_text("Hotkey.TakeA"), take_a_cb, NULL);
+	hk_take_b =
+		obs_hotkey_register_frontend("SportsReplay.TakeB", obs_module_text("Hotkey.TakeB"), take_b_cb, NULL);
 	hk_take_toggle = obs_hotkey_register_frontend("SportsReplay.TakeToggle", obs_module_text("Hotkey.TakeToggle"),
 						      take_toggle_cb, NULL);
 }
