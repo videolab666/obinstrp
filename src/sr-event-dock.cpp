@@ -10,11 +10,15 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-event-dock.h"
 
+#include "sr-capture.h"
 #include "sr-event-controller.h"
+#include "sr-replay-channel.h"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <util/bmem.h>
+
+#include <cstring>
 
 #include <QAbstractItemView>
 #include <QComboBox>
@@ -57,6 +61,66 @@ QString durationText(const sr_event_record &event)
 	if (event.out_ns < event.in_ns)
 		return QStringLiteral("-");
 	return QString::number((double)(event.out_ns - event.in_ns) / 1e9, 'f', 3) + QStringLiteral(" s");
+}
+
+struct camera_enum_ctx {
+	QStringList *names;
+};
+
+void enum_camera_filter(obs_source_t *parent, obs_source_t *child, void *param)
+{
+	auto *ctx = static_cast<camera_enum_ctx *>(param);
+	if (!ctx || !ctx->names || strcmp(obs_source_get_unversioned_id(child), SR_CAPTURE_ID) != 0)
+		return;
+
+	const QString name = QString::fromUtf8(obs_source_get_name(parent));
+	if (!name.isEmpty() && !ctx->names->contains(name))
+		ctx->names->append(name);
+}
+
+bool enum_camera_source(void *param, obs_source_t *source)
+{
+	obs_source_enum_filters(source, enum_camera_filter, param);
+	return true;
+}
+
+QStringList captureCameraNames()
+{
+	QStringList names;
+	camera_enum_ctx ctx = {.names = &names};
+	obs_enum_sources(enum_camera_source, &ctx);
+	names.sort(Qt::CaseInsensitive);
+	return names;
+}
+
+QString channelSummary(enum sr_replay_bus bus, const QString &label)
+{
+	sr_replay_channel_state state = {};
+	if (!sr_replay_channel_get_state(bus, &state) || !state.cued)
+		return QStringLiteral("%1: —").arg(label);
+
+	const double duration = state.out_ns >= state.in_ns ? (double)(state.out_ns - state.in_ns) / 1e9 : 0.0;
+	const double position = state.playhead_ns >= state.in_ns ? (double)(state.playhead_ns - state.in_ns) / 1e9 : 0.0;
+	QString mode = T("EventDock.Transport.Cued");
+	if (state.playing)
+		mode = state.paused ? T("EventDock.Transport.Paused") : T("EventDock.Transport.Playing");
+	QString flags;
+	if (state.backward)
+		flags += QStringLiteral(" REV");
+	if (state.loop)
+		flags += QStringLiteral(" LOOP");
+	if (state.partial_coverage)
+		flags += QStringLiteral(" PARTIAL");
+
+	return QStringLiteral("%1: #%2  %3  %4%  %5/%6 s  %7%8")
+		.arg(label)
+		.arg(state.event_id)
+		.arg(QString::fromUtf8(state.camera_name))
+		.arg(state.speed_percent, 0, 'f', 0)
+		.arg(position, 0, 'f', 2)
+		.arg(duration, 0, 'f', 2)
+		.arg(mode)
+		.arg(flags);
 }
 
 class SrEventDock : public QWidget {
@@ -138,6 +202,45 @@ public:
 		actionBar->addWidget(duplicate);
 		root->addLayout(actionBar);
 
+		auto *cueBar = new QHBoxLayout();
+		cueBar->addWidget(new QLabel(T("EventDock.Camera"), this));
+		cameraCombo = new QComboBox(this);
+		cameraCombo->setMinimumContentsLength(18);
+		cueBar->addWidget(cameraCombo, 1);
+		auto *cueA = new QPushButton(T("EventDock.CueA"), this);
+		auto *cueB = new QPushButton(T("EventDock.CueB"), this);
+		cueBar->addWidget(cueA);
+		cueBar->addWidget(cueB);
+		cueBar->addSpacing(12);
+		cueBar->addWidget(new QLabel(T("EventDock.TransportBus"), this));
+		busCombo = new QComboBox(this);
+		busCombo->addItem(QStringLiteral("A"), SR_REPLAY_BUS_A);
+		busCombo->addItem(QStringLiteral("B"), SR_REPLAY_BUS_B);
+		cueBar->addWidget(busCombo);
+		auto *playPause = new QPushButton(T("EventDock.PlayPause"), this);
+		auto *stop = new QPushButton(T("EventDock.Stop"), this);
+		auto *restart = new QPushButton(T("EventDock.Restart"), this);
+		reverseButton = new QPushButton(T("EventDock.Reverse"), this);
+		reverseButton->setCheckable(true);
+		loopButton = new QPushButton(T("EventDock.Loop"), this);
+		loopButton->setCheckable(true);
+		cueBar->addWidget(playPause);
+		cueBar->addWidget(stop);
+		cueBar->addWidget(restart);
+		cueBar->addWidget(reverseButton);
+		cueBar->addWidget(loopButton);
+		speedCombo = new QComboBox(this);
+		for (int speed : {25, 33, 50, 75, 100})
+			speedCombo->addItem(QStringLiteral("%1%").arg(speed), speed);
+		speedCombo->setCurrentIndex(speedCombo->findData(100));
+		cueBar->addWidget(speedCombo);
+		root->addLayout(cueBar);
+
+		transportStatus = new QLabel(this);
+		transportStatus->setStyleSheet(QStringLiteral("color: gray;"));
+		transportStatus->setWordWrap(true);
+		root->addWidget(transportStatus);
+
 		status = new QLabel(T("EventDock.Ready"), this);
 		status->setStyleSheet(QStringLiteral("color: gray;"));
 		root->addWidget(status);
@@ -161,21 +264,52 @@ public:
 		connect(copy, &QPushButton::clicked, this, [this]() { copySelected(); });
 		connect(move, &QPushButton::clicked, this, [this]() { moveSelected(); });
 		connect(duplicate, &QPushButton::clicked, this, [this]() { duplicateSelected(); });
+		connect(cueA, &QPushButton::clicked, this, [this]() { cueSelected(SR_REPLAY_BUS_A); });
+		connect(cueB, &QPushButton::clicked, this, [this]() { cueSelected(SR_REPLAY_BUS_B); });
+		connect(busCombo, &QComboBox::currentIndexChanged, this, [this](int) { syncTransportControls(); });
+		connect(playPause, &QPushButton::clicked, this, [this]() { togglePlayPause(); });
+		connect(stop, &QPushButton::clicked, this, [this]() { stopTransport(); });
+		connect(restart, &QPushButton::clicked, this, [this]() { restartTransport(); });
+		connect(reverseButton, &QPushButton::clicked, this,
+			[this](bool checked) { sr_replay_channel_set_backward(transportBus(), checked); });
+		connect(loopButton, &QPushButton::clicked, this,
+			[this](bool checked) { sr_replay_channel_set_loop(transportBus(), checked); });
+		connect(speedCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+			if (index >= 0)
+				sr_replay_channel_set_speed(transportBus(), speedCombo->itemData(index).toDouble());
+		});
 
 		refreshTimer = new QTimer(this);
 		refreshTimer->setInterval(750);
-		connect(refreshTimer, &QTimer::timeout, this, [this]() { refresh(); });
+		connect(refreshTimer, &QTimer::timeout, this, [this]() {
+			refresh();
+			refreshTransportStatus();
+			if (++cameraRefreshTicks >= 4) {
+				cameraRefreshTicks = 0;
+				refreshCameras();
+			}
+		});
 		refreshTimer->start();
 
 		if (controller)
 			sr_event_controller_set_current_list(controller, currentList());
+		refreshCameras();
 		refresh();
+		refreshTransportStatus();
+		syncTransportControls();
 	}
 
 private:
 	unsigned currentList() const { return listCombo ? listCombo->currentData().toUInt() : 1; }
 
 	unsigned targetList() const { return targetCombo ? targetCombo->currentData().toUInt() : 1; }
+
+	enum sr_replay_bus transportBus() const
+	{
+		return busCombo && busCombo->currentData().toInt() == SR_REPLAY_BUS_B ? SR_REPLAY_BUS_B : SR_REPLAY_BUS_A;
+	}
+
+	QString selectedCamera() const { return cameraCombo ? cameraCombo->currentData().toString() : QString(); }
 
 	uint64_t selectedEventId() const
 	{
@@ -189,6 +323,106 @@ private:
 	void setStatus(const char *key) { status->setText(T(key)); }
 
 	void setCreatedStatus(uint64_t eventId) { status->setText(T("EventDock.Created").arg(eventId)); }
+
+	void refreshCameras()
+	{
+		if (!cameraCombo)
+			return;
+		const QString previous = selectedCamera();
+		const QStringList names = captureCameraNames();
+		QStringList current;
+		for (int i = 0; i < cameraCombo->count(); i++) {
+			const QString value = cameraCombo->itemData(i).toString();
+			if (!value.isEmpty())
+				current.append(value);
+		}
+		if (current == names)
+			return;
+
+		cameraCombo->clear();
+		if (names.isEmpty()) {
+			cameraCombo->addItem(T("EventDock.NoCamera"), QString());
+			return;
+		}
+		for (const QString &name : names)
+			cameraCombo->addItem(name, name);
+		const int previousIndex = cameraCombo->findData(previous);
+		if (previousIndex >= 0)
+			cameraCombo->setCurrentIndex(previousIndex);
+	}
+
+	void refreshTransportStatus()
+	{
+		if (!transportStatus)
+			return;
+		transportStatus->setText(channelSummary(SR_REPLAY_BUS_A, QStringLiteral("A")) + QStringLiteral("    ") +
+					 channelSummary(SR_REPLAY_BUS_B, QStringLiteral("B")));
+	}
+
+	void syncTransportControls()
+	{
+		sr_replay_channel_state state = {};
+		if (!sr_replay_channel_get_state(transportBus(), &state))
+			return;
+		reverseButton->setChecked(state.backward);
+		loopButton->setChecked(state.loop);
+		const int speedIndex = speedCombo->findData((int)state.speed_percent);
+		if (speedIndex >= 0)
+			speedCombo->setCurrentIndex(speedIndex);
+		refreshTransportStatus();
+	}
+
+	void cueSelected(enum sr_replay_bus bus)
+	{
+		const uint64_t eventId = selectedEventId();
+		const QString camera = selectedCamera();
+		if (!eventId) {
+			setStatus("EventDock.NoEventSelected");
+			return;
+		}
+		if (camera.isEmpty()) {
+			setStatus("EventDock.NoCameraSelected");
+			return;
+		}
+		const QByteArray cameraUtf8 = camera.toUtf8();
+		if (!sr_replay_channel_cue(bus, eventId, cameraUtf8.constData())) {
+			setStatus("EventDock.CueFailed");
+			return;
+		}
+		status->setText(T("EventDock.Cued").arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"))
+					.arg(eventId));
+		if (transportBus() == bus)
+			syncTransportControls();
+		refreshTransportStatus();
+	}
+
+	void togglePlayPause()
+	{
+		const enum sr_replay_bus bus = transportBus();
+		sr_replay_channel_state state = {};
+		if (!sr_replay_channel_get_state(bus, &state) || !state.cued) {
+			setStatus("EventDock.NoCue");
+			return;
+		}
+		const bool ok = state.playing && !state.paused ? sr_replay_channel_pause(bus, true)
+									: state.paused ? sr_replay_channel_pause(bus, false)
+										       : sr_replay_channel_play(bus);
+		if (!ok)
+			setStatus("EventDock.TransportFailed");
+		refreshTransportStatus();
+	}
+
+	void stopTransport()
+	{
+		sr_replay_channel_stop(transportBus());
+		refreshTransportStatus();
+	}
+
+	void restartTransport()
+	{
+		sr_replay_channel_restart(transportBus());
+		refreshTransportStatus();
+	}
 
 	void setMarkIn()
 	{
@@ -380,9 +614,16 @@ private:
 	sr_event_controller *controller = nullptr;
 	QComboBox *listCombo = nullptr;
 	QComboBox *targetCombo = nullptr;
+	QComboBox *cameraCombo = nullptr;
+	QComboBox *busCombo = nullptr;
+	QComboBox *speedCombo = nullptr;
+	QPushButton *reverseButton = nullptr;
+	QPushButton *loopButton = nullptr;
 	QTableWidget *table = nullptr;
+	QLabel *transportStatus = nullptr;
 	QLabel *status = nullptr;
 	QTimer *refreshTimer = nullptr;
+	unsigned cameraRefreshTicks = 0;
 };
 
 } // namespace
