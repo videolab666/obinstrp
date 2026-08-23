@@ -14,6 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-config.h"
 #include "sr-dock.h"
 #include "sr-event-controller.h"
+#include "sr-event-dock.h"
 #include "sr-scene-tracker.h"
 #include "sr-session.h"
 
@@ -162,6 +163,7 @@ void obs_module_post_load(void)
 {
 	sr_scene_tracker_start();
 	sr_dock_register();
+	sr_event_dock_register(event_controller);
 }
 
 void obs_module_unload(void)
