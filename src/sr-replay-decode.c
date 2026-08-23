@@ -29,12 +29,25 @@ static bool find_previous_keyframe(const struct sr_replay *replay, size_t target
 	return false;
 }
 
-bool sr_replay_decode_frame_at(struct sr_decoder *decoder, const struct sr_replay *replay, int64_t *current_index,
-			       size_t target_index, AVFrame **frame)
+bool sr_replay_decode_frame_at(struct sr_decoder *decoder, const struct sr_replay *replay,
+			       struct sr_frame_cache *cache, int64_t *current_index, size_t target_index,
+			       AVFrame **frame)
 {
 	if (!decoder || !replay || !current_index || !frame || target_index >= replay->video.num)
 		return false;
 	*frame = NULL;
+
+	/* A backward/jog target that is still in the decoded window can be shown
+	 * immediately. Do not move current_index backwards: it describes decoder
+	 * reference state, not the last picture shown on screen. Keeping the newer
+	 * state warm is useful if the operator changes direction again. */
+	if (cache) {
+		AVFrame *cached = sr_frame_cache_find(cache, (uint64_t)target_index);
+		if (cached) {
+			*frame = cached;
+			return true;
+		}
+	}
 
 	size_t start_index = 0;
 	const bool can_continue_forward = *current_index >= 0 && (size_t)*current_index < target_index;
@@ -58,6 +71,8 @@ bool sr_replay_decode_frame_at(struct sr_decoder *decoder, const struct sr_repla
 			return false;
 
 		*current_index = (int64_t)index;
+		if (cache)
+			sr_frame_cache_store(cache, (uint64_t)index, decoded);
 		if (index == target_index)
 			target_frame = decoded;
 	}
