@@ -13,6 +13,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-capture.h"
 #include "sr-event-controller.h"
 #include "sr-replay-channel.h"
+#include "sr-replay-coverage.h"
 #include "sr-replay-take.h"
 #include "sr-storage-cleanup.h"
 
@@ -24,6 +25,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <QAbstractItemView>
 #include <QComboBox>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -35,6 +37,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QVector>
 #include <QWidget>
 
 #define NS_PER_SECOND 1000000000ULL
@@ -269,6 +272,18 @@ public:
 		cueBar->addWidget(audioCombo);
 		root->addLayout(cueBar);
 
+		auto *angleHeader = new QHBoxLayout();
+		angleHeader->addWidget(new QLabel(T("EventDock.Angles"), this));
+		angleHeader->addStretch(1);
+		auto *angleLegend = new QLabel(T("EventDock.AnglesLegend"), this);
+		angleLegend->setStyleSheet(QStringLiteral("color: gray;"));
+		angleHeader->addWidget(angleLegend);
+		root->addLayout(angleHeader);
+		angleGrid = new QGridLayout();
+		angleGrid->setHorizontalSpacing(4);
+		angleGrid->setVerticalSpacing(3);
+		root->addLayout(angleGrid);
+
 		auto *timelineBar = new QHBoxLayout();
 		timelineBar->addWidget(new QLabel(T("EventDock.Timeline"), this));
 		timelineSlider = new QSlider(Qt::Horizontal, this);
@@ -392,6 +407,7 @@ public:
 		connect(takeB, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_B); });
 		connect(takeToggle, &QPushButton::clicked, this, [this]() { takeToggleBus(); });
 		connect(returnLive, &QPushButton::clicked, this, [this]() { returnLiveBus(); });
+		connect(table, &QTableWidget::itemSelectionChanged, this, [this]() { refreshAngleCoverage(); });
 
 		refreshTimer = new QTimer(this);
 		refreshTimer->setInterval(750);
@@ -410,6 +426,7 @@ public:
 		connect(transportTimer, &QTimer::timeout, this, [this]() {
 			refreshTransportStatus();
 			syncTimeline();
+			syncAngleButtonState();
 		});
 		transportTimer->start();
 
@@ -447,6 +464,33 @@ private:
 
 	void setCreatedStatus(uint64_t eventId) { status->setText(T("EventDock.Created").arg(eventId)); }
 
+	void rebuildAngleButtons(const QStringList &names)
+	{
+		if (!angleGrid)
+			return;
+
+		while (QLayoutItem *item = angleGrid->takeAt(0)) {
+			if (QWidget *widget = item->widget())
+				widget->deleteLater();
+			delete item;
+		}
+		angleButtons.clear();
+
+		for (int i = 0; i < names.size(); i++) {
+			const QString camera = names.at(i);
+			auto *button = new QPushButton(camera, this);
+			button->setCheckable(true);
+			button->setMinimumWidth(92);
+			button->setProperty("cameraName", camera);
+			button->setProperty("coverage", (int)SR_REPLAY_COVERAGE_NONE);
+			button->setProperty("playableInNs", QVariant::fromValue<qulonglong>(0));
+			button->setProperty("playableOutNs", QVariant::fromValue<qulonglong>(0));
+			connect(button, &QPushButton::clicked, this, [this, camera]() { selectAngle(camera); });
+			angleGrid->addWidget(button, i / 4, i % 4);
+			angleButtons.append(button);
+		}
+	}
+
 	void refreshCameras()
 	{
 		if (!cameraCombo)
@@ -459,19 +503,136 @@ private:
 			if (!value.isEmpty())
 				current.append(value);
 		}
-		if (current == names)
-			return;
 
-		cameraCombo->clear();
-		if (names.isEmpty()) {
-			cameraCombo->addItem(T("EventDock.NoCamera"), QString());
+		if (current != names) {
+			cameraCombo->clear();
+			if (names.isEmpty()) {
+				cameraCombo->addItem(T("EventDock.NoCamera"), QString());
+			} else {
+				for (const QString &name : names)
+					cameraCombo->addItem(name, name);
+				const int previousIndex = cameraCombo->findData(previous);
+				if (previousIndex >= 0)
+					cameraCombo->setCurrentIndex(previousIndex);
+			}
+			rebuildAngleButtons(names);
+		}
+
+		refreshAngleCoverage();
+	}
+
+	uint64_t angleEventId() const
+	{
+		const uint64_t selected = selectedEventId();
+		if (selected)
+			return selected;
+
+		sr_replay_channel_state state = {};
+		return sr_replay_channel_get_state(transportBus(), &state) && state.cued ? state.event_id : 0;
+	}
+
+	void refreshAngleCoverage()
+	{
+		const uint64_t eventId = angleEventId();
+		sr_event_record event = {};
+		const bool haveEvent = controller && eventId &&
+				       sr_event_controller_get_event(controller, eventId, &event);
+
+		for (QPushButton *button : angleButtons) {
+			const QString camera = button->property("cameraName").toString();
+			sr_replay_coverage_info coverage = {};
+			if (haveEvent) {
+				const QByteArray cameraUtf8 = camera.toUtf8();
+				if (!sr_replay_coverage_query(cameraUtf8.constData(), event.in_ns, event.out_ns,
+							      &coverage))
+					coverage.coverage = SR_REPLAY_COVERAGE_NONE;
+			}
+
+			button->setProperty("coverage", (int)coverage.coverage);
+			button->setProperty("playableInNs", QVariant::fromValue<qulonglong>(coverage.playable_in_ns));
+			button->setProperty("playableOutNs", QVariant::fromValue<qulonglong>(coverage.playable_out_ns));
+
+			QString marker = QStringLiteral("○");
+			QString tooltip = haveEvent ? T("EventDock.AngleNone").arg(camera)
+						    : T("EventDock.NoEventSelected");
+			if (coverage.coverage == SR_REPLAY_COVERAGE_FULL) {
+				marker = QStringLiteral("●");
+				tooltip = T("EventDock.AngleFull").arg(camera);
+			} else if (coverage.coverage == SR_REPLAY_COVERAGE_PARTIAL) {
+				marker = QStringLiteral("◐");
+				const double eventSeconds =
+					event.out_ns >= event.in_ns ? (double)(event.out_ns - event.in_ns) / 1e9 : 0.0;
+				const double playableSeconds =
+					coverage.playable_out_ns >= coverage.playable_in_ns
+						? (double)(coverage.playable_out_ns - coverage.playable_in_ns) / 1e9
+						: 0.0;
+				tooltip = T("EventDock.AnglePartial")
+						  .arg(camera)
+						  .arg(playableSeconds, 0, 'f', 2)
+						  .arg(eventSeconds, 0, 'f', 2);
+			}
+			button->setText(QStringLiteral("%1 %2").arg(marker, camera));
+			button->setToolTip(tooltip);
+		}
+
+		if (haveEvent)
+			sr_event_controller_free_event(&event);
+		syncAngleButtonState();
+	}
+
+	void syncAngleButtonState()
+	{
+		const uint64_t eventId = angleEventId();
+		sr_replay_channel_state state = {};
+		const bool haveState = sr_replay_channel_get_state(transportBus(), &state);
+		const bool sameEvent = haveState && state.cued && eventId && state.event_id == eventId;
+		const QString activeCamera = sameEvent ? QString::fromUtf8(state.camera_name) : QString();
+
+		for (QPushButton *button : angleButtons) {
+			const auto coverage = static_cast<sr_replay_coverage>(button->property("coverage").toInt());
+			const uint64_t playableIn = button->property("playableInNs").toULongLong();
+			const uint64_t playableOut = button->property("playableOutNs").toULongLong();
+			const QString camera = button->property("cameraName").toString();
+			const bool atPlayhead = !sameEvent ||
+						(state.playhead_ns >= playableIn && state.playhead_ns <= playableOut);
+			button->setEnabled(eventId && coverage != SR_REPLAY_COVERAGE_NONE && atPlayhead);
+			button->setChecked(sameEvent && activeCamera == camera);
+			if (sameEvent && coverage != SR_REPLAY_COVERAGE_NONE && !atPlayhead)
+				button->setToolTip(T("EventDock.AngleUnavailable").arg(camera));
+		}
+	}
+
+	void selectAngle(const QString &camera)
+	{
+		const enum sr_replay_bus bus = transportBus();
+		uint64_t eventId = selectedEventId();
+		sr_replay_channel_state state = {};
+		const bool haveState = sr_replay_channel_get_state(bus, &state);
+		if (!eventId && haveState && state.cued)
+			eventId = state.event_id;
+		if (!eventId) {
+			setStatus("EventDock.NoEventSelected");
 			return;
 		}
-		for (const QString &name : names)
-			cameraCombo->addItem(name, name);
-		const int previousIndex = cameraCombo->findData(previous);
-		if (previousIndex >= 0)
-			cameraCombo->setCurrentIndex(previousIndex);
+
+		const QByteArray cameraUtf8 = camera.toUtf8();
+		const bool switching = haveState && state.cued && state.event_id == eventId;
+		const bool ok = switching ? sr_replay_channel_switch_camera(bus, cameraUtf8.constData())
+					  : sr_replay_channel_cue(bus, eventId, cameraUtf8.constData());
+		if (!ok) {
+			setStatus("EventDock.AngleSwitchFailed");
+			refreshAngleCoverage();
+			return;
+		}
+
+		const int comboIndex = cameraCombo ? cameraCombo->findData(camera) : -1;
+		if (comboIndex >= 0)
+			cameraCombo->setCurrentIndex(comboIndex);
+		status->setText(T("EventDock.AngleSelected")
+					.arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"))
+					.arg(camera));
+		syncTransportControls();
+		refreshAngleCoverage();
 	}
 
 	void refreshTransportStatus()
@@ -967,6 +1128,8 @@ private:
 	QComboBox *busCombo = nullptr;
 	QComboBox *speedCombo = nullptr;
 	QComboBox *audioCombo = nullptr;
+	QGridLayout *angleGrid = nullptr;
+	QVector<QPushButton *> angleButtons;
 	QSlider *timelineSlider = nullptr;
 	QSlider *jogSlider = nullptr;
 	QSlider *shuttleSlider = nullptr;
