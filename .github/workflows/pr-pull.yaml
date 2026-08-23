@@ -8,67 +8,11 @@ on:
     branches: [master, main]
     types: [ opened, synchronize, reopened ]
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
   cancel-in-progress: true
 jobs:
-  format-replay-branch:
-    name: Format replay branch 🧹
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'feature/disk-replay-core'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/disk-replay-core
-          fetch-depth: 0
-      - name: Install formatters
-        shell: bash
-        run: |
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          brew install --quiet zsh
-          brew tap obsproject/tools
-          brew install --quiet obsproject/tools/clang-format@19 obsproject/tools/gersemi
-          echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> "$GITHUB_PATH"
-          echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> "$GITHUB_PATH"
-      - name: Apply project formatters
-        shell: bash
-        run: |
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          ./build-aux/run-clang-format \
-            src/capture-filter.c \
-            src/plugin-main.c \
-            src/sr-config.c \
-            src/sr-config.h \
-            src/sr-disk-decode.c \
-            src/sr-disk-decode.h \
-            src/sr-disk-player.c \
-            src/sr-disk-player.h \
-            src/sr-segment-catalog.c \
-            src/sr-segment-catalog.h \
-            src/sr-segment-format.h \
-            src/sr-segment-reader.c \
-            src/sr-segment-reader.h \
-            src/sr-segment-writer.c \
-            src/sr-segment-writer.h \
-            src/sr-session.c \
-            src/sr-session.h
-          ./build-aux/run-gersemi CMakeLists.txt
-      - name: Commit formatter output
-        shell: bash
-        run: |
-          if git diff --quiet; then
-            echo "Nothing to format"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add CMakeLists.txt src
-          git commit -m "style: apply project formatters"
-          git push origin HEAD:feature/disk-replay-core
-
   check-format:
     name: Check Formatting 🔍
     uses: ./.github/workflows/check-format.yaml
