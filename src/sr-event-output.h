@@ -11,3 +11,4 @@ the Free Software Foundation; either version 2 of the License, or
 #pragma once
 
 #define SR_EVENT_OUTPUT_ID "sports_replay_event_output"
+#define SR_EVENT_OUTPUT_SETTING_BUS "replay_bus"
