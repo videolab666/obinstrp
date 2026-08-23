@@ -15,6 +15,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-dock.h"
 #include "sr-event-controller.h"
 #include "sr-event-dock.h"
+#include "sr-replay-channel.h"
 #include "sr-scene-tracker.h"
 #include "sr-session.h"
 
@@ -23,6 +24,7 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
 extern struct obs_source_info sr_capture_info;
 extern struct obs_source_info sr_playback_info;
+extern struct obs_source_info sr_event_output_info;
 
 #define NS_PER_SECOND 1000000000ULL
 
@@ -152,9 +154,19 @@ bool obs_module_load(void)
 	sr_config_init();
 	sr_session_init();
 	event_controller = sr_event_controller_create();
+	if (!event_controller || !sr_replay_channels_init(event_controller)) {
+		sr_event_controller_destroy(event_controller);
+		event_controller = NULL;
+		sr_session_free();
+		sr_config_free();
+		obs_log(LOG_ERROR, "Sports Replay: could not initialize replay Event controller");
+		return false;
+	}
+
 	register_event_hotkeys();
 	obs_register_source(&sr_capture_info);
 	obs_register_source(&sr_playback_info);
+	obs_register_source(&sr_event_output_info);
 	obs_log(LOG_INFO, "Sports Replay loaded (version %s)", PLUGIN_VERSION);
 	return true;
 }
@@ -170,6 +182,7 @@ void obs_module_unload(void)
 {
 	sr_scene_tracker_stop();
 	unregister_event_hotkeys();
+	sr_replay_channels_shutdown();
 	sr_event_controller_destroy(event_controller);
 	event_controller = NULL;
 	sr_session_free();
