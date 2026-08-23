@@ -19,66 +19,35 @@ jobs:
           ref: feature/disk-replay-core
           fetch-depth: 0
 
-      - name: Apply small EventDB correctness cleanup
+      - name: Apply EventDB build fixes
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path('src/sr-event-db.c')
-          text = p.read_text(encoding='utf-8')
-          if '#include <stdio.h>' not in text:
-              text = text.replace('#include <math.h>\n#include <string.h>', '#include <math.h>\n#include <stdio.h>\n#include <string.h>', 1)
+          event_db = Path('src/sr-event-db.c')
+          text = event_db.read_text(encoding='utf-8')
+          text = text.replace('obs_log(', 'blog(')
+          event_db.write_text(text, encoding='utf-8')
 
-          old = '''bool sr_event_db_set_event_position(struct sr_event_db *db, unsigned list_id, uint64_t event_id, int position)
-          {
-          \tif (!db || !valid_list_id(list_id) || !event_id || !valid_u64(event_id))
-          \t\treturn false;
-
-          \tpthread_mutex_lock(&db->mutex);
-          \tint old_position = -1;
-          \tbool found = false;
-          \tbool ok = list_position_locked(db, list_id, event_id, &old_position, &found) && found && begin_transaction(db);
-          \tif (ok)
-          \t\tok = reorder_existing_locked(db, list_id, event_id, old_position, position);
-          \tif (ok)
-          \t\tok = commit_transaction(db);
-          \telse if (found)
-          \t\trollback_transaction(db);
-          \tpthread_mutex_unlock(&db->mutex);
-          \treturn ok;
-          }
+          cmake = Path('CMakeLists.txt')
+          text = cmake.read_text(encoding='utf-8')
+          old = 'set_target_properties(sr_sqlite PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)\n'
+          new = '''set_target_properties(
+            sr_sqlite
+            PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden COMPILE_WARNING_AS_ERROR OFF
+          )
+          if(MSVC)
+            target_compile_options(sr_sqlite PRIVATE /W0)
+          else()
+            target_compile_options(sr_sqlite PRIVATE -w)
+          endif()
           '''
-          new = '''bool sr_event_db_set_event_position(struct sr_event_db *db, unsigned list_id, uint64_t event_id, int position)
-          {
-          \tif (!db || !valid_list_id(list_id) || !event_id || !valid_u64(event_id))
-          \t\treturn false;
-
-          \tpthread_mutex_lock(&db->mutex);
-          \tint old_position = -1;
-          \tbool found = false;
-          \tif (!list_position_locked(db, list_id, event_id, &old_position, &found) || !found) {
-          \t\tpthread_mutex_unlock(&db->mutex);
-          \t\treturn false;
-          \t}
-          \tif (!begin_transaction(db)) {
-          \t\tpthread_mutex_unlock(&db->mutex);
-          \t\treturn false;
-          \t}
-
-          \tbool ok = reorder_existing_locked(db, list_id, event_id, old_position, position);
-          \tif (ok)
-          \t\tok = commit_transaction(db);
-          \telse
-          \t\trollback_transaction(db);
-          \tpthread_mutex_unlock(&db->mutex);
-          \treturn ok;
-          }
-          '''
-          if old not in text:
-              raise SystemExit('set_event_position anchor not found')
-          text = text.replace(old, new, 1)
-          p.write_text(text, encoding='utf-8')
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'COMPILE_WARNING_AS_ERROR OFF' not in text:
+              raise SystemExit('sr_sqlite target-properties anchor not found')
+          cmake.write_text(text, encoding='utf-8')
           PY
 
       - name: Install formatters
@@ -98,7 +67,7 @@ jobs:
           ./build-aux/run-clang-format src/sr-event-db.c src/sr-event-db.h
           ./build-aux/run-gersemi CMakeLists.txt
 
-      - name: Commit formatted EventDB foundation
+      - name: Commit EventDB build fixes
         shell: bash
         run: |
           if git diff --quiet; then
@@ -108,5 +77,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add CMakeLists.txt src/sr-event-db.c src/sr-event-db.h
-          git commit -m "style: format SQLite EventDB foundation"
+          git commit -m "fix: make SQLite EventDB build cleanly"
           git push origin HEAD:feature/disk-replay-core
