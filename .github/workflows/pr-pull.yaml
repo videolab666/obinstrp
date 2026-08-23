@@ -8,11 +8,50 @@ on:
     branches: [master, main]
     types: [ opened, synchronize, reopened ]
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
   cancel-in-progress: true
 jobs:
+  fix-replay-logger:
+    name: Fix replay logger compatibility
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'feature/disk-replay-core'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/disk-replay-core
+          fetch-depth: 0
+      - name: Use libobs blog in core storage sources
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          files = [
+              Path('src/sr-segment-writer.c'),
+              Path('src/sr-segment-reader.c'),
+              Path('src/sr-disk-player.c'),
+          ]
+          for path in files:
+              text = path.read_text(encoding='utf-8')
+              text = text.replace('obs_log(', 'blog(')
+              path.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit compatibility fix
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "Nothing to change"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/sr-segment-writer.c src/sr-segment-reader.c src/sr-disk-player.c
+          git commit -m "fix: use libobs logger in disk replay core"
+          git push origin HEAD:feature/disk-replay-core
+
   check-format:
     name: Check Formatting 🔍
     uses: ./.github/workflows/check-format.yaml
