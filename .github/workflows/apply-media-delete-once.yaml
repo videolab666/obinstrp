@@ -1,4 +1,4 @@
-name: One-shot apply safe replay media deletion
+name: One-shot apply safe replay media deletion v2
 
 on:
   push:
