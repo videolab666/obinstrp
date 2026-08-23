@@ -43,7 +43,15 @@ if(NOT EXISTS "${SR_SQLITE_DIR}/sqlite3.c" OR NOT EXISTS "${SR_SQLITE_DIR}/sqlit
 endif()
 
 add_library(sr_sqlite STATIC "${SR_SQLITE_DIR}/sqlite3.c")
-set_target_properties(sr_sqlite PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+set_target_properties(
+  sr_sqlite
+  PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden COMPILE_WARNING_AS_ERROR OFF
+)
+if(MSVC)
+  target_compile_options(sr_sqlite PRIVATE /W0)
+else()
+  target_compile_options(sr_sqlite PRIVATE -w)
+endif()
 target_include_directories(sr_sqlite PUBLIC "${SR_SQLITE_DIR}")
 target_compile_definitions(
   sr_sqlite
