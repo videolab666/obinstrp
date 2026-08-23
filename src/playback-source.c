@@ -26,6 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "sr-buffer.h"
 #include "sr-dock.h"
 #include "sr-codec.h"
+#include "sr-replay-decode.h"
 #include "sr-capture.h"
 #include "sr-scene-tracker.h"
 #include "sr-clip.h"
@@ -85,7 +86,7 @@ struct sr_playback {
 				       triggers doesn't overwrite the loaded replay */
 
 	struct sr_decoder *decoder;
-	int64_t cur_idx; /* index of last decoded/output video packet */
+	int64_t cur_idx; /* index of last packet represented in decoder reference state */
 
 	/* playhead is an absolute timestamp within [first_ts, last_ts] */
 	uint64_t playhead;
@@ -370,17 +371,15 @@ static void sr_playback_output_frame_at(struct sr_playback *p, size_t idx)
 	if (!p->decoder || idx >= p->replay.video.num)
 		return;
 
-	/* all frames are intra frames: a non-sequential jump only needs a
-	 * decoder flush, not decoding from a keyframe */
-	if (p->cur_idx >= 0 && (size_t)(p->cur_idx + 1) != idx)
-		sr_decoder_flush(p->decoder);
-
+	/* Short-GOP packets after an IDR depend on earlier reference frames.
+	 * The helper keeps the decoder warm during normal forward playback,
+	 * decodes skipped packets on fast-forward, and for reverse/random
+	 * seeks flushes and rebuilds state from the preceding keyframe. */
 	AVFrame *decoded = NULL;
-	if (!sr_decoder_decode(p->decoder, p->replay.video.array[idx].pkt, &decoded))
+	if (!sr_replay_decode_frame_at(p->decoder, &p->replay, &p->cur_idx, idx, &decoded))
 		return;
 
 	output_avframe(p, decoded);
-	p->cur_idx = (int64_t)idx;
 }
 
 /* Enters the intro phase if an intro clip is loaded, otherwise the replay
