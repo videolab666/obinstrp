@@ -29,6 +29,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSignalBlocker>
+#include <QSlider>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTimer>
@@ -63,6 +65,18 @@ QString durationText(const sr_event_record &event)
 	if (event.out_ns < event.in_ns)
 		return QStringLiteral("-");
 	return QString::number((double)(event.out_ns - event.in_ns) / 1e9, 'f', 3) + QStringLiteral(" s");
+}
+
+QString replayClockText(uint64_t ns)
+{
+	const uint64_t totalMs = ns / 1000000ULL;
+	const uint64_t minutes = totalMs / 60000ULL;
+	const uint64_t seconds = (totalMs / 1000ULL) % 60ULL;
+	const uint64_t millis = totalMs % 1000ULL;
+	return QStringLiteral("%1:%2.%3")
+		.arg(minutes, 2, 10, QChar('0'))
+		.arg(seconds, 2, 10, QChar('0'))
+		.arg(millis, 3, 10, QChar('0'));
 }
 
 struct camera_enum_ctx {
@@ -255,6 +269,43 @@ public:
 		cueBar->addWidget(audioCombo);
 		root->addLayout(cueBar);
 
+		auto *timelineBar = new QHBoxLayout();
+		timelineBar->addWidget(new QLabel(T("EventDock.Timeline"), this));
+		timelineSlider = new QSlider(Qt::Horizontal, this);
+		timelineSlider->setRange(0, 10000);
+		timelineSlider->setSingleStep(1);
+		timelineSlider->setPageStep(100);
+		timelineSlider->setEnabled(false);
+		timelineSlider->setToolTip(T("EventDock.Timeline.Tooltip"));
+		timelineBar->addWidget(timelineSlider, 1);
+		timelineTime = new QLabel(QStringLiteral("--:--.--- / --:--.---"), this);
+		timelineTime->setMinimumWidth(150);
+		timelineBar->addWidget(timelineTime);
+		root->addLayout(timelineBar);
+
+		auto *jogShuttleBar = new QHBoxLayout();
+		jogShuttleBar->addWidget(new QLabel(T("EventDock.Jog"), this));
+		jogSlider = new QSlider(Qt::Horizontal, this);
+		jogSlider->setRange(-24, 24);
+		jogSlider->setValue(0);
+		jogSlider->setSingleStep(1);
+		jogSlider->setPageStep(1);
+		jogSlider->setToolTip(T("EventDock.Jog.Tooltip"));
+		jogShuttleBar->addWidget(jogSlider, 1);
+		jogShuttleBar->addSpacing(8);
+		jogShuttleBar->addWidget(new QLabel(T("EventDock.Shuttle"), this));
+		shuttleSlider = new QSlider(Qt::Horizontal, this);
+		shuttleSlider->setRange(-5, 5);
+		shuttleSlider->setValue(0);
+		shuttleSlider->setSingleStep(1);
+		shuttleSlider->setPageStep(1);
+		shuttleSlider->setToolTip(T("EventDock.Shuttle.Tooltip"));
+		jogShuttleBar->addWidget(shuttleSlider, 1);
+		shuttleValue = new QLabel(QStringLiteral("0"), this);
+		shuttleValue->setMinimumWidth(48);
+		jogShuttleBar->addWidget(shuttleValue);
+		root->addLayout(jogShuttleBar);
+
 		auto *takeBar = new QHBoxLayout();
 		takeBar->addStretch(1);
 		auto *takeA = new QPushButton(T("EventDock.TakeA"), this);
@@ -317,6 +368,24 @@ public:
 					static_cast<sr_replay_audio_mode>(audioCombo->itemData(index).toInt()));
 			refreshTransportStatus();
 		});
+		connect(timelineSlider, &QSlider::sliderPressed, this, [this]() {
+			timelineDragging = true;
+			sr_replay_channel_pause(transportBus(), true);
+		});
+		connect(timelineSlider, &QSlider::sliderMoved, this, [this](int value) { seekTimeline(value); });
+		connect(timelineSlider, &QSlider::sliderReleased, this, [this]() {
+			seekTimeline(timelineSlider->value());
+			timelineDragging = false;
+			syncTimeline();
+		});
+		connect(jogSlider, &QSlider::sliderPressed, this, [this]() { jogLastValue = jogSlider->value(); });
+		connect(jogSlider, &QSlider::sliderMoved, this, [this](int value) { jogMoved(value); });
+		connect(jogSlider, &QSlider::sliderReleased, this, [this]() {
+			const QSignalBlocker blocker(jogSlider);
+			jogSlider->setValue(0);
+			jogLastValue = 0;
+		});
+		connect(shuttleSlider, &QSlider::valueChanged, this, [this](int value) { applyShuttle(value); });
 		connect(takeA, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_A); });
 		connect(takeB, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_B); });
 		connect(takeToggle, &QPushButton::clicked, this, [this]() { takeToggleBus(); });
@@ -332,6 +401,14 @@ public:
 			}
 		});
 		refreshTimer->start();
+
+		transportTimer = new QTimer(this);
+		transportTimer->setInterval(100);
+		connect(transportTimer, &QTimer::timeout, this, [this]() {
+			refreshTransportStatus();
+			syncTimeline();
+		});
+		transportTimer->start();
 
 		if (controller)
 			sr_event_controller_set_current_list(controller, currentList());
@@ -415,6 +492,148 @@ private:
 		const int audioIndex = audioCombo->findData((int)state.audio_mode);
 		if (audioIndex >= 0)
 			audioCombo->setCurrentIndex(audioIndex);
+
+		int shuttlePosition = 0;
+		if (state.cued && state.playing && !state.paused) {
+			const int speed = (int)state.speed_percent;
+			if (speed == 25)
+				shuttlePosition = 1;
+			else if (speed == 50)
+				shuttlePosition = 2;
+			else if (speed == 100)
+				shuttlePosition = 3;
+			else if (speed == 200)
+				shuttlePosition = 4;
+			else if (speed == 400)
+				shuttlePosition = 5;
+			if (state.backward)
+				shuttlePosition = -shuttlePosition;
+		}
+		if (shuttleSlider) {
+			const QSignalBlocker blocker(shuttleSlider);
+			shuttleSlider->setValue(shuttlePosition);
+		}
+		if (shuttleValue) {
+			const int speed = shuttleSpeed(shuttlePosition);
+			shuttleValue->setText(shuttlePosition
+						      ? QStringLiteral("%1%").arg(shuttlePosition < 0 ? -speed : speed)
+						      : QStringLiteral("0"));
+		}
+		syncTimeline();
+		refreshTransportStatus();
+	}
+
+	void syncTimeline()
+	{
+		if (!timelineSlider || !timelineTime)
+			return;
+
+		sr_replay_channel_state state = {};
+		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued ||
+		    state.out_ns <= state.in_ns) {
+			timelineSlider->setEnabled(false);
+			if (!timelineDragging)
+				timelineSlider->setValue(0);
+			timelineTime->setText(QStringLiteral("--:--.--- / --:--.---"));
+			return;
+		}
+
+		timelineSlider->setEnabled(true);
+		const uint64_t duration = state.out_ns - state.in_ns;
+		const uint64_t position = state.playhead_ns <= state.in_ns    ? 0
+					  : state.playhead_ns >= state.out_ns ? duration
+									      : state.playhead_ns - state.in_ns;
+		if (!timelineDragging) {
+			const int sliderValue = (int)((long double)position * 10000.0L / (long double)duration);
+			timelineSlider->setValue(sliderValue);
+		}
+		timelineTime->setText(replayClockText(position) + QStringLiteral(" / ") + replayClockText(duration));
+	}
+
+	void seekTimeline(int value)
+	{
+		sr_replay_channel_state state = {};
+		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued || state.out_ns <= state.in_ns)
+			return;
+
+		if (value < 0)
+			value = 0;
+		if (value > 10000)
+			value = 10000;
+		const uint64_t duration = state.out_ns - state.in_ns;
+		const uint64_t offset = (uint64_t)((long double)duration * (long double)value / 10000.0L);
+		const uint64_t target = offset >= duration ? state.out_ns : state.in_ns + offset;
+		sr_replay_channel_pause(transportBus(), true);
+		sr_replay_channel_seek(transportBus(), target);
+		timelineTime->setText(replayClockText(offset > duration ? duration : offset) + QStringLiteral(" / ") +
+				      replayClockText(duration));
+	}
+
+	void jogMoved(int value)
+	{
+		const int delta = value - jogLastValue;
+		jogLastValue = value;
+		if (!delta)
+			return;
+
+		const int direction = delta > 0 ? 1 : -1;
+		if (!sr_replay_channel_step_frames(transportBus(), direction))
+			setStatus("EventDock.FrameStepFailed");
+		refreshTransportStatus();
+		syncTimeline();
+	}
+
+	static int shuttleSpeed(int position)
+	{
+		switch (position < 0 ? -position : position) {
+		case 1:
+			return 25;
+		case 2:
+			return 50;
+		case 3:
+			return 100;
+		case 4:
+			return 200;
+		case 5:
+			return 400;
+		default:
+			return 0;
+		}
+	}
+
+	void applyShuttle(int position)
+	{
+		if (!shuttleSlider || !shuttleValue)
+			return;
+
+		sr_replay_channel_state state = {};
+		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued) {
+			if (position != 0) {
+				const QSignalBlocker blocker(shuttleSlider);
+				shuttleSlider->setValue(0);
+			}
+			shuttleValue->setText(QStringLiteral("0"));
+			setStatus("EventDock.NoCue");
+			return;
+		}
+
+		if (!position) {
+			sr_replay_channel_pause(transportBus(), true);
+			shuttleValue->setText(QStringLiteral("0"));
+			refreshTransportStatus();
+			return;
+		}
+
+		const int speed = shuttleSpeed(position);
+		if (!speed)
+			return;
+		sr_replay_channel_set_backward(transportBus(), position < 0);
+		sr_replay_channel_set_speed(transportBus(), speed);
+		if (state.paused)
+			sr_replay_channel_pause(transportBus(), false);
+		else if (!state.playing)
+			sr_replay_channel_play(transportBus());
+		shuttleValue->setText(QStringLiteral("%1%").arg(position < 0 ? -speed : speed));
 		refreshTransportStatus();
 	}
 
@@ -735,12 +954,20 @@ private:
 	QComboBox *busCombo = nullptr;
 	QComboBox *speedCombo = nullptr;
 	QComboBox *audioCombo = nullptr;
+	QSlider *timelineSlider = nullptr;
+	QSlider *jogSlider = nullptr;
+	QSlider *shuttleSlider = nullptr;
+	QLabel *timelineTime = nullptr;
+	QLabel *shuttleValue = nullptr;
 	QPushButton *reverseButton = nullptr;
 	QPushButton *loopButton = nullptr;
 	QTableWidget *table = nullptr;
 	QLabel *transportStatus = nullptr;
 	QLabel *status = nullptr;
 	QTimer *refreshTimer = nullptr;
+	QTimer *transportTimer = nullptr;
+	bool timelineDragging = false;
+	int jogLastValue = 0;
 	unsigned cameraRefreshTicks = 0;
 };
 
