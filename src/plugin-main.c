@@ -6,14 +6,6 @@ This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License, or
 (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along
-with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include <obs-module.h>
@@ -21,6 +13,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "sr-scene-tracker.h"
 #include "sr-config.h"
+#include "sr-session.h"
 #include "sr-dock.h"
 
 OBS_DECLARE_MODULE()
@@ -32,6 +25,7 @@ extern struct obs_source_info sr_playback_info;
 bool obs_module_load(void)
 {
 	sr_config_init();
+	sr_session_init();
 	obs_register_source(&sr_capture_info);
 	obs_register_source(&sr_playback_info);
 	obs_log(LOG_INFO, "Sports Replay loaded (version %s)", PLUGIN_VERSION);
@@ -47,6 +41,7 @@ void obs_module_post_load(void)
 void obs_module_unload(void)
 {
 	sr_scene_tracker_stop();
+	sr_session_free();
 	sr_config_free();
 	obs_log(LOG_INFO, "Sports Replay unloaded");
 }
