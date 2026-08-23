@@ -53,8 +53,7 @@ static bool read_headers(struct sr_segment_reader *r)
 
 	if (r->segment_header.extradata_size) {
 		r->extradata = bmalloc(r->segment_header.extradata_size);
-		if (!r->extradata ||
-		    !read_exact(r->segment_file, r->extradata, r->segment_header.extradata_size))
+		if (!r->extradata || !read_exact(r->segment_file, r->extradata, r->segment_header.extradata_size))
 			return false;
 	}
 
@@ -76,7 +75,7 @@ bool sr_segment_reader_refresh_index(struct sr_segment_reader *r)
 	if (!r || !r->index_file)
 		return false;
 
-	if (fseek(r->index_file, 0, SEEK_END) != 0)
+	if (os_fseeki64(r->index_file, 0, SEEK_END) != 0)
 		return false;
 	const int64_t size = os_ftelli64(r->index_file);
 	if (size < (int64_t)sizeof(struct sr_index_file_header))
@@ -101,6 +100,8 @@ bool sr_segment_reader_refresh_index(struct sr_segment_reader *r)
 		return false;
 	}
 
+	/* Ignore any trailing partial index record from an interrupted write.
+	 * Full records already read above remain a valid snapshot. */
 	bfree(r->entries);
 	r->entries = fresh;
 	r->entry_count = count;
@@ -165,10 +166,23 @@ bool sr_segment_reader_get_info(const struct sr_segment_reader *r, struct sr_seg
 	return true;
 }
 
-bool sr_segment_reader_find(const struct sr_segment_reader *r, uint64_t timestamp_ns, bool keyframe_only,
-			    struct sr_index_entry *entry)
+size_t sr_segment_reader_entry_count(const struct sr_segment_reader *r)
 {
-	if (!r || !entry || !r->entry_count)
+	return r ? r->entry_count : 0;
+}
+
+bool sr_segment_reader_entry_at(const struct sr_segment_reader *r, size_t position, struct sr_index_entry *entry)
+{
+	if (!r || !entry || position >= r->entry_count)
+		return false;
+	*entry = r->entries[position];
+	return true;
+}
+
+bool sr_segment_reader_find_position(const struct sr_segment_reader *r, uint64_t timestamp_ns, bool keyframe_only,
+				     size_t *position, struct sr_index_entry *entry)
+{
+	if (!r || !r->entry_count)
 		return false;
 	if (timestamp_ns < r->entries[0].timestamp_ns)
 		return false;
@@ -193,8 +207,17 @@ bool sr_segment_reader_find(const struct sr_segment_reader *r, uint64_t timestam
 		}
 	}
 
-	*entry = r->entries[lo];
+	if (position)
+		*position = lo;
+	if (entry)
+		*entry = r->entries[lo];
 	return true;
+}
+
+bool sr_segment_reader_find(const struct sr_segment_reader *r, uint64_t timestamp_ns, bool keyframe_only,
+			    struct sr_index_entry *entry)
+{
+	return entry && sr_segment_reader_find_position(r, timestamp_ns, keyframe_only, NULL, entry);
 }
 
 bool sr_segment_reader_read_video_packet(struct sr_segment_reader *r, const struct sr_index_entry *entry,
