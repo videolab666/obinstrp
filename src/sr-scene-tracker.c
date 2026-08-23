@@ -506,6 +506,8 @@ void sr_switch_to_scene_of_source_return(const char *source_name)
 
 void sr_scene_tracker_note_replay_launch(void)
 {
+	if (!g_started)
+		return;
 	pthread_mutex_lock(&g_mutex);
 	g_preview_guard = true;
 	g_preview_guard_ends = 0; /* guard until the replay leaves program */
@@ -514,6 +516,8 @@ void sr_scene_tracker_note_replay_launch(void)
 
 void sr_scene_tracker_end_replay_guard(void)
 {
+	if (!g_started)
+		return;
 	pthread_mutex_lock(&g_mutex);
 	if (g_preview_guard && !g_preview_guard_ends)
 		g_preview_guard_ends = os_gettime_ns() + SR_PREVIEW_GUARD_TAIL_NS;

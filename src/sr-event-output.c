@@ -12,6 +12,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-master-audio-player.h"
 #include "sr-replay-channel.h"
+#include "sr-scene-tracker.h"
 #include "sr-session.h"
 
 #include <media-io/audio-io.h>
@@ -279,6 +280,21 @@ static void sr_event_output_tick(void *data, float seconds)
 		obs_source_media_ended(output->self);
 }
 
+static void sr_event_output_deactivate(void *data)
+{
+	struct sr_event_output *output = data;
+	if (!output)
+		return;
+
+	/* Keep the bus alive through an OUT transition so OBS can crossfade its
+	 * replay audio/video naturally. Deactivation happens when the transition
+	 * has finished and is also the safety net for an operator cutting away
+	 * manually instead of pressing RETURN LIVE. */
+	reset_audio_transport(output);
+	sr_replay_channel_stop(output->bus);
+	sr_scene_tracker_end_replay_guard();
+}
+
 static obs_properties_t *sr_event_output_properties(void *unused)
 {
 	UNUSED_PARAMETER(unused);
@@ -332,6 +348,7 @@ struct obs_source_info sr_event_output_info = {
 	.create = sr_event_output_create,
 	.destroy = sr_event_output_destroy,
 	.update = sr_event_output_update,
+	.deactivate = sr_event_output_deactivate,
 	.get_defaults = sr_event_output_defaults,
 	.get_properties = sr_event_output_properties,
 	.video_tick = sr_event_output_tick,

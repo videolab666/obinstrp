@@ -146,8 +146,9 @@ bool sr_replay_take_return(struct sr_event_controller *events)
 	if (!target)
 		return false;
 
-	sr_replay_channel_stop(SR_REPLAY_BUS_A);
-	sr_replay_channel_stop(SR_REPLAY_BUS_B);
+	/* Do not stop the replay bus before the OUT stinger: the native OBS
+	 * transition must still be able to mix the replay picture/audio. The Event
+	 * Output deactivation stops the bus once it has actually left program. */
 	sr_scene_tracker_end_replay_guard();
 
 	char *take_out = sr_config_get_take_out_transition();
