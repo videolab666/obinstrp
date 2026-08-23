@@ -10,7 +10,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-storage-cleanup.h"
 
-#include "sr-event-controller.h"
+#include "sr-event-db.h"
 #include "sr-segment-reader.h"
 #include "sr-session.h"
 
@@ -77,7 +77,7 @@ static bool segment_range(const char *segment_path, const char *index_path, uint
 	return ok;
 }
 
-static void cleanup_camera_dir(struct sr_event_controller *events, const char *camera_dir, uint64_t range_in_ns,
+static void cleanup_camera_dir(struct sr_event_db *events, const char *camera_dir, uint64_t range_in_ns,
 			       uint64_t range_out_ns, struct sr_storage_cleanup_result *result)
 {
 	char *pattern = join_path(camera_dir, "*.srseg");
@@ -122,7 +122,7 @@ static void cleanup_camera_dir(struct sr_event_controller *events, const char *c
 		}
 
 		bool pinned = true;
-		if (!sr_event_controller_has_event_overlap(events, start_ns, end_ns, &pinned)) {
+		if (!sr_event_db_has_event_overlap(events, start_ns, end_ns, &pinned)) {
 			/* Database uncertainty must keep media, never delete it. */
 			result->errors++;
 			bfree(index_path);
@@ -150,8 +150,8 @@ static void cleanup_camera_dir(struct sr_event_controller *events, const char *c
 	os_globfree(glob);
 }
 
-bool sr_storage_delete_unreferenced_range(struct sr_event_controller *events, uint64_t range_in_ns,
-					  uint64_t range_out_ns, struct sr_storage_cleanup_result *result)
+bool sr_storage_delete_unreferenced_range(struct sr_event_db *events, uint64_t range_in_ns, uint64_t range_out_ns,
+					  struct sr_storage_cleanup_result *result)
 {
 	if (!events || range_out_ns < range_in_ns)
 		return false;
