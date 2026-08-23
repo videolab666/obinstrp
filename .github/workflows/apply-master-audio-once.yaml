@@ -1,0 +1,64 @@
+name: One-shot master replay audio integration
+
+on:
+  push:
+    branches:
+      - feature/disk-replay-core
+    paths:
+      - '.github/workflows/apply-master-audio-once.yaml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/disk-replay-core
+          fetch-depth: 0
+
+      - name: Apply integration
+        run: python3 .github/scripts/apply_master_audio_foundation.py
+
+      - name: Install formatters
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install --quiet zsh
+          brew tap obsproject/tools
+          brew install --quiet obsproject/tools/clang-format@19 obsproject/tools/gersemi
+          echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> "$GITHUB_PATH"
+          echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> "$GITHUB_PATH"
+
+      - name: Format changed sources
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          ./build-aux/run-clang-format \
+            src/sr-audio-format.h \
+            src/sr-master-audio.c \
+            src/sr-master-audio.h \
+            src/capture-filter.c \
+            src/plugin-main.c
+          ./build-aux/run-gersemi CMakeLists.txt
+
+      - name: Commit integration
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            CMakeLists.txt \
+            src/sr-audio-format.h \
+            src/sr-master-audio.c \
+            src/sr-master-audio.h \
+            src/capture-filter.c \
+            src/plugin-main.c
+          if git diff --cached --quiet; then
+            echo "Nothing to change"
+            exit 0
+          fi
+          git commit -m "feat: add master replay AAC recording foundation"
+          git push origin HEAD:feature/disk-replay-core
