@@ -44,6 +44,11 @@ bool sr_disk_player_get_bounds(const struct sr_disk_player *player, uint64_t *fi
 bool sr_disk_player_decode_at(struct sr_disk_player *player, uint64_t target_ns, AVFrame **frame,
 			      uint64_t *actual_timestamp_ns);
 
+/* Finds the timestamp of the immediately adjacent indexed frame without
+ * disturbing the persistent decoder state. direction must be -1 or +1. */
+bool sr_disk_player_neighbor_timestamp(struct sr_disk_player *player, uint64_t current_ns, int direction,
+				       uint64_t *timestamp_ns);
+
 #ifdef __cplusplus
 }
 #endif

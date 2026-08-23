@@ -227,6 +227,10 @@ public:
 		auto *playPause = new QPushButton(T("EventDock.PlayPause"), this);
 		auto *stop = new QPushButton(T("EventDock.Stop"), this);
 		auto *restart = new QPushButton(T("EventDock.Restart"), this);
+		auto *prevFrame = new QPushButton(T("EventDock.PrevFrame"), this);
+		auto *nextFrame = new QPushButton(T("EventDock.NextFrame"), this);
+		prevFrame->setToolTip(T("EventDock.PrevFrame.Tooltip"));
+		nextFrame->setToolTip(T("EventDock.NextFrame.Tooltip"));
 		reverseButton = new QPushButton(T("EventDock.Reverse"), this);
 		reverseButton->setCheckable(true);
 		loopButton = new QPushButton(T("EventDock.Loop"), this);
@@ -234,6 +238,8 @@ public:
 		cueBar->addWidget(playPause);
 		cueBar->addWidget(stop);
 		cueBar->addWidget(restart);
+		cueBar->addWidget(prevFrame);
+		cueBar->addWidget(nextFrame);
 		cueBar->addWidget(reverseButton);
 		cueBar->addWidget(loopButton);
 		speedCombo = new QComboBox(this);
@@ -294,6 +300,8 @@ public:
 		connect(playPause, &QPushButton::clicked, this, [this]() { togglePlayPause(); });
 		connect(stop, &QPushButton::clicked, this, [this]() { stopTransport(); });
 		connect(restart, &QPushButton::clicked, this, [this]() { restartTransport(); });
+		connect(prevFrame, &QPushButton::clicked, this, [this]() { stepFrame(-1); });
+		connect(nextFrame, &QPushButton::clicked, this, [this]() { stepFrame(1); });
 		connect(reverseButton, &QPushButton::clicked, this,
 			[this](bool checked) { sr_replay_channel_set_backward(transportBus(), checked); });
 		connect(loopButton, &QPushButton::clicked, this,
@@ -483,6 +491,15 @@ private:
 	void restartTransport()
 	{
 		sr_replay_channel_restart(transportBus());
+		refreshTransportStatus();
+	}
+
+	void stepFrame(int direction)
+	{
+		if (!sr_replay_channel_step_frames(transportBus(), direction)) {
+			setStatus("EventDock.FrameStepFailed");
+			return;
+		}
 		refreshTransportStatus();
 	}
 

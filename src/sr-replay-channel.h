@@ -78,6 +78,7 @@ bool sr_replay_channel_set_backward(enum sr_replay_bus bus, bool backward);
 bool sr_replay_channel_set_loop(enum sr_replay_bus bus, bool loop);
 bool sr_replay_channel_seek(enum sr_replay_bus bus, uint64_t timestamp_ns);
 bool sr_replay_channel_seek_relative(enum sr_replay_bus bus, int64_t delta_ns);
+bool sr_replay_channel_step_frames(enum sr_replay_bus bus, int frames);
 
 bool sr_replay_channel_get_state(enum sr_replay_bus bus, struct sr_replay_channel_state *state);
 

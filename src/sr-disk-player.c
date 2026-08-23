@@ -345,3 +345,92 @@ bool sr_disk_player_decode_at(struct sr_disk_player *p, uint64_t target_ns, AVFr
 
 	return output_current_clone(p, frame, actual_timestamp_ns);
 }
+
+static bool segment_neighbor_timestamp(const struct sr_segment_descriptor *segment, uint64_t current_ns, int direction,
+				       uint64_t *timestamp_ns)
+{
+	struct sr_segment_reader *reader = sr_segment_reader_open(segment->segment_path, segment->index_path);
+	if (!reader)
+		return false;
+	if (segment->active)
+		sr_segment_reader_refresh_index(reader);
+
+	const size_t count = sr_segment_reader_entry_count(reader);
+	bool found = false;
+	if (count) {
+		if (direction > 0) {
+			struct sr_index_entry first;
+			if (sr_segment_reader_entry_at(reader, 0, &first) && first.timestamp_ns > current_ns) {
+				*timestamp_ns = first.timestamp_ns;
+				found = true;
+			} else {
+				size_t pos = 0;
+				if (sr_segment_reader_find_position(reader, current_ns, false, &pos, NULL)) {
+					for (size_t i = pos + 1; i < count; i++) {
+						struct sr_index_entry entry;
+						if (sr_segment_reader_entry_at(reader, i, &entry) &&
+						    entry.timestamp_ns > current_ns) {
+							*timestamp_ns = entry.timestamp_ns;
+							found = true;
+							break;
+						}
+					}
+				}
+			}
+		} else {
+			struct sr_index_entry last;
+			if (sr_segment_reader_entry_at(reader, count - 1, &last) && last.timestamp_ns < current_ns) {
+				*timestamp_ns = last.timestamp_ns;
+				found = true;
+			} else {
+				size_t pos = 0;
+				struct sr_index_entry entry;
+				if (sr_segment_reader_find_position(reader, current_ns, false, &pos, &entry)) {
+					if (entry.timestamp_ns < current_ns) {
+						*timestamp_ns = entry.timestamp_ns;
+						found = true;
+					} else {
+						while (pos > 0) {
+							pos--;
+							if (sr_segment_reader_entry_at(reader, pos, &entry) &&
+							    entry.timestamp_ns < current_ns) {
+								*timestamp_ns = entry.timestamp_ns;
+								found = true;
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	sr_segment_reader_close(reader);
+	return found;
+}
+
+bool sr_disk_player_neighbor_timestamp(struct sr_disk_player *p, uint64_t current_ns, int direction,
+				       uint64_t *timestamp_ns)
+{
+	if (!p || !timestamp_ns || (direction != -1 && direction != 1))
+		return false;
+	if (!sr_disk_player_refresh(p) || !p->segment_count)
+		return false;
+
+	if (direction > 0) {
+		for (size_t i = 0; i < p->segment_count; i++) {
+			if (p->segments[i].end_ns <= current_ns)
+				continue;
+			if (segment_neighbor_timestamp(&p->segments[i], current_ns, direction, timestamp_ns))
+				return true;
+		}
+	} else {
+		for (size_t i = p->segment_count; i > 0; i--) {
+			if (p->segments[i - 1].start_ns >= current_ns)
+				continue;
+			if (segment_neighbor_timestamp(&p->segments[i - 1], current_ns, direction, timestamp_ns))
+				return true;
+		}
+	}
+	return false;
+}

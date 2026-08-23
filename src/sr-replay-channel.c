@@ -478,6 +478,46 @@ bool sr_replay_channel_seek_relative(enum sr_replay_bus bus, int64_t delta_ns)
 	return true;
 }
 
+bool sr_replay_channel_step_frames(enum sr_replay_bus bus, int frames)
+{
+	struct sr_replay_channel *channel = get_bus(bus);
+	if (!channel || !frames)
+		return false;
+	if (frames > 1000)
+		frames = 1000;
+	if (frames < -1000)
+		frames = -1000;
+
+	const int direction = frames > 0 ? 1 : -1;
+	unsigned remaining = frames > 0 ? (unsigned)frames : (unsigned)(-frames);
+	bool moved = false;
+
+	pthread_mutex_lock(&channel->mutex);
+	if (!channel->cued || !channel->player) {
+		pthread_mutex_unlock(&channel->mutex);
+		return false;
+	}
+
+	while (remaining--) {
+		uint64_t adjacent = 0;
+		if (!sr_disk_player_neighbor_timestamp(channel->player, channel->playhead_ns, direction, &adjacent))
+			break;
+		if (adjacent < channel->in_ns || adjacent > channel->out_ns)
+			break;
+		channel->playhead_ns = adjacent;
+		moved = true;
+	}
+
+	if (moved) {
+		channel->playing = true;
+		channel->paused = true;
+		channel->last_clock_ns = 0;
+		channel->need_frame = true;
+	}
+	pthread_mutex_unlock(&channel->mutex);
+	return moved;
+}
+
 bool sr_replay_channel_get_state(enum sr_replay_bus bus, struct sr_replay_channel_state *state)
 {
 	struct sr_replay_channel *channel = get_bus(bus);
