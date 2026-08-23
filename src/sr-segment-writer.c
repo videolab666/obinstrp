@@ -378,9 +378,9 @@ static bool write_video_packet(struct sr_segment_writer *w, struct sr_writer_pac
 
 	stats_add_write(w, sizeof(ph) + (uint64_t)node->pkt->size + sizeof(ie));
 
-	/* Make the active .part reasonably current for the future live reader
-	 * without flushing every frame. With the current All-I encoder this is
-	 * approximately twice per second; with short GOP it follows keyframes. */
+	/* Make the active .part reasonably current for the live reader without
+	 * flushing every frame. Flush at most twice per second and only on a
+	 * keyframe, so the visible index always advances at a safe decode point. */
 	if (node->keyframe && node->timestamp_ns - w->last_flush_ns >= 500000000ULL) {
 		fflush(w->segment_file);
 		fflush(w->index_file);

@@ -29,9 +29,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 extern "C" {
 #endif
 
-/* One encoded video frame kept in the ring buffer. pkt->flags preserves the
- * encoder's keyframe marker so short-GOP replay can seek from the preceding
- * IDR instead of assuming every packet is independently decodable. */
+/* One encoded video frame kept in the ring buffer. AV_PKT_FLAG_KEY marks
+ * frames that can seed an independent decode chain. */
 struct sr_packet {
 	AVPacket *pkt;
 	uint64_t ts; /* OBS timestamp in nanoseconds */

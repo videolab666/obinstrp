@@ -22,6 +22,7 @@ the Free Software Foundation; either version 2 of the License, or
 #define S_DURATION "duration_ms"
 #define S_ENCODER "encoder"
 #define S_QUALITY "quality"
+#define S_GOP "gop_ms"
 #define S_DISK_RECORDING "disk_recording"
 
 struct sr_capture {
@@ -32,6 +33,7 @@ struct sr_capture {
 
 	enum sr_encoder_backend backend;
 	int qp;
+	uint32_t gop_ms;
 	bool disk_recording;
 	bool writer_failed;
 
@@ -72,11 +74,15 @@ static void sr_capture_update(void *data, obs_data_t *settings)
 
 	const enum sr_encoder_backend backend = (enum sr_encoder_backend)obs_data_get_int(settings, S_ENCODER);
 	const int qp = (int)obs_data_get_int(settings, S_QUALITY);
+	uint32_t gop_ms = (uint32_t)obs_data_get_int(settings, S_GOP);
+	if (gop_ms != SR_GOP_ALL_I && gop_ms != SR_GOP_250MS && gop_ms != SR_GOP_500MS && gop_ms != SR_GOP_1000MS)
+		gop_ms = SR_GOP_500MS;
 	const bool disk_recording = obs_data_get_bool(settings, S_DISK_RECORDING);
 
-	if (backend != c->backend || qp != c->qp) {
+	if (backend != c->backend || qp != c->qp || gop_ms != c->gop_ms) {
 		c->backend = backend;
 		c->qp = qp;
+		c->gop_ms = gop_ms;
 		c->reset_encoder = true;
 		c->encoder_failed = false;
 		c->writer_failed = false;
@@ -98,6 +104,7 @@ static void *sr_capture_create(obs_data_t *settings, obs_source_t *source)
 	sr_buffer_init(&c->buffer);
 	c->backend = SR_ENC_AUTO;
 	c->qp = 23;
+	c->gop_ms = SR_GOP_500MS;
 	sr_capture_update(c, settings);
 	return c;
 }
@@ -206,8 +213,8 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 		return frame;
 
 	if (!c->encoder) {
-		c->encoder =
-			sr_encoder_create(frame->width, frame->height, ovi.fps_num, ovi.fps_den, c->backend, c->qp);
+		c->encoder = sr_encoder_create(frame->width, frame->height, ovi.fps_num, ovi.fps_den, c->backend, c->qp,
+					       c->gop_ms);
 		if (!c->encoder) {
 			obs_log(LOG_ERROR, "'%s': no H.264 encoder available, replay capture disabled",
 				obs_source_get_name(c->self));
@@ -292,6 +299,13 @@ static obs_properties_t *sr_capture_properties(void *unused)
 	obs_property_list_add_int(p, obs_module_text("Quality.Medium"), 23);
 	obs_property_list_add_int(p, obs_module_text("Quality.Low"), 28);
 
+	p = obs_properties_add_list(props, S_GOP, obs_module_text("GOP"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("GOP.AllI"), SR_GOP_ALL_I);
+	obs_property_list_add_int(p, obs_module_text("GOP.Ultra"), SR_GOP_250MS);
+	obs_property_list_add_int(p, obs_module_text("GOP.Balanced"), SR_GOP_500MS);
+	obs_property_list_add_int(p, obs_module_text("GOP.Economy"), SR_GOP_1000MS);
+	obs_property_set_long_description(p, obs_module_text("GOP.Description"));
+
 	p = obs_properties_add_bool(props, S_DISK_RECORDING, obs_module_text("DiskRecording"));
 	obs_property_set_long_description(p, obs_module_text("DiskRecording.Description"));
 
@@ -306,6 +320,7 @@ static void sr_capture_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_DURATION, 15000);
 	obs_data_set_default_int(settings, S_ENCODER, SR_ENC_AUTO);
 	obs_data_set_default_int(settings, S_QUALITY, 23);
+	obs_data_set_default_int(settings, S_GOP, SR_GOP_500MS);
 	/* Keep new continuous recording opt-in while the disk engine is still
 	 * running in parallel with the proven legacy replay buffer. */
 	obs_data_set_default_bool(settings, S_DISK_RECORDING, false);
