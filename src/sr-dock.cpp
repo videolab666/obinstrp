@@ -32,6 +32,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QWidget>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -275,6 +276,54 @@ private:
 		row->addWidget(browse);
 		lay->addLayout(row);
 
+		char *sessionRootRaw = sr_config_get_session_root();
+		const QString sessionRoot = QString::fromUtf8(sessionRootRaw ? sessionRootRaw : "");
+		bfree(sessionRootRaw);
+
+		lay->addWidget(new QLabel(T("Dock.SessionFolder"), &dlg));
+		auto *sessionRow = new QHBoxLayout();
+		auto *sessionEdit = new QLineEdit(sessionRoot, &dlg);
+		sessionEdit->setReadOnly(true);
+		auto *sessionBrowse = new QPushButton(QStringLiteral("..."), &dlg);
+		sessionBrowse->setMaximumWidth(36);
+		sessionRow->addWidget(sessionEdit, 1);
+		sessionRow->addWidget(sessionBrowse);
+		lay->addLayout(sessionRow);
+
+		const double gib = 1024.0 * 1024.0 * 1024.0;
+		auto *minFree = new QDoubleSpinBox(&dlg);
+		minFree->setRange(1.0, 10000.0);
+		minFree->setDecimals(1);
+		minFree->setSingleStep(10.0);
+		minFree->setSuffix(QStringLiteral(" GB"));
+		minFree->setValue((double)sr_config_get_min_free_bytes() / gib);
+		lay->addWidget(new QLabel(T("Dock.MinFree"), &dlg));
+		lay->addWidget(minFree);
+
+		auto *segmentSeconds = new QDoubleSpinBox(&dlg);
+		segmentSeconds->setRange(1.0, 60.0);
+		segmentSeconds->setDecimals(1);
+		segmentSeconds->setSingleStep(0.5);
+		segmentSeconds->setSuffix(QStringLiteral(" s"));
+		segmentSeconds->setValue((double)sr_config_get_segment_duration_ms() / 1000.0);
+		lay->addWidget(new QLabel(T("Dock.SegmentDuration"), &dlg));
+		lay->addWidget(segmentSeconds);
+
+		auto *freeSpace = new QLabel(&dlg);
+		freeSpace->setStyleSheet(QStringLiteral("color: gray;"));
+		lay->addWidget(freeSpace);
+		auto updateFreeSpace = [sessionEdit, freeSpace, gib]() {
+			const QByteArray path = sessionEdit->text().toUtf8();
+			const uint64_t bytes = path.isEmpty() ? 0 : os_get_free_disk_space(path.constData());
+			freeSpace->setText(T("Dock.FreeSpace").arg((double)bytes / gib, 0, 'f', 1));
+		};
+		updateFreeSpace();
+
+		auto *restartHint = new QLabel(T("Dock.StorageRestartHint"), &dlg);
+		restartHint->setWordWrap(true);
+		restartHint->setStyleSheet(QStringLiteral("color: gray;"));
+		lay->addWidget(restartHint);
+
 		auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
 
 		auto *footer = new QHBoxLayout();
@@ -288,6 +337,14 @@ private:
 			if (!picked.isEmpty())
 				edit->setText(picked);
 		});
+		connect(sessionBrowse, &QPushButton::clicked, &dlg, [&]() {
+			QString picked = QFileDialog::getExistingDirectory(&dlg, T("Dock.PickSessionFolder"),
+									   sessionEdit->text());
+			if (!picked.isEmpty()) {
+				sessionEdit->setText(picked);
+				updateFreeSpace();
+			}
+		});
 		connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
 		connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
@@ -295,6 +352,12 @@ private:
 			currentFolder = edit->text();
 			QByteArray f = currentFolder.toUtf8();
 			sr_config_set_save_dir(f.constData());
+
+			const QByteArray sessionPath = sessionEdit->text().toUtf8();
+			sr_config_set_session_root(sessionPath.constData());
+			sr_config_set_min_free_bytes((uint64_t)(minFree->value() * gib));
+			sr_config_set_segment_duration_ms((uint32_t)(segmentSeconds->value() * 1000.0));
+
 			watchFolder();
 			refreshList();
 		}
