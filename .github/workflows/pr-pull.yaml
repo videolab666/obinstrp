@@ -8,11 +8,49 @@ on:
     branches: [master, main]
     types: [ opened, synchronize, reopened ]
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
   cancel-in-progress: true
 jobs:
+  format-logger-fix:
+    name: Format logger fix
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'feature/disk-replay-core'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/disk-replay-core
+          fetch-depth: 0
+      - name: Install clang-format
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install --quiet zsh
+          brew tap obsproject/tools
+          brew install --quiet obsproject/tools/clang-format@19
+          echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> "$GITHUB_PATH"
+          echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> "$GITHUB_PATH"
+      - name: Format disk core
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          ./build-aux/run-clang-format src/sr-segment-writer.c src/sr-segment-reader.c src/sr-disk-player.c
+      - name: Commit formatter output
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "Nothing to format"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/sr-segment-writer.c src/sr-segment-reader.c src/sr-disk-player.c
+          git commit -m "style: format logger compatibility changes"
+          git push origin HEAD:feature/disk-replay-core
+
   check-format:
     name: Check Formatting 🔍
     uses: ./.github/workflows/check-format.yaml
