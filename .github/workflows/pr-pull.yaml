@@ -8,73 +8,11 @@ on:
     branches: [master, main]
     types: [ opened, synchronize, reopened ]
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
   cancel-in-progress: true
 jobs:
-  migrate-short-gop:
-    name: Apply short-GOP migration
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'feature/disk-replay-core'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/disk-replay-core
-          fetch-depth: 0
-      - name: Normalize already-modernized buffer comment
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('src/sr-buffer.h')
-          text = p.read_text(encoding='utf-8')
-          current = '''/* One encoded video frame kept in the ring buffer. pkt->flags preserves the
-           * encoder's keyframe marker so short-GOP replay can seek from the preceding
-           * IDR instead of assuming every packet is independently decodable. */'''
-          legacy = '''/* One encoded video frame kept in the ring buffer. Because every frame is
-           * encoded as an intra frame, any packet can be decoded on its own. */'''
-          if current in text:
-              text = text.replace(current, legacy, 1)
-              p.write_text(text, encoding='utf-8')
-          PY
-      - name: Apply migration
-        shell: bash
-        run: python3 build-aux/apply-short-gop.py
-      - name: Install clang-format
-        shell: bash
-        run: |
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          brew install --quiet zsh
-          brew tap obsproject/tools
-          brew install --quiet obsproject/tools/clang-format@19
-          echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> "$GITHUB_PATH"
-          echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> "$GITHUB_PATH"
-      - name: Format changed C sources
-        shell: bash
-        run: |
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          ./build-aux/run-clang-format \
-            src/sr-codec.c \
-            src/sr-codec.h \
-            src/capture-filter.c \
-            src/sr-buffer.h \
-            src/sr-segment-writer.c
-      - name: Commit migration
-        shell: bash
-        run: |
-          if git diff --quiet; then
-            echo "Nothing to change"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src data/locale
-          git commit -m "feat: add short-GOP replay encoder presets"
-          git push origin HEAD:feature/disk-replay-core
-
   check-format:
     name: Check Formatting 🔍
     uses: ./.github/workflows/check-format.yaml
