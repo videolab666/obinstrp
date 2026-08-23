@@ -16,6 +16,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-capture.h"
 #include "sr-credit.h"
 #include "sr-config.h"
+#include "sr-master-audio.h"
 #include "sr-session.h"
 #include "sr-segment-writer.h"
 
@@ -36,6 +37,7 @@ struct sr_capture {
 	uint32_t gop_ms;
 	bool disk_recording;
 	bool writer_failed;
+	bool master_audio_acquired;
 
 	/* format the current encoder was opened with */
 	uint32_t enc_width;
@@ -60,10 +62,14 @@ static const char *sr_capture_get_name(void *unused)
 
 static void destroy_writer(struct sr_capture *c)
 {
-	if (!c->writer)
-		return;
-	sr_segment_writer_destroy(c->writer);
-	c->writer = NULL;
+	if (c->writer) {
+		sr_segment_writer_destroy(c->writer);
+		c->writer = NULL;
+	}
+	if (c->master_audio_acquired) {
+		sr_master_audio_release();
+		c->master_audio_acquired = false;
+	}
 }
 
 static void sr_capture_update(void *data, obs_data_t *settings)
@@ -162,6 +168,15 @@ static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi
 		c->writer_failed = true;
 		obs_log(LOG_ERROR, "'%s': could not start continuous replay recorder", obs_source_get_name(c->self));
 		return false;
+	}
+
+	if (!c->master_audio_acquired) {
+		if (sr_master_audio_acquire())
+			c->master_audio_acquired = true;
+		else
+			obs_log(LOG_WARNING,
+				"'%s': continuous video is recording, but master replay audio could not start",
+				obs_source_get_name(c->self));
 	}
 	return true;
 }

@@ -92,6 +92,7 @@ target_sources(
     src/sr-save.c
     src/sr-load.c
     src/sr-config.c
+    src/sr-master-audio.c
     src/sr-session.c
     src/sr-event-db.c
     src/sr-event-controller.c

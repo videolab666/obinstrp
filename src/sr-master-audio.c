@@ -414,7 +414,8 @@ static bool submit_frame(struct sr_master_audio_state *state)
 	if (state->pending_frames < frame_samples) {
 		for (uint32_t channel = 0; channel < MASTER_AUDIO_CHANNELS; channel++) {
 			float *plane = (float *)state->frame->data[channel];
-			memset(plane + state->pending_frames, 0, (frame_samples - state->pending_frames) * sizeof(float));
+			memset(plane + state->pending_frames, 0,
+			       (frame_samples - state->pending_frames) * sizeof(float));
 		}
 	}
 
@@ -469,7 +470,8 @@ static bool encode_chunk(struct sr_master_audio_state *state, struct sr_master_a
 		const uint32_t capacity = (uint32_t)state->frame->nb_samples - state->pending_frames;
 		const uint32_t copy_frames = chunk->frames - offset < capacity ? chunk->frames - offset : capacity;
 		if (!state->pending_frames)
-			state->pending_start_ns = chunk->timestamp_ns + audio_frames_to_ns(MASTER_AUDIO_SAMPLE_RATE, offset);
+			state->pending_start_ns =
+				chunk->timestamp_ns + audio_frames_to_ns(MASTER_AUDIO_SAMPLE_RATE, offset);
 
 		for (uint32_t channel = 0; channel < MASTER_AUDIO_CHANNELS; channel++) {
 			float *dst = (float *)state->frame->data[channel] + state->pending_frames;
@@ -543,7 +545,8 @@ static void *audio_worker(void *param)
 		}
 
 		if (!state->encoder_failed_session && !encode_chunk(state, chunk)) {
-			blog(LOG_ERROR, "Sports Replay: master replay audio encode/write failure; dropping audio until recorder restarts");
+			blog(LOG_ERROR,
+			     "Sports Replay: master replay audio encode/write failure; dropping audio until recorder restarts");
 			state->encoder_failed_session = true;
 			stats_set_write_failed(state);
 		}
