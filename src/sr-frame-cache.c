@@ -141,32 +141,14 @@ bool sr_frame_cache_store(struct sr_frame_cache *cache, uint64_t key, const AVFr
 	if (!copy)
 		return false;
 
+	/* Remove an older copy first. remove_entry() is swap-with-last rather than
+	 * a shifting erase, so treating replacement as a fresh insertion avoids
+	 * fragile index bookkeeping while LRU eviction runs below. */
 	for (size_t i = 0; i < cache->count; i++) {
-		if (cache->entries[i].key != key)
-			continue;
-
-		if (cache->entries[i].bytes <= cache->bytes)
-			cache->bytes -= cache->entries[i].bytes;
-		else
-			cache->bytes = 0;
-		av_frame_free(&cache->entries[i].frame);
-
-		while (cache->count > 1 && cache->bytes + bytes > cache->max_bytes) {
-			size_t evict = lru_index(cache);
-			if (evict == i)
-				evict = (i == 0) ? 1 : 0;
-			remove_entry(cache, evict);
-			cache->evictions++;
-			if (evict < i)
-				i--;
+		if (cache->entries[i].key == key) {
+			remove_entry(cache, i);
+			break;
 		}
-
-		cache->entries[i].frame = copy;
-		cache->entries[i].bytes = bytes;
-		cache->entries[i].last_use = ++cache->clock;
-		cache->bytes += bytes;
-		cache->stores++;
-		return true;
 	}
 
 	while (cache->count && cache->bytes + bytes > cache->max_bytes) {
