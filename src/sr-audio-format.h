@@ -33,6 +33,7 @@ struct sr_audio_file_header {
 	uint32_t channels;
 	uint32_t bit_rate;
 	uint32_t flags;
+	uint32_t sequence;
 	uint64_t segment_start_ns;
 	uint32_t extradata_size;
 	uint32_t reserved;
@@ -50,7 +51,7 @@ struct sr_audio_packet_header {
 struct sr_audio_index_header {
 	char magic[8];
 	uint32_t version;
-	uint32_t reserved;
+	uint32_t sequence;
 	uint64_t segment_start_ns;
 };
 
@@ -63,12 +64,12 @@ struct sr_audio_index_entry {
 #pragma pack(pop)
 
 #ifdef __cplusplus
-static_assert(sizeof(struct sr_audio_file_header) == 48, "unexpected sr_audio_file_header layout");
+static_assert(sizeof(struct sr_audio_file_header) == 52, "unexpected sr_audio_file_header layout");
 static_assert(sizeof(struct sr_audio_packet_header) == 40, "unexpected sr_audio_packet_header layout");
 static_assert(sizeof(struct sr_audio_index_header) == 24, "unexpected sr_audio_index_header layout");
 static_assert(sizeof(struct sr_audio_index_entry) == 24, "unexpected sr_audio_index_entry layout");
 #else
-_Static_assert(sizeof(struct sr_audio_file_header) == 48, "unexpected sr_audio_file_header layout");
+_Static_assert(sizeof(struct sr_audio_file_header) == 52, "unexpected sr_audio_file_header layout");
 _Static_assert(sizeof(struct sr_audio_packet_header) == 40, "unexpected sr_audio_packet_header layout");
 _Static_assert(sizeof(struct sr_audio_index_header) == 24, "unexpected sr_audio_index_header layout");
 _Static_assert(sizeof(struct sr_audio_index_entry) == 24, "unexpected sr_audio_index_entry layout");
