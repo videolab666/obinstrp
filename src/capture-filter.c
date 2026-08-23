@@ -151,8 +151,8 @@ static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi
 		.extradata_size = extradata_size,
 		.target_segment_ms = sr_config_get_segment_duration_ms(),
 		.min_free_bytes = sr_config_get_low_space_action() == SR_STORAGE_LOW_SPACE_WARN_ONLY
-				  ? 0
-				  : sr_config_get_min_free_bytes(),
+					  ? 0
+					  : sr_config_get_min_free_bytes(),
 		.max_queue_packets = 600,
 	};
 

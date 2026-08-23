@@ -114,8 +114,7 @@ static bool segment_range(const char *segment_path, const char *index_path, uint
 }
 
 static bool delete_pair_if_unreferenced(struct sr_event_db *events, const char *segment_path, const char *index_path,
-					uint64_t start_ns, uint64_t end_ns,
-					struct sr_storage_cleanup_result *result)
+					uint64_t start_ns, uint64_t end_ns, struct sr_storage_cleanup_result *result)
 {
 	bool pinned = true;
 	sr_media_guard_lock();
@@ -336,7 +335,8 @@ static bool collect_gc_candidates(const char *session_dir, struct sr_gc_candidat
 					result->errors++;
 					continue;
 				}
-				append_gc_candidate(items, count, &capacity, segments->gl_pathv[i].path, index_path, result);
+				append_gc_candidate(items, count, &capacity, segments->gl_pathv[i].path, index_path,
+						    result);
 				bfree(index_path);
 			}
 			os_globfree(segments);
@@ -385,8 +385,8 @@ bool sr_storage_gc_reclaim_unreferenced(const char *session_dir, const char *vol
 	if (scan_ok) {
 		for (size_t i = 0; i < count && local.free_bytes_after < target_free_bytes; i++) {
 			local.segments_examined++;
-			delete_pair_if_unreferenced(events, items[i].segment_path, items[i].index_path, items[i].start_ns,
-						items[i].end_ns, &local);
+			delete_pair_if_unreferenced(events, items[i].segment_path, items[i].index_path,
+						    items[i].start_ns, items[i].end_ns, &local);
 			local.free_bytes_after = os_get_free_disk_space(volume_path);
 		}
 	} else {

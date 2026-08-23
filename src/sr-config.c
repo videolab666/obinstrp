@@ -116,7 +116,7 @@ void sr_config_init(void)
 		g_purge_target_bytes = g_min_free_bytes;
 
 	g_low_space_action = low_space_action >= SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED &&
-				     low_space_action <= SR_STORAGE_LOW_SPACE_WARN_ONLY
+					     low_space_action <= SR_STORAGE_LOW_SPACE_WARN_ONLY
 				     ? (enum sr_storage_low_space_action)low_space_action
 				     : SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED;
 
