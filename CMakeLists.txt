@@ -99,6 +99,7 @@ target_sources(
     src/sr-replay-channel.c
     src/sr-replay-take.c
     src/sr-event-output.c
+    src/sr-storage-cleanup.c
     src/sr-segment-writer.c
     src/sr-segment-reader.c
     src/sr-segment-catalog.c
