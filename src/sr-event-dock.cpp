@@ -10,6 +10,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-event-dock.h"
 
+#include "sr-camera-list.h"
 #include "sr-capture.h"
 #include "sr-event-controller.h"
 #include "sr-replay-channel.h"
@@ -82,34 +83,15 @@ QString replayClockText(uint64_t ns)
 		.arg(millis, 3, 10, QChar('0'));
 }
 
-struct camera_enum_ctx {
-	QStringList *names;
-};
-
-void enum_camera_filter(obs_source_t *parent, obs_source_t *child, void *param)
-{
-	auto *ctx = static_cast<camera_enum_ctx *>(param);
-	if (!ctx || !ctx->names || strcmp(obs_source_get_unversioned_id(child), SR_CAPTURE_ID) != 0)
-		return;
-
-	const QString name = QString::fromUtf8(obs_source_get_name(parent));
-	if (!name.isEmpty() && !ctx->names->contains(name))
-		ctx->names->append(name);
-}
-
-bool enum_camera_source(void *param, obs_source_t *source)
-{
-	obs_source_enum_filters(source, enum_camera_filter, param);
-	return true;
-}
-
 QStringList captureCameraNames()
 {
 	QStringList names;
-	camera_enum_ctx ctx;
-	ctx.names = &names;
-	obs_enum_sources(enum_camera_source, &ctx);
-	names.sort(Qt::CaseInsensitive);
+	sr_camera_list cameras = {};
+	if (!sr_camera_list_capture(&cameras))
+		return names;
+	for (size_t i = 0; i < cameras.count; i++)
+		names.append(QString::fromUtf8(cameras.names[i]));
+	sr_camera_list_free(&cameras);
 	return names;
 }
 
@@ -572,6 +554,7 @@ private:
 						  .arg(eventSeconds, 0, 'f', 2);
 			}
 			button->setText(QStringLiteral("%1 %2").arg(marker, camera));
+			button->setProperty("coverageTooltip", tooltip);
 			button->setToolTip(tooltip);
 		}
 
@@ -597,6 +580,7 @@ private:
 						(state.playhead_ns >= playableIn && state.playhead_ns <= playableOut);
 			button->setEnabled(eventId && coverage != SR_REPLAY_COVERAGE_NONE && atPlayhead);
 			button->setChecked(sameEvent && activeCamera == camera);
+			button->setToolTip(button->property("coverageTooltip").toString());
 			if (sameEvent && coverage != SR_REPLAY_COVERAGE_NONE && !atPlayhead)
 				button->setToolTip(T("EventDock.AngleUnavailable").arg(camera));
 		}

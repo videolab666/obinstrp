@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-module.h>
 #include <plugin-support.h>
 
+#include "sr-camera-list.h"
 #include "sr-config.h"
 #include "sr-dock.h"
 #include "sr-event-controller.h"
@@ -31,6 +32,7 @@ extern struct obs_source_info sr_playback_info;
 extern struct obs_source_info sr_event_output_info;
 
 #define NS_PER_SECOND 1000000000ULL
+#define SR_ANGLE_HOTKEY_COUNT 8u
 
 static struct sr_event_controller *event_controller;
 static obs_hotkey_id hk_event_in = OBS_INVALID_HOTKEY_ID;
@@ -42,6 +44,7 @@ static obs_hotkey_id hk_take_a = OBS_INVALID_HOTKEY_ID;
 static obs_hotkey_id hk_take_b = OBS_INVALID_HOTKEY_ID;
 static obs_hotkey_id hk_take_toggle = OBS_INVALID_HOTKEY_ID;
 static obs_hotkey_id hk_return_live = OBS_INVALID_HOTKEY_ID;
+static obs_hotkey_id hk_angles[SR_ANGLE_HOTKEY_COUNT];
 
 static void log_created_event(const char *action, uint64_t event_id)
 {
@@ -159,6 +162,43 @@ static void return_live_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, b
 		obs_log(LOG_WARNING, "Sports Replay: RETURN LIVE failed");
 }
 
+static void angle_hotkey_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+
+	const size_t index = (size_t)(uintptr_t)data;
+	if (index >= SR_ANGLE_HOTKEY_COUNT)
+		return;
+
+	enum sr_replay_bus bus;
+	if (!sr_replay_take_current_bus(&bus)) {
+		obs_log(LOG_WARNING, "Sports Replay: angle %zu hotkey ignored: no replay bus is cued", index + 1);
+		return;
+	}
+
+	struct sr_camera_list cameras = {0};
+	if (!sr_camera_list_capture(&cameras)) {
+		obs_log(LOG_WARNING, "Sports Replay: angle %zu hotkey could not enumerate replay cameras", index + 1);
+		return;
+	}
+	if (index >= cameras.count) {
+		obs_log(LOG_WARNING, "Sports Replay: angle %zu hotkey ignored: only %zu replay camera(s) are available",
+			index + 1, cameras.count);
+		sr_camera_list_free(&cameras);
+		return;
+	}
+
+	const char *camera = cameras.names[index];
+	if (!sr_replay_channel_switch_camera(bus, camera))
+		obs_log(LOG_WARNING,
+			"Sports Replay: bus %c could not switch to angle %zu ('%s') at the current playhead",
+			bus == SR_REPLAY_BUS_A ? 'A' : 'B', index + 1, camera);
+	sr_camera_list_free(&cameras);
+}
+
 static void register_event_hotkeys(void)
 {
 	hk_event_in = obs_hotkey_register_frontend("SportsReplay.EventIn", obs_module_text("Hotkey.EventIn"),
@@ -179,6 +219,18 @@ static void register_event_hotkeys(void)
 						      take_toggle_cb, NULL);
 	hk_return_live = obs_hotkey_register_frontend("SportsReplay.ReturnLive", obs_module_text("Hotkey.ReturnLive"),
 						      return_live_cb, NULL);
+
+	static const char *const angle_ids[SR_ANGLE_HOTKEY_COUNT] = {
+		"SportsReplay.Angle1", "SportsReplay.Angle2", "SportsReplay.Angle3", "SportsReplay.Angle4",
+		"SportsReplay.Angle5", "SportsReplay.Angle6", "SportsReplay.Angle7", "SportsReplay.Angle8",
+	};
+	static const char *const angle_text[SR_ANGLE_HOTKEY_COUNT] = {
+		"Hotkey.Angle1", "Hotkey.Angle2", "Hotkey.Angle3", "Hotkey.Angle4",
+		"Hotkey.Angle5", "Hotkey.Angle6", "Hotkey.Angle7", "Hotkey.Angle8",
+	};
+	for (size_t i = 0; i < SR_ANGLE_HOTKEY_COUNT; i++)
+		hk_angles[i] = obs_hotkey_register_frontend(angle_ids[i], obs_module_text(angle_text[i]),
+							    angle_hotkey_cb, (void *)(uintptr_t)i);
 }
 
 static void unregister_event_hotkeys(void)
@@ -201,6 +253,11 @@ static void unregister_event_hotkeys(void)
 		obs_hotkey_unregister(hk_take_toggle);
 	if (hk_return_live != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(hk_return_live);
+	for (size_t i = 0; i < SR_ANGLE_HOTKEY_COUNT; i++) {
+		if (hk_angles[i] != OBS_INVALID_HOTKEY_ID)
+			obs_hotkey_unregister(hk_angles[i]);
+		hk_angles[i] = OBS_INVALID_HOTKEY_ID;
+	}
 
 	hk_event_in = OBS_INVALID_HOTKEY_ID;
 	hk_event_out = OBS_INVALID_HOTKEY_ID;

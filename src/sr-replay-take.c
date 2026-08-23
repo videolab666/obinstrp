@@ -167,6 +167,43 @@ void sr_replay_take_reset(void)
 	g_return_scene = NULL;
 }
 
+bool sr_replay_take_current_bus(enum sr_replay_bus *bus)
+{
+	if (!bus)
+		return false;
+
+	char *scene_a = output_scene_name(SR_REPLAY_BUS_A);
+	char *scene_b = output_scene_name(SR_REPLAY_BUS_B);
+	obs_source_t *current = obs_frontend_get_current_scene();
+	const char *current_name = current ? obs_source_get_name(current) : NULL;
+
+	bool found = false;
+	if (current_name && scene_a && strcmp(current_name, scene_a) == 0) {
+		*bus = SR_REPLAY_BUS_A;
+		found = true;
+	} else if (current_name && scene_b && strcmp(current_name, scene_b) == 0) {
+		*bus = SR_REPLAY_BUS_B;
+		found = true;
+	} else {
+		struct sr_replay_channel_state a = {0};
+		struct sr_replay_channel_state b = {0};
+		const bool have_a = sr_replay_channel_get_state(SR_REPLAY_BUS_A, &a) && a.cued;
+		const bool have_b = sr_replay_channel_get_state(SR_REPLAY_BUS_B, &b) && b.cued;
+		if (have_a) {
+			*bus = SR_REPLAY_BUS_A;
+			found = true;
+		} else if (have_b) {
+			*bus = SR_REPLAY_BUS_B;
+			found = true;
+		}
+	}
+
+	obs_source_release(current);
+	bfree(scene_a);
+	bfree(scene_b);
+	return found;
+}
+
 bool sr_replay_take_toggle(struct sr_event_controller *events)
 {
 	if (!events)

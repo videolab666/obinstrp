@@ -226,6 +226,7 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 	uint64_t expected_event_id = 0;
 	uint64_t event_in_ns = 0;
 	uint64_t event_out_ns = 0;
+	uint64_t expected_playhead_ns = 0;
 
 	pthread_mutex_lock(&channel->mutex);
 	if (!channel->cued) {
@@ -239,6 +240,7 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 	expected_event_id = channel->event_id;
 	event_in_ns = channel->event_in_ns;
 	event_out_ns = channel->event_out_ns;
+	expected_playhead_ns = channel->playhead_ns;
 	pthread_mutex_unlock(&channel->mutex);
 
 	uint64_t first_ns = 0;
@@ -254,6 +256,27 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 
 	const uint64_t new_in_ns = event_in_ns < first_ns ? first_ns : event_in_ns;
 	const uint64_t new_out_ns = event_out_ns > last_ns ? last_ns : event_out_ns;
+	if (expected_playhead_ns < new_in_ns || expected_playhead_ns > new_out_ns) {
+		sr_disk_player_destroy(new_player);
+		return false;
+	}
+
+	/* Bounds alone are insufficient when a camera dropped packets or has an
+	 * internal recording gap. Decode the current target before swapping the
+	 * player so an on-air angle button can never replace a good frame with a
+	 * camera that cannot actually produce this playhead. The decode also warms
+	 * the new player's GOP/frame cache for the first rendered frame. */
+	AVFrame *probe_frame = NULL;
+	if (!sr_disk_player_decode_at(new_player, expected_playhead_ns, &probe_frame, NULL) || !probe_frame) {
+		av_frame_free(&probe_frame);
+		sr_disk_player_destroy(new_player);
+		blog(LOG_WARNING, "Sports Replay: rejected bus %c angle '%s': no decodable frame at %.3f s",
+		     bus == SR_REPLAY_BUS_A ? 'A' : 'B', camera_name,
+		     (double)(expected_playhead_ns - event_in_ns) / 1e9);
+		return false;
+	}
+	av_frame_free(&probe_frame);
+
 	char *new_camera_name = bstrdup(camera_name);
 	if (!new_camera_name) {
 		sr_disk_player_destroy(new_player);

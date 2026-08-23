@@ -25,6 +25,11 @@ struct sr_event_controller;
  * bus. The scene must already exist in the OBS scene collection. */
 bool sr_replay_take_bus(struct sr_event_controller *events, enum sr_replay_bus bus);
 
+/* Returns the replay bus currently on Program. Outside a replay scene,
+ * falls back to A when it is cued, otherwise B. Used by hardware angle
+ * hotkeys so one CAM1..CAM8 bank follows the active replay transport. */
+bool sr_replay_take_current_bus(enum sr_replay_bus *bus);
+
 /* If A is on program, TAKE B; if B is on program, TAKE A. Outside either
  * replay scene, prefer A when cued, otherwise B. */
 bool sr_replay_take_toggle(struct sr_event_controller *events);
