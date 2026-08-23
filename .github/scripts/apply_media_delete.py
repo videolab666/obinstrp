@@ -10,7 +10,8 @@ def insert_before(path: Path, marker: str, block: str, guard: str) -> None:
     path.write_text(text.replace(marker, block + marker, 1), encoding="utf-8")
 
 
-# EventDB: a tri-state-style overlap query (return status + overlap output).
+# EventDB: return status separately from the overlap output. Storage cleanup
+# must never interpret a SQLite failure as "unreferenced" media.
 db_path = Path("src/sr-event-db.c")
 db_block = r'''bool sr_event_db_has_event_overlap(struct sr_event_db *db, uint64_t start_ns, uint64_t end_ns, bool *overlap)
 {
@@ -48,8 +49,16 @@ insert_before(
     "bool sr_event_db_has_event_overlap(",
 )
 
-# Controller wrapper keeps SQLite ownership out of storage/UI code.
+# The controller owns the serialization boundary. It keeps its mutex held from
+# Event deletion through the storage scan, so another mark/hotkey/API call
+# cannot create a new Event pointing at a segment between overlap-check and
+# unlink.
 controller_path = Path("src/sr-event-controller.c")
+controller = controller_path.read_text(encoding="utf-8")
+if '#include "sr-storage-cleanup.h"' not in controller:
+    controller = controller.replace('#include "sr-session.h"\n', '#include "sr-session.h"\n#include "sr-storage-cleanup.h"\n', 1)
+    controller_path.write_text(controller, encoding="utf-8")
+
 controller_block = r'''bool sr_event_controller_has_event_overlap(struct sr_event_controller *controller, uint64_t start_ns,
                                            uint64_t end_ns, bool *overlap)
 {
@@ -63,15 +72,55 @@ controller_block = r'''bool sr_event_controller_has_event_overlap(struct sr_even
     return ok;
 }
 
+bool sr_event_controller_delete_event_with_media(struct sr_event_controller *controller, uint64_t event_id,
+                                                 struct sr_storage_cleanup_result *result)
+{
+    if (!controller || !event_id)
+        return false;
+
+    struct sr_storage_cleanup_result local = {0};
+    pthread_mutex_lock(&controller->mutex);
+    if (!ensure_db_locked(controller)) {
+        pthread_mutex_unlock(&controller->mutex);
+        return false;
+    }
+
+    struct sr_event_record event = {0};
+    if (!sr_event_db_get_event(controller->db, event_id, &event)) {
+        pthread_mutex_unlock(&controller->mutex);
+        return false;
+    }
+    if (event.protected_event) {
+        sr_event_record_free(&event);
+        pthread_mutex_unlock(&controller->mutex);
+        return false;
+    }
+
+    const uint64_t in_ns = event.in_ns;
+    const uint64_t out_ns = event.out_ns;
+    sr_event_record_free(&event);
+
+    const bool deleted = sr_event_db_delete_event(controller->db, event_id);
+    if (deleted && !sr_storage_delete_unreferenced_range(controller->db, in_ns, out_ns, &local))
+        local.errors++;
+
+    pthread_mutex_unlock(&controller->mutex);
+    if (result)
+        *result = local;
+    return deleted;
+}
+
 '''
 insert_before(
     controller_path,
     "void sr_event_controller_free_event(struct sr_event_record *event)\n",
     controller_block,
-    "bool sr_event_controller_has_event_overlap(",
+    "bool sr_event_controller_delete_event_with_media(",
 )
 
-# Event dock: separate destructive media action from metadata-only delete.
+# Event dock: keep metadata-only delete distinct from the destructive physical
+# cleanup path. The selected Event must be unprotected; if it is cued on A/B,
+# clear those readers before unlinking Windows files.
 dock_path = Path("src/sr-event-dock.cpp")
 dock = dock_path.read_text(encoding="utf-8")
 if '#include "sr-storage-cleanup.h"' not in dock:
@@ -102,57 +151,51 @@ if "\tvoid deleteSelected(bool deleteMedia)\n" not in dock:
 		if (!eventId)
 			return;
 
-		sr_event_record event = {};
-		if (!sr_event_controller_get_event(controller, eventId, &event)) {
-			setStatus("EventDock.Failed");
-			return;
-		}
-
-		if (deleteMedia && event.protected_event) {
-			sr_event_controller_free_event(&event);
-			setStatus("EventDock.ProtectedMedia");
-			return;
-		}
-
-		const char *confirmKey = deleteMedia ? "EventDock.DeleteMediaConfirm" : "EventDock.DeleteConfirm";
-		if (QMessageBox::question(this, T("EventDock.DeleteTitle"), T(confirmKey)) != QMessageBox::Yes) {
-			sr_event_controller_free_event(&event);
-			return;
-		}
-
-		const uint64_t inNs = event.in_ns;
-		const uint64_t outNs = event.out_ns;
-		sr_event_controller_free_event(&event);
-
 		if (deleteMedia) {
-			for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
-				sr_replay_channel_state state = {};
-				const auto bus = static_cast<sr_replay_bus>(i);
-				if (sr_replay_channel_get_state(bus, &state) && state.cued && state.event_id == eventId)
-					sr_replay_channel_clear(bus);
+			sr_event_record event = {};
+			if (!sr_event_controller_get_event(controller, eventId, &event)) {
+				setStatus("EventDock.Failed");
+				return;
+			}
+			const bool protectedEvent = event.protected_event;
+			sr_event_controller_free_event(&event);
+			if (protectedEvent) {
+				setStatus("EventDock.ProtectedMedia");
+				return;
 			}
 		}
 
-		if (!sr_event_controller_delete_event(controller, eventId)) {
-			setStatus("EventDock.Failed");
+		const char *confirmKey = deleteMedia ? "EventDock.DeleteMediaConfirm" : "EventDock.DeleteConfirm";
+		if (QMessageBox::question(this, T("EventDock.DeleteTitle"), T(confirmKey)) != QMessageBox::Yes)
 			return;
-		}
 
 		if (!deleteMedia) {
+			if (!sr_event_controller_delete_event(controller, eventId)) {
+				setStatus("EventDock.Failed");
+				return;
+			}
 			setStatus("EventDock.Deleted");
 			refresh();
 			return;
 		}
 
-		sr_storage_cleanup_result cleanup = {};
-		if (!sr_storage_delete_unreferenced_range(controller, inNs, outNs, &cleanup)) {
-			setStatus("EventDock.MediaCleanupFailed");
-		} else {
-			status->setText(T("EventDock.MediaDeleted")
-						.arg(cleanup.segments_deleted)
-						.arg(cleanup.segments_pinned)
-						.arg(cleanup.errors));
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			sr_replay_channel_state state = {};
+			const auto bus = static_cast<sr_replay_bus>(i);
+			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.event_id == eventId)
+				sr_replay_channel_clear(bus);
 		}
+
+		sr_storage_cleanup_result cleanup = {};
+		if (!sr_event_controller_delete_event_with_media(controller, eventId, &cleanup)) {
+			setStatus("EventDock.MediaCleanupFailed");
+			return;
+		}
+
+		status->setText(T("EventDock.MediaDeleted")
+					.arg(cleanup.segments_deleted)
+					.arg(cleanup.segments_pinned)
+					.arg(cleanup.errors));
 		refresh();
 	}
 '''
@@ -168,7 +211,7 @@ if "EventDock.DeleteMedia=" not in locale:
         'EventDock.DeleteMedia="Delete + Media"\n'
         'EventDock.DeleteMediaConfirm="Delete the selected Event and permanently remove finalized replay segment pairs that are wholly inside this Event and are not referenced by any other saved Event? Boundary segments, active recording files, and shared media are kept. This cannot be undone."\n'
         'EventDock.ProtectedMedia="Unprotect this Event before deleting its recorded media"\n'
-        'EventDock.MediaCleanupFailed="Event metadata was deleted, but replay media cleanup could not be completed"\n'
+        'EventDock.MediaCleanupFailed="Delete + Media could not be completed; check the OBS log before retrying"\n'
         'EventDock.MediaDeleted="Event deleted; removed %1 unreferenced segment(s), kept %2 shared segment(s), %3 cleanup error(s)"\n'
     )
     if anchor not in locale:
