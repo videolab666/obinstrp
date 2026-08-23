@@ -53,6 +53,11 @@ bool sr_event_controller_update_event(struct sr_event_controller *controller, ui
 bool sr_event_controller_delete_event(struct sr_event_controller *controller, uint64_t event_id);
 void sr_event_controller_free_event(struct sr_event_record *event);
 
+/* Storage safety query. On database failure this returns false; callers must
+ * treat that as pinned/unknown and keep media. */
+bool sr_event_controller_has_event_overlap(struct sr_event_controller *controller, uint64_t start_ns, uint64_t end_ns,
+					   bool *overlap);
+
 bool sr_event_controller_get_list_events(struct sr_event_controller *controller, unsigned list_id, uint64_t **event_ids,
 					 size_t *count);
 
