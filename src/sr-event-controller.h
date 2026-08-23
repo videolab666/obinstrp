@@ -10,7 +10,10 @@ the Free Software Foundation; either version 2 of the License, or
 
 #pragma once
 
+#include "sr-event-db.h"
+
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -40,6 +43,18 @@ bool sr_event_controller_mark_out(struct sr_event_controller *controller, uint64
  * that flag once recorded media reaches OUT. */
 bool sr_event_controller_quick_mark(struct sr_event_controller *controller, uint64_t now_ns, uint64_t pre_roll_ns,
 				    uint64_t post_roll_ns, uint64_t *event_id);
+
+/* CRUD is routed through the controller so the operator dock and future remote
+ * APIs never need to own or synchronize a SQLite connection themselves. */
+bool sr_event_controller_get_event(struct sr_event_controller *controller, uint64_t event_id,
+				   struct sr_event_record *event);
+bool sr_event_controller_update_event(struct sr_event_controller *controller, uint64_t event_id,
+				      const struct sr_event_write *event);
+bool sr_event_controller_delete_event(struct sr_event_controller *controller, uint64_t event_id);
+void sr_event_controller_free_event(struct sr_event_record *event);
+
+bool sr_event_controller_get_list_events(struct sr_event_controller *controller, unsigned list_id,
+					 uint64_t **event_ids, size_t *count);
 
 /* vMix-style list operations. Event media is never copied. */
 bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, uint64_t event_id, unsigned target_list,
