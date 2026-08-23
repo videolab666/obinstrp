@@ -293,20 +293,32 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 	if (channel->cued && channel->event_id == expected_event_id && channel->event_in_ns == event_in_ns &&
 	    channel->event_out_ns == event_out_ns && channel->playhead_ns >= new_in_ns &&
 	    channel->playhead_ns <= new_out_ns) {
-		switch_playhead_ns = channel->playhead_ns;
-		old_player = channel->player;
-		old_camera_name = channel->camera_name;
-		channel->player = new_player;
-		channel->camera_name = new_camera_name;
-		channel->in_ns = new_in_ns;
-		channel->out_ns = new_out_ns;
-		channel->width = 0;
-		channel->height = 0;
-		channel->partial_coverage = new_in_ns != event_in_ns || new_out_ns != event_out_ns;
-		partial = channel->partial_coverage;
-		channel->last_clock_ns = 0;
-		channel->need_frame = true;
-		switched = true;
+		/* The transport may have advanced while the candidate player was being
+		 * opened and warmed. Validate the exact commit-time playhead while the
+		 * channel mutex is held; this briefly stalls that bus, but guarantees an
+		 * on-air angle swap never commits a camera with an internal media gap at
+		 * the frame that will actually be rendered next. The first probe above
+		 * normally makes this second decode a cache hit or a tiny forward step. */
+		AVFrame *commit_probe = NULL;
+		const bool commit_ready =
+			sr_disk_player_decode_at(new_player, channel->playhead_ns, &commit_probe, NULL) && commit_probe;
+		av_frame_free(&commit_probe);
+		if (commit_ready) {
+			switch_playhead_ns = channel->playhead_ns;
+			old_player = channel->player;
+			old_camera_name = channel->camera_name;
+			channel->player = new_player;
+			channel->camera_name = new_camera_name;
+			channel->in_ns = new_in_ns;
+			channel->out_ns = new_out_ns;
+			channel->width = 0;
+			channel->height = 0;
+			channel->partial_coverage = new_in_ns != event_in_ns || new_out_ns != event_out_ns;
+			partial = channel->partial_coverage;
+			channel->last_clock_ns = 0;
+			channel->need_frame = true;
+			switched = true;
+		}
 	}
 	pthread_mutex_unlock(&channel->mutex);
 
