@@ -1,0 +1,59 @@
+/*
+Sports Replay
+Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+*/
+
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct sr_event_controller;
+
+struct sr_event_controller *sr_event_controller_create(void);
+void sr_event_controller_destroy(struct sr_event_controller *controller);
+
+bool sr_event_controller_set_current_list(struct sr_event_controller *controller, unsigned list_id);
+unsigned sr_event_controller_get_current_list(struct sr_event_controller *controller);
+
+/* Mark-IN state lives in the controller rather than Qt so hotkeys, the dock
+ * and future WebSocket commands all share the same operator state. */
+bool sr_event_controller_mark_in(struct sr_event_controller *controller, uint64_t now_ns);
+void sr_event_controller_cancel_mark_in(struct sr_event_controller *controller);
+bool sr_event_controller_get_mark_in(struct sr_event_controller *controller, uint64_t *in_ns);
+
+/* MARK OUT creates one metadata-only event in the current list. The IN mark
+ * is cleared only after both event creation and list insertion succeed. */
+bool sr_event_controller_mark_out(struct sr_event_controller *controller, uint64_t now_ns, uint64_t *event_id);
+
+/* Creates a quick replay spanning [now-pre_roll, now+post_roll]. A non-zero
+ * post-roll marks the event Pending; the writer/coverage reconciler will clear
+ * that flag once recorded media reaches OUT. */
+bool sr_event_controller_quick_mark(struct sr_event_controller *controller, uint64_t now_ns, uint64_t pre_roll_ns,
+				    uint64_t post_roll_ns, uint64_t *event_id);
+
+/* vMix-style list operations. Event media is never copied. */
+bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, uint64_t event_id,
+				      unsigned target_list, int position);
+bool sr_event_controller_move_to_list(struct sr_event_controller *controller, uint64_t event_id,
+				      unsigned source_list, unsigned target_list, int position);
+bool sr_event_controller_reorder(struct sr_event_controller *controller, uint64_t event_id, unsigned list_id,
+				 int position);
+bool sr_event_controller_duplicate(struct sr_event_controller *controller, uint64_t event_id, unsigned target_list,
+				   int position, uint64_t *new_event_id);
+
+bool sr_event_controller_set_played(struct sr_event_controller *controller, uint64_t event_id, bool played);
+bool sr_event_controller_set_protected(struct sr_event_controller *controller, uint64_t event_id, bool protected_event);
+
+#ifdef __cplusplus
+}
+#endif
