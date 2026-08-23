@@ -18,6 +18,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <limits.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 struct sr_event_db {
@@ -191,8 +192,8 @@ static bool migrate_schema(struct sr_event_db *db)
 	if (!read_user_version(db, &version))
 		return false;
 	if (version > SR_EVENT_DB_SCHEMA_VERSION) {
-		obs_log(LOG_ERROR, "Sports Replay EventDB: database schema %d is newer than supported schema %d", version,
-			SR_EVENT_DB_SCHEMA_VERSION);
+		obs_log(LOG_ERROR, "Sports Replay EventDB: database schema %d is newer than supported schema %d",
+			version, SR_EVENT_DB_SCHEMA_VERSION);
 		return false;
 	}
 
@@ -253,7 +254,8 @@ void sr_event_db_close(struct sr_event_db *db)
 	if (db->sql) {
 		const int rc = sqlite3_close(db->sql);
 		if (rc != SQLITE_OK)
-			obs_log(LOG_WARNING, "Sports Replay EventDB: close failed (%d): %s", rc, sqlite3_errmsg(db->sql));
+			obs_log(LOG_WARNING, "Sports Replay EventDB: close failed (%d): %s", rc,
+				sqlite3_errmsg(db->sql));
 		db->sql = NULL;
 	}
 	bfree(db->path);
@@ -396,11 +398,12 @@ void sr_event_record_free(struct sr_event_record *event)
 	memset(event, 0, sizeof(*event));
 }
 
-static bool list_position_locked(struct sr_event_db *db, unsigned list_id, uint64_t event_id, int *position, bool *found)
+static bool list_position_locked(struct sr_event_db *db, unsigned list_id, uint64_t event_id, int *position,
+				 bool *found)
 {
 	sqlite3_stmt *stmt = NULL;
-	const int prepare_rc = sqlite3_prepare_v2(db->sql,
-		"SELECT position FROM event_list_items WHERE list_id=? AND event_id=?", -1, &stmt, NULL);
+	const int prepare_rc = sqlite3_prepare_v2(
+		db->sql, "SELECT position FROM event_list_items WHERE list_id=? AND event_id=?", -1, &stmt, NULL);
 	if (prepare_rc != SQLITE_OK) {
 		log_sql_error(db, "prepare list position", prepare_rc);
 		return false;
@@ -464,9 +467,10 @@ static bool shift_positions_locked(struct sr_event_db *db, unsigned list_id, int
 	const char *upper_op = upper_inclusive ? "<=" : "<";
 	char sql[256];
 	if (have_upper) {
-		snprintf(sql, sizeof(sql),
-			 "UPDATE event_list_items SET position=position+? WHERE list_id=? AND position %s ? AND position %s ?",
-			 lower_op, upper_op);
+		snprintf(
+			sql, sizeof(sql),
+			"UPDATE event_list_items SET position=position+? WHERE list_id=? AND position %s ? AND position %s ?",
+			lower_op, upper_op);
 	} else {
 		snprintf(sql, sizeof(sql),
 			 "UPDATE event_list_items SET position=position+? WHERE list_id=? AND position %s ?", lower_op);
@@ -491,8 +495,8 @@ static bool shift_positions_locked(struct sr_event_db *db, unsigned list_id, int
 static bool set_position_row_locked(struct sr_event_db *db, unsigned list_id, uint64_t event_id, int position)
 {
 	sqlite3_stmt *stmt = NULL;
-	int rc = sqlite3_prepare_v2(db->sql, "UPDATE event_list_items SET position=? WHERE list_id=? AND event_id=?", -1,
-				    &stmt, NULL);
+	int rc = sqlite3_prepare_v2(db->sql, "UPDATE event_list_items SET position=? WHERE list_id=? AND event_id=?",
+				    -1, &stmt, NULL);
 	bool ok = rc == SQLITE_OK && sqlite3_bind_int(stmt, 1, position) == SQLITE_OK &&
 		  sqlite3_bind_int(stmt, 2, (int)list_id) == SQLITE_OK &&
 		  sqlite3_bind_int64(stmt, 3, (sqlite3_int64)event_id) == SQLITE_OK;
@@ -553,8 +557,9 @@ bool sr_event_db_add_event_to_list(struct sr_event_db *db, unsigned list_id, uin
 		}
 		if (ok) {
 			sqlite3_stmt *stmt = NULL;
-			int rc = sqlite3_prepare_v2(db->sql,
-				"INSERT INTO event_list_items(list_id,event_id,position) VALUES(?,?,?)", -1, &stmt, NULL);
+			int rc = sqlite3_prepare_v2(
+				db->sql, "INSERT INTO event_list_items(list_id,event_id,position) VALUES(?,?,?)", -1,
+				&stmt, NULL);
 			ok = rc == SQLITE_OK && sqlite3_bind_int(stmt, 1, (int)list_id) == SQLITE_OK &&
 			     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event_id) == SQLITE_OK &&
 			     sqlite3_bind_int(stmt, 3, position) == SQLITE_OK;
@@ -598,7 +603,8 @@ bool sr_event_db_remove_event_from_list(struct sr_event_db *db, unsigned list_id
 	}
 
 	sqlite3_stmt *stmt = NULL;
-	int rc = sqlite3_prepare_v2(db->sql, "DELETE FROM event_list_items WHERE list_id=? AND event_id=?", -1, &stmt, NULL);
+	int rc = sqlite3_prepare_v2(db->sql, "DELETE FROM event_list_items WHERE list_id=? AND event_id=?", -1, &stmt,
+				    NULL);
 	bool ok = rc == SQLITE_OK && sqlite3_bind_int(stmt, 1, (int)list_id) == SQLITE_OK &&
 		  sqlite3_bind_int64(stmt, 2, (sqlite3_int64)event_id) == SQLITE_OK;
 	if (ok) {
@@ -624,12 +630,19 @@ bool sr_event_db_set_event_position(struct sr_event_db *db, unsigned list_id, ui
 	pthread_mutex_lock(&db->mutex);
 	int old_position = -1;
 	bool found = false;
-	bool ok = list_position_locked(db, list_id, event_id, &old_position, &found) && found && begin_transaction(db);
-	if (ok)
-		ok = reorder_existing_locked(db, list_id, event_id, old_position, position);
+	if (!list_position_locked(db, list_id, event_id, &old_position, &found) || !found) {
+		pthread_mutex_unlock(&db->mutex);
+		return false;
+	}
+	if (!begin_transaction(db)) {
+		pthread_mutex_unlock(&db->mutex);
+		return false;
+	}
+
+	bool ok = reorder_existing_locked(db, list_id, event_id, old_position, position);
 	if (ok)
 		ok = commit_transaction(db);
-	else if (found)
+	else
 		rollback_transaction(db);
 	pthread_mutex_unlock(&db->mutex);
 	return ok;
@@ -651,7 +664,8 @@ bool sr_event_db_delete_event(struct sr_event_db *db, uint64_t event_id)
 	size_t membership_count = 0;
 	sqlite3_stmt *members = NULL;
 	int rc = sqlite3_prepare_v2(db->sql,
-		"SELECT list_id,position FROM event_list_items WHERE event_id=? ORDER BY list_id", -1, &members, NULL);
+				    "SELECT list_id,position FROM event_list_items WHERE event_id=? ORDER BY list_id",
+				    -1, &members, NULL);
 	bool ok = rc == SQLITE_OK && sqlite3_bind_int64(members, 1, (sqlite3_int64)event_id) == SQLITE_OK;
 	while (ok && (rc = sqlite3_step(members)) == SQLITE_ROW) {
 		if (membership_count >= SR_EVENT_LIST_COUNT) {
@@ -698,7 +712,8 @@ bool sr_event_db_get_list_events(struct sr_event_db *db, unsigned list_id, uint6
 	pthread_mutex_lock(&db->mutex);
 	sqlite3_stmt *stmt = NULL;
 	int rc = sqlite3_prepare_v2(db->sql,
-		"SELECT event_id FROM event_list_items WHERE list_id=? ORDER BY position,event_id", -1, &stmt, NULL);
+				    "SELECT event_id FROM event_list_items WHERE list_id=? ORDER BY position,event_id",
+				    -1, &stmt, NULL);
 	bool ok = rc == SQLITE_OK && sqlite3_bind_int(stmt, 1, (int)list_id) == SQLITE_OK;
 
 	uint64_t *items = NULL;
