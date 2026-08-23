@@ -10,6 +10,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-config.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <obs-module.h>
 #include <util/platform.h>
@@ -23,6 +24,7 @@ the Free Software Foundation; either version 2 of the License, or
 static pthread_mutex_t g_mutex;
 static char *g_save_dir;
 static char *g_session_root;
+static bool g_session_root_follows_save_dir;
 static uint64_t g_min_free_bytes;
 static uint64_t g_purge_target_bytes;
 static uint32_t g_segment_duration_ms;
@@ -73,6 +75,7 @@ static void save_locked(void)
 	obs_data_set_int(data, "schema_version", SR_CONFIG_SCHEMA_VERSION);
 	obs_data_set_string(data, "save_dir", g_save_dir ? g_save_dir : "");
 	obs_data_set_string(data, "session_root", g_session_root ? g_session_root : "");
+	obs_data_set_bool(data, "session_root_follows_save_dir", g_session_root_follows_save_dir);
 	obs_data_set_int(data, "min_free_bytes", (long long)g_min_free_bytes);
 	obs_data_set_int(data, "purge_target_bytes", (long long)g_purge_target_bytes);
 	obs_data_set_int(data, "segment_duration_ms", g_segment_duration_ms);
@@ -96,7 +99,9 @@ void sr_config_init(void)
 	g_save_dir = (saved && *saved) ? bstrdup(saved) : default_save_dir();
 
 	const char *session_root = data ? obs_data_get_string(data, "session_root") : "";
-	g_session_root = (session_root && *session_root) ? bstrdup(session_root) : default_session_root(g_save_dir);
+	const bool has_session_root = session_root && *session_root;
+	g_session_root_follows_save_dir = !has_session_root || obs_data_get_bool(data, "session_root_follows_save_dir");
+	g_session_root = g_session_root_follows_save_dir ? default_session_root(g_save_dir) : bstrdup(session_root);
 
 	const int64_t min_free = data ? obs_data_get_int(data, "min_free_bytes") : 0;
 	const int64_t purge_target = data ? obs_data_get_int(data, "purge_target_bytes") : 0;
@@ -141,6 +146,13 @@ void sr_config_set_save_dir(const char *save_dir)
 	g_save_dir = bstrdup(save_dir ? save_dir : "");
 	if (g_save_dir && *g_save_dir)
 		os_mkdirs(g_save_dir);
+
+	if (g_session_root_follows_save_dir) {
+		bfree(g_session_root);
+		g_session_root = default_session_root(g_save_dir);
+		os_mkdirs(g_session_root);
+	}
+
 	save_locked();
 	pthread_mutex_unlock(&g_mutex);
 }
@@ -157,7 +169,13 @@ void sr_config_set_session_root(const char *session_root)
 {
 	pthread_mutex_lock(&g_mutex);
 	bfree(g_session_root);
-	g_session_root = bstrdup(session_root ? session_root : "");
+	if (session_root && *session_root) {
+		g_session_root = bstrdup(session_root);
+		g_session_root_follows_save_dir = false;
+	} else {
+		g_session_root = default_session_root(g_save_dir);
+		g_session_root_follows_save_dir = true;
+	}
 	if (g_session_root && *g_session_root)
 		os_mkdirs(g_session_root);
 	save_locked();
