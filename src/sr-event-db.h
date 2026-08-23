@@ -89,6 +89,11 @@ bool sr_event_db_set_event_position(struct sr_event_db *db, unsigned list_id, ui
 bool sr_event_db_move_event_between_lists(struct sr_event_db *db, uint64_t event_id, unsigned source_list,
 					  unsigned target_list, int position);
 
+/* Returns whether any currently saved Event overlaps [start_ns, end_ns]. The
+ * boolean is separate from the function result so a database failure can
+ * never be mistaken for "unreferenced" media by the storage cleaner. */
+bool sr_event_db_has_event_overlap(struct sr_event_db *db, uint64_t start_ns, uint64_t end_ns, bool *overlap);
+
 /* Allocates an ordered event-id array with bmalloc/brealloc semantics. Caller
  * releases it with bfree(). An empty list returns true with *event_ids=NULL. */
 bool sr_event_db_get_list_events(struct sr_event_db *db, unsigned list_id, uint64_t **event_ids, size_t *count);
