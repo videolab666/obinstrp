@@ -46,9 +46,16 @@ void sr_segment_reader_close(struct sr_segment_reader *reader);
 
 bool sr_segment_reader_get_info(const struct sr_segment_reader *reader, struct sr_segment_stream_info *info);
 bool sr_segment_reader_refresh_index(struct sr_segment_reader *reader);
+size_t sr_segment_reader_entry_count(const struct sr_segment_reader *reader);
+bool sr_segment_reader_entry_at(const struct sr_segment_reader *reader, size_t position, struct sr_index_entry *entry);
 
-/* Finds the newest indexed packet at/before timestamp. If keyframe_only is
- * true, walks back to the nearest IDR/key packet. */
+/* Finds the newest indexed packet at/before timestamp and returns both the
+ * entry and its position. If keyframe_only is true, walks back to the nearest
+ * IDR/key packet. Either output pointer may be NULL. */
+bool sr_segment_reader_find_position(const struct sr_segment_reader *reader, uint64_t timestamp_ns,
+				     bool keyframe_only, size_t *position, struct sr_index_entry *entry);
+
+/* Convenience wrapper when the caller does not need the position. */
 bool sr_segment_reader_find(const struct sr_segment_reader *reader, uint64_t timestamp_ns, bool keyframe_only,
 			    struct sr_index_entry *entry);
 
