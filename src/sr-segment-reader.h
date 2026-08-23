@@ -53,8 +53,8 @@ bool sr_segment_reader_entry_at(const struct sr_segment_reader *reader, size_t p
 /* Finds the newest indexed packet at/before timestamp and returns both the
  * entry and its position. If keyframe_only is true, walks back to the nearest
  * IDR/key packet. Either output pointer may be NULL. */
-bool sr_segment_reader_find_position(const struct sr_segment_reader *reader, uint64_t timestamp_ns,
-				     bool keyframe_only, size_t *position, struct sr_index_entry *entry);
+bool sr_segment_reader_find_position(const struct sr_segment_reader *reader, uint64_t timestamp_ns, bool keyframe_only,
+				     size_t *position, struct sr_index_entry *entry);
 
 /* Convenience wrapper when the caller does not need the position. */
 bool sr_segment_reader_find(const struct sr_segment_reader *reader, uint64_t timestamp_ns, bool keyframe_only,

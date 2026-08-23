@@ -490,7 +490,8 @@ static void *writer_thread(void *param)
 		}
 
 		if (!write_video_packet(w, node)) {
-			obs_log(LOG_ERROR, "Sports Replay: disk write failed for camera '%s'; waiting for next keyframe",
+			obs_log(LOG_ERROR,
+				"Sports Replay: disk write failed for camera '%s'; waiting for next keyframe",
 				w->camera_name);
 			close_segment(w, false);
 			w->need_keyframe = true;

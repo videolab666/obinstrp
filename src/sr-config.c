@@ -113,7 +113,7 @@ void sr_config_init(void)
 		g_purge_target_bytes = g_min_free_bytes;
 
 	g_segment_duration_ms = segment_ms >= 1000 && segment_ms <= 60000 ? (uint32_t)segment_ms
-								       : DEFAULT_SEGMENT_DURATION_MS;
+									  : DEFAULT_SEGMENT_DURATION_MS;
 
 	os_mkdirs(g_save_dir);
 	os_mkdirs(g_session_root);

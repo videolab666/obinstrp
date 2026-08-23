@@ -135,8 +135,8 @@ static bool append_descriptor(struct sr_segment_descriptor **items, size_t *coun
 	return true;
 }
 
-bool sr_segment_catalog_scan(const char *session_dir, const char *camera_name,
-			     struct sr_segment_descriptor **segments, size_t *count)
+bool sr_segment_catalog_scan(const char *session_dir, const char *camera_name, struct sr_segment_descriptor **segments,
+			     size_t *count)
 {
 	if (!segments || !count)
 		return false;
@@ -209,8 +209,8 @@ void sr_segment_catalog_free(struct sr_segment_descriptor *segments, size_t coun
 	bfree(segments);
 }
 
-const struct sr_segment_descriptor *sr_segment_catalog_find(const struct sr_segment_descriptor *segments,
-						     size_t count, uint64_t timestamp_ns)
+const struct sr_segment_descriptor *sr_segment_catalog_find(const struct sr_segment_descriptor *segments, size_t count,
+							    uint64_t timestamp_ns)
 {
 	if (!segments || !count)
 		return NULL;

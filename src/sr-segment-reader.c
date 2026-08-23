@@ -59,8 +59,7 @@ static bool read_headers(struct sr_segment_reader *r)
 
 	if (!read_exact(r->index_file, &r->index_header, sizeof(r->index_header)))
 		return false;
-	if (!valid_magic(r->index_header.magic, SR_INDEX_MAGIC) ||
-	    r->index_header.version != SR_SEGMENT_FORMAT_VERSION)
+	if (!valid_magic(r->index_header.magic, SR_INDEX_MAGIC) || r->index_header.version != SR_SEGMENT_FORMAT_VERSION)
 		return false;
 	if (r->index_header.camera_hash != r->segment_header.camera_hash ||
 	    r->index_header.sequence != r->segment_header.sequence ||

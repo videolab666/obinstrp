@@ -91,8 +91,7 @@ static bool open_segment(struct sr_disk_player *p, const struct sr_segment_descr
 
 static const struct sr_segment_descriptor *find_segment(struct sr_disk_player *p, uint64_t target_ns)
 {
-	const struct sr_segment_descriptor *segment =
-		sr_segment_catalog_find(p->segments, p->segment_count, target_ns);
+	const struct sr_segment_descriptor *segment = sr_segment_catalog_find(p->segments, p->segment_count, target_ns);
 	if (segment)
 		return segment;
 

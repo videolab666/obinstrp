@@ -32,15 +32,15 @@ struct sr_segment_descriptor {
  * descriptor paths are owned by the caller and released with
  * sr_segment_catalog_free(). Finalized and readable active .part pairs are
  * included and sorted by start timestamp. */
-bool sr_segment_catalog_scan(const char *session_dir, const char *camera_name,
-			     struct sr_segment_descriptor **segments, size_t *count);
+bool sr_segment_catalog_scan(const char *session_dir, const char *camera_name, struct sr_segment_descriptor **segments,
+			     size_t *count);
 
 void sr_segment_catalog_free(struct sr_segment_descriptor *segments, size_t count);
 
 /* Finds the descriptor whose indexed timestamp range contains timestamp_ns.
  * If ranges overlap, the newest-starting matching descriptor wins. */
-const struct sr_segment_descriptor *sr_segment_catalog_find(const struct sr_segment_descriptor *segments,
-						     size_t count, uint64_t timestamp_ns);
+const struct sr_segment_descriptor *sr_segment_catalog_find(const struct sr_segment_descriptor *segments, size_t count,
+							    uint64_t timestamp_ns);
 
 #ifdef __cplusplus
 }
