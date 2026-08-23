@@ -59,6 +59,9 @@ struct sr_segment_writer {
 	uint8_t *extradata;
 	int extradata_size;
 	uint64_t target_segment_ns;
+	uint64_t min_free_bytes;
+	bool reserve_blocked;
+	uint64_t reserve_recheck_after_ns;
 
 	uint32_t next_sequence;
 	FILE *segment_file;
@@ -116,6 +119,13 @@ static void stats_set_failed(struct sr_segment_writer *w)
 {
 	pthread_mutex_lock(&w->mutex);
 	w->stats.write_failed = true;
+	pthread_mutex_unlock(&w->mutex);
+}
+
+static void stats_set_reserve_blocked(struct sr_segment_writer *w, bool blocked)
+{
+	pthread_mutex_lock(&w->mutex);
+	w->stats.reserve_blocked = blocked;
 	pthread_mutex_unlock(&w->mutex);
 }
 
@@ -201,8 +211,43 @@ static void close_open_files(struct sr_segment_writer *w)
 	}
 }
 
+static bool storage_reserve_allows(struct sr_segment_writer *w, uint64_t timestamp_ns)
+{
+	if (!w->min_free_bytes)
+		return true;
+
+	if (w->reserve_blocked && timestamp_ns < w->reserve_recheck_after_ns)
+		return false;
+
+	const uint64_t free_bytes = os_get_free_disk_space(w->camera_dir);
+	if (free_bytes < w->min_free_bytes) {
+		if (!w->reserve_blocked) {
+			obs_log(LOG_ERROR,
+				"Sports Replay: continuous recording paused for '%s': disk free space %.1f GB is below the %.1f GB reserve",
+				w->camera_name, (double)free_bytes / (1024.0 * 1024.0 * 1024.0),
+				(double)w->min_free_bytes / (1024.0 * 1024.0 * 1024.0));
+		}
+		w->reserve_blocked = true;
+		w->reserve_recheck_after_ns = timestamp_ns + 1000000000ULL;
+		stats_set_reserve_blocked(w, true);
+		return false;
+	}
+
+	if (w->reserve_blocked) {
+		obs_log(LOG_INFO, "Sports Replay: disk reserve restored for '%s'; continuous recording resumed",
+			w->camera_name);
+		w->reserve_blocked = false;
+		w->reserve_recheck_after_ns = 0;
+		stats_set_reserve_blocked(w, false);
+	}
+	return true;
+}
+
 static bool open_segment(struct sr_segment_writer *w, uint64_t start_ns, bool discontinuity)
 {
+	if (!storage_reserve_allows(w, start_ns))
+		return false;
+
 	if (w->next_sequence == UINT32_MAX) {
 		obs_log(LOG_ERROR, "Sports Replay: segment sequence exhausted for camera '%s'", w->camera_name);
 		stats_set_failed(w);
@@ -395,6 +440,7 @@ static void *writer_thread(void *param)
 			}
 			close_segment(w, true);
 			if (!open_segment(w, node->timestamp_ns, true)) {
+				stats_add_drop(w);
 				free_packet_node(node);
 				continue;
 			}
@@ -408,6 +454,7 @@ static void *writer_thread(void *param)
 				continue;
 			}
 			if (!open_segment(w, node->timestamp_ns, false)) {
+				stats_add_drop(w);
 				free_packet_node(node);
 				continue;
 			}
@@ -425,6 +472,7 @@ static void *writer_thread(void *param)
 				continue;
 			}
 			if (!open_segment(w, node->timestamp_ns, true)) {
+				stats_add_drop(w);
 				free_packet_node(node);
 				continue;
 			}
@@ -435,6 +483,7 @@ static void *writer_thread(void *param)
 		    node->timestamp_ns - w->segment_start_ns >= w->target_segment_ns) {
 			close_segment(w, true);
 			if (!open_segment(w, node->timestamp_ns, false)) {
+				stats_add_drop(w);
 				free_packet_node(node);
 				continue;
 			}
@@ -476,6 +525,7 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	if (w->extradata_size)
 		w->extradata = bmemdup(config->extradata, (size_t)w->extradata_size);
 	w->target_segment_ns = (uint64_t)(config->target_segment_ms ? config->target_segment_ms : 4000) * 1000000ULL;
+	w->min_free_bytes = config->min_free_bytes;
 	w->max_queue_packets = config->max_queue_packets ? config->max_queue_packets : 600;
 	/* Initial acquisition is handled by the !segment_file branch below, so
 	 * the first valid segment is not incorrectly marked as a discontinuity. */
@@ -507,9 +557,10 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	w->thread_started = true;
 
 	obs_log(LOG_INFO,
-		"Sports Replay: continuous recorder started for '%s' (%ux%u, %.3f fps, segment %.2f s, queue %zu)",
+		"Sports Replay: continuous recorder started for '%s' (%ux%u, %.3f fps, segment %.2f s, queue %zu, reserve %.1f GB)",
 		w->camera_name, w->width, w->height, (double)w->fps_num / (double)w->fps_den,
-		(double)w->target_segment_ns / 1e9, w->max_queue_packets);
+		(double)w->target_segment_ns / 1e9, w->max_queue_packets,
+		(double)w->min_free_bytes / (1024.0 * 1024.0 * 1024.0));
 	return w;
 }
 
