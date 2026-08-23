@@ -20,6 +20,36 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(FFmpeg REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE FFmpeg::avcodec FFmpeg::avutil FFmpeg::swscale FFmpeg::avformat)
 
+# Event metadata is stored in an embedded SQLite database. Build the official
+# amalgamation into the plugin instead of depending on a system SQLite DLL/
+# dylib, so Windows/macOS/Linux packages have identical schema/runtime behavior.
+include(FetchContent)
+FetchContent_Declare(
+  sr_sqlite_source
+  URL https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip
+  URL_HASH SHA3_256=628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  SOURCE_SUBDIR __sports_replay_no_cmake__
+)
+FetchContent_MakeAvailable(sr_sqlite_source)
+
+set(SR_SQLITE_DIR "${sr_sqlite_source_SOURCE_DIR}")
+if(NOT EXISTS "${SR_SQLITE_DIR}/sqlite3.c")
+  set(SR_SQLITE_DIR "${sr_sqlite_source_SOURCE_DIR}/sqlite-amalgamation-3530400")
+endif()
+if(NOT EXISTS "${SR_SQLITE_DIR}/sqlite3.c" OR NOT EXISTS "${SR_SQLITE_DIR}/sqlite3.h")
+  message(FATAL_ERROR "Pinned SQLite amalgamation did not contain sqlite3.c/sqlite3.h")
+endif()
+
+add_library(sr_sqlite STATIC "${SR_SQLITE_DIR}/sqlite3.c")
+set_target_properties(sr_sqlite PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+target_include_directories(sr_sqlite PUBLIC "${SR_SQLITE_DIR}")
+target_compile_definitions(
+  sr_sqlite
+  PRIVATE SQLITE_THREADSAFE=1 SQLITE_DEFAULT_FOREIGN_KEYS=1 SQLITE_OMIT_LOAD_EXTENSION=1
+)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE sr_sqlite)
+
 if(ENABLE_FRONTEND_API)
   find_package(obs-frontend-api REQUIRED)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
@@ -54,6 +84,7 @@ target_sources(
     src/sr-load.c
     src/sr-config.c
     src/sr-session.c
+    src/sr-event-db.c
     src/sr-segment-writer.c
     src/sr-segment-reader.c
     src/sr-segment-catalog.c
