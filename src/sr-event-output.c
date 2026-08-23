@@ -18,8 +18,6 @@ the Free Software Foundation; either version 2 of the License, or
 #include <util/bmem.h>
 #include <util/platform.h>
 
-#define S_BUS "replay_bus"
-
 struct sr_event_output {
 	obs_source_t *self;
 	enum sr_replay_bus bus;
@@ -65,7 +63,7 @@ static void output_avframe(struct sr_event_output *output, AVFrame *decoded)
 static void sr_event_output_update(void *data, obs_data_t *settings)
 {
 	struct sr_event_output *output = data;
-	int bus = (int)obs_data_get_int(settings, S_BUS);
+	int bus = (int)obs_data_get_int(settings, SR_EVENT_OUTPUT_SETTING_BUS);
 	if (bus < SR_REPLAY_BUS_A || bus >= SR_REPLAY_BUS_COUNT)
 		bus = SR_REPLAY_BUS_A;
 	output->bus = (enum sr_replay_bus)bus;
@@ -109,7 +107,7 @@ static obs_properties_t *sr_event_output_properties(void *unused)
 {
 	UNUSED_PARAMETER(unused);
 	obs_properties_t *props = obs_properties_create();
-	obs_property_t *bus = obs_properties_add_list(props, S_BUS, obs_module_text("EventOutput.Bus"),
+	obs_property_t *bus = obs_properties_add_list(props, SR_EVENT_OUTPUT_SETTING_BUS, obs_module_text("EventOutput.Bus"),
 					      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(bus, obs_module_text("EventOutput.BusA"), SR_REPLAY_BUS_A);
 	obs_property_list_add_int(bus, obs_module_text("EventOutput.BusB"), SR_REPLAY_BUS_B);
@@ -118,7 +116,7 @@ static obs_properties_t *sr_event_output_properties(void *unused)
 
 static void sr_event_output_defaults(obs_data_t *settings)
 {
-	obs_data_set_default_int(settings, S_BUS, SR_REPLAY_BUS_A);
+	obs_data_set_default_int(settings, SR_EVENT_OUTPUT_SETTING_BUS, SR_REPLAY_BUS_A);
 }
 
 static uint32_t sr_event_output_width(void *data)
