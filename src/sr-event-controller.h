@@ -53,8 +53,8 @@ bool sr_event_controller_update_event(struct sr_event_controller *controller, ui
 bool sr_event_controller_delete_event(struct sr_event_controller *controller, uint64_t event_id);
 void sr_event_controller_free_event(struct sr_event_record *event);
 
-bool sr_event_controller_get_list_events(struct sr_event_controller *controller, unsigned list_id,
-					 uint64_t **event_ids, size_t *count);
+bool sr_event_controller_get_list_events(struct sr_event_controller *controller, unsigned list_id, uint64_t **event_ids,
+					 size_t *count);
 
 /* vMix-style list operations. Event media is never copied. */
 bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, uint64_t event_id, unsigned target_list,

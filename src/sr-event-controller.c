@@ -271,8 +271,8 @@ void sr_event_controller_free_event(struct sr_event_record *event)
 	sr_event_record_free(event);
 }
 
-bool sr_event_controller_get_list_events(struct sr_event_controller *controller, unsigned list_id,
-					 uint64_t **event_ids, size_t *count)
+bool sr_event_controller_get_list_events(struct sr_event_controller *controller, unsigned list_id, uint64_t **event_ids,
+					 size_t *count)
 {
 	if (!controller || !valid_list_id(list_id) || !event_ids || !count)
 		return false;
@@ -284,8 +284,8 @@ bool sr_event_controller_get_list_events(struct sr_event_controller *controller,
 	return ok;
 }
 
-bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, uint64_t event_id,
-				      unsigned target_list, int position)
+bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, uint64_t event_id, unsigned target_list,
+				      int position)
 {
 	if (!controller || !event_id || !valid_list_id(target_list))
 		return false;
@@ -297,8 +297,8 @@ bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, ui
 	return ok;
 }
 
-bool sr_event_controller_move_to_list(struct sr_event_controller *controller, uint64_t event_id,
-				      unsigned source_list, unsigned target_list, int position)
+bool sr_event_controller_move_to_list(struct sr_event_controller *controller, uint64_t event_id, unsigned source_list,
+				      unsigned target_list, int position)
 {
 	if (!controller || !event_id || !valid_list_id(source_list) || !valid_list_id(target_list))
 		return false;
