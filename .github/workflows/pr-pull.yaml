@@ -24,6 +24,22 @@ jobs:
         with:
           ref: feature/disk-replay-core
           fetch-depth: 0
+      - name: Normalize already-modernized buffer comment
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/sr-buffer.h')
+          text = p.read_text(encoding='utf-8')
+          current = '''/* One encoded video frame kept in the ring buffer. pkt->flags preserves the
+           * encoder's keyframe marker so short-GOP replay can seek from the preceding
+           * IDR instead of assuming every packet is independently decodable. */'''
+          legacy = '''/* One encoded video frame kept in the ring buffer. Because every frame is
+           * encoded as an intra frame, any packet can be decoded on its own. */'''
+          if current in text:
+              text = text.replace(current, legacy, 1)
+              p.write_text(text, encoding='utf-8')
+          PY
       - name: Apply migration
         shell: bash
         run: python3 build-aux/apply-short-gop.py
