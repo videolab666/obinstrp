@@ -231,8 +231,61 @@ bool sr_event_controller_quick_mark(struct sr_event_controller *controller, uint
 	return ok;
 }
 
-bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, uint64_t event_id, unsigned target_list,
-				      int position)
+bool sr_event_controller_get_event(struct sr_event_controller *controller, uint64_t event_id,
+				   struct sr_event_record *event)
+{
+	if (!controller || !event_id || !event)
+		return false;
+
+	pthread_mutex_lock(&controller->mutex);
+	const bool ok = ensure_db_locked(controller) && sr_event_db_get_event(controller->db, event_id, event);
+	pthread_mutex_unlock(&controller->mutex);
+	return ok;
+}
+
+bool sr_event_controller_update_event(struct sr_event_controller *controller, uint64_t event_id,
+				      const struct sr_event_write *event)
+{
+	if (!controller || !event_id || !event)
+		return false;
+
+	pthread_mutex_lock(&controller->mutex);
+	const bool ok = ensure_db_locked(controller) && sr_event_db_update_event(controller->db, event_id, event);
+	pthread_mutex_unlock(&controller->mutex);
+	return ok;
+}
+
+bool sr_event_controller_delete_event(struct sr_event_controller *controller, uint64_t event_id)
+{
+	if (!controller || !event_id)
+		return false;
+
+	pthread_mutex_lock(&controller->mutex);
+	const bool ok = ensure_db_locked(controller) && sr_event_db_delete_event(controller->db, event_id);
+	pthread_mutex_unlock(&controller->mutex);
+	return ok;
+}
+
+void sr_event_controller_free_event(struct sr_event_record *event)
+{
+	sr_event_record_free(event);
+}
+
+bool sr_event_controller_get_list_events(struct sr_event_controller *controller, unsigned list_id,
+					 uint64_t **event_ids, size_t *count)
+{
+	if (!controller || !valid_list_id(list_id) || !event_ids || !count)
+		return false;
+
+	pthread_mutex_lock(&controller->mutex);
+	const bool ok = ensure_db_locked(controller) &&
+			sr_event_db_get_list_events(controller->db, list_id, event_ids, count);
+	pthread_mutex_unlock(&controller->mutex);
+	return ok;
+}
+
+bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, uint64_t event_id,
+				      unsigned target_list, int position)
 {
 	if (!controller || !event_id || !valid_list_id(target_list))
 		return false;
@@ -244,8 +297,8 @@ bool sr_event_controller_copy_to_list(struct sr_event_controller *controller, ui
 	return ok;
 }
 
-bool sr_event_controller_move_to_list(struct sr_event_controller *controller, uint64_t event_id, unsigned source_list,
-				      unsigned target_list, int position)
+bool sr_event_controller_move_to_list(struct sr_event_controller *controller, uint64_t event_id,
+				      unsigned source_list, unsigned target_list, int position)
 {
 	if (!controller || !event_id || !valid_list_id(source_list) || !valid_list_id(target_list))
 		return false;
