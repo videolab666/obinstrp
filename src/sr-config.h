@@ -6,30 +6,40 @@ This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License, or
 (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along
-with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #pragma once
+
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* The folder where replays are saved and read from, shared by auto-save and
- * the replay dock, persisted to the plugin config directory. The getter
- * returns a bstrdup the caller frees. */
+#define SR_CONFIG_SCHEMA_VERSION 2
+
 void sr_config_init(void);
 void sr_config_free(void);
 
+/* Legacy exported replay MP4 folder. Returned strings are bstrdup allocations
+ * owned by the caller. */
 char *sr_config_get_save_dir(void);
 void sr_config_set_save_dir(const char *save_dir);
+
+/* Root directory for long-running continuous replay sessions. */
+char *sr_config_get_session_root(void);
+void sr_config_set_session_root(const char *session_root);
+
+/* Storage safety defaults used by the future storage manager. They are
+ * persisted now so the disk recorder and later GC share one config schema. */
+uint64_t sr_config_get_min_free_bytes(void);
+void sr_config_set_min_free_bytes(uint64_t bytes);
+
+uint64_t sr_config_get_purge_target_bytes(void);
+void sr_config_set_purge_target_bytes(uint64_t bytes);
+
+uint32_t sr_config_get_segment_duration_ms(void);
+void sr_config_set_segment_duration_ms(uint32_t milliseconds);
 
 #ifdef __cplusplus
 }
