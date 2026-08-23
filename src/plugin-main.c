@@ -10,7 +10,6 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <obs-module.h>
 #include <plugin-support.h>
-#include <util/platform.h>
 
 #include "sr-config.h"
 #include "sr-dock.h"
@@ -39,6 +38,14 @@ static void log_created_event(const char *action, uint64_t event_id)
 		sr_event_controller_get_current_list(event_controller));
 }
 
+static uint64_t event_now_ns(void)
+{
+	/* Segment indexes are written from obs_source_frame::timestamp. Use the
+	 * libobs video clock for operator marks as well so Event IN/OUT lives on
+	 * the same timeline as the recorded camera packets. */
+	return obs_get_video_frame_time();
+}
+
 static void event_mark_in_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
 {
 	UNUSED_PARAMETER(data);
@@ -47,7 +54,7 @@ static void event_mark_in_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey,
 	if (!pressed || !event_controller)
 		return;
 
-	if (!sr_event_controller_mark_in(event_controller, os_gettime_ns()))
+	if (!sr_event_controller_mark_in(event_controller, event_now_ns()))
 		obs_log(LOG_WARNING, "Could not set replay Event IN mark");
 }
 
@@ -60,7 +67,7 @@ static void event_mark_out_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey
 		return;
 
 	uint64_t event_id = 0;
-	if (sr_event_controller_mark_out(event_controller, os_gettime_ns(), &event_id))
+	if (sr_event_controller_mark_out(event_controller, event_now_ns(), &event_id))
 		log_created_event("OUT", event_id);
 	else
 		obs_log(LOG_WARNING, "Could not create replay Event OUT (set IN first)");
@@ -72,7 +79,7 @@ static void quick_mark(uint64_t pre_roll_ns, const char *action)
 		return;
 
 	uint64_t event_id = 0;
-	if (sr_event_controller_quick_mark(event_controller, os_gettime_ns(), pre_roll_ns, 0, &event_id))
+	if (sr_event_controller_quick_mark(event_controller, event_now_ns(), pre_roll_ns, 0, &event_id))
 		log_created_event(action, event_id);
 	else
 		obs_log(LOG_WARNING, "Could not create replay Event %s", action);
