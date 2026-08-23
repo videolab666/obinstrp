@@ -59,6 +59,7 @@ target_sources(
     src/sr-segment-reader.c
     src/sr-segment-catalog.c
     src/sr-disk-decode.c
+    src/sr-disk-player.c
     src/sr-thumb.c
     src/sr-dock.cpp
 )
