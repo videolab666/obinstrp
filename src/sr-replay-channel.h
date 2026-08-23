@@ -27,12 +27,18 @@ enum sr_replay_bus {
 	SR_REPLAY_BUS_COUNT = 2,
 };
 
+enum sr_replay_audio_mode {
+	SR_REPLAY_AUDIO_OFF = 0,
+	SR_REPLAY_AUDIO_MASTER = 1,
+};
+
 struct sr_replay_channel_state {
 	uint64_t event_id;
 	uint64_t in_ns;
 	uint64_t out_ns;
 	uint64_t playhead_ns;
 	double speed_percent;
+	enum sr_replay_audio_mode audio_mode;
 	uint32_t width;
 	uint32_t height;
 	bool cued;
@@ -67,6 +73,7 @@ void sr_replay_channel_stop(enum sr_replay_bus bus);
 void sr_replay_channel_restart(enum sr_replay_bus bus);
 
 bool sr_replay_channel_set_speed(enum sr_replay_bus bus, double speed_percent);
+bool sr_replay_channel_set_audio_mode(enum sr_replay_bus bus, enum sr_replay_audio_mode audio_mode);
 bool sr_replay_channel_set_backward(enum sr_replay_bus bus, bool backward);
 bool sr_replay_channel_set_loop(enum sr_replay_bus bus, bool loop);
 bool sr_replay_channel_seek(enum sr_replay_bus bus, uint64_t timestamp_ns);

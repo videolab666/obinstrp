@@ -36,6 +36,7 @@ struct sr_replay_channel {
 	uint64_t last_clock_ns;
 
 	double speed_percent;
+	enum sr_replay_audio_mode audio_mode;
 	uint32_t width;
 	uint32_t height;
 	bool cued;
@@ -80,6 +81,7 @@ static void clear_locked(struct sr_replay_channel *channel)
 	channel->playhead_ns = 0;
 	channel->last_clock_ns = 0;
 	channel->speed_percent = 100.0;
+	channel->audio_mode = SR_REPLAY_AUDIO_MASTER;
 	channel->width = 0;
 	channel->height = 0;
 	channel->cued = false;
@@ -122,6 +124,7 @@ bool sr_replay_channels_init(struct sr_event_controller *events)
 	for (size_t i = 0; i < SR_REPLAY_BUS_COUNT; i++) {
 		pthread_mutex_init(&channels->buses[i].mutex, NULL);
 		channels->buses[i].speed_percent = 100.0;
+		channels->buses[i].audio_mode = SR_REPLAY_AUDIO_MASTER;
 	}
 	g_channels = channels;
 	return true;
@@ -191,7 +194,9 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	}
 
 	pthread_mutex_lock(&channel->mutex);
+	const enum sr_replay_audio_mode audio_mode = channel->audio_mode;
 	clear_locked(channel);
+	channel->audio_mode = audio_mode;
 	channel->player = player;
 	channel->camera_name = new_camera_name;
 	channel->event_id = event_id;
@@ -389,6 +394,17 @@ bool sr_replay_channel_set_speed(enum sr_replay_bus bus, double speed_percent)
 	return true;
 }
 
+bool sr_replay_channel_set_audio_mode(enum sr_replay_bus bus, enum sr_replay_audio_mode audio_mode)
+{
+	struct sr_replay_channel *channel = get_bus(bus);
+	if (!channel || (audio_mode != SR_REPLAY_AUDIO_OFF && audio_mode != SR_REPLAY_AUDIO_MASTER))
+		return false;
+	pthread_mutex_lock(&channel->mutex);
+	channel->audio_mode = audio_mode;
+	pthread_mutex_unlock(&channel->mutex);
+	return true;
+}
+
 bool sr_replay_channel_set_backward(enum sr_replay_bus bus, bool backward)
 {
 	struct sr_replay_channel *channel = get_bus(bus);
@@ -475,6 +491,7 @@ bool sr_replay_channel_get_state(enum sr_replay_bus bus, struct sr_replay_channe
 	state->out_ns = channel->out_ns;
 	state->playhead_ns = channel->playhead_ns;
 	state->speed_percent = channel->speed_percent;
+	state->audio_mode = channel->audio_mode;
 	state->width = channel->width;
 	state->height = channel->height;
 	state->cued = channel->cued;

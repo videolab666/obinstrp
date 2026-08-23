@@ -17,4 +17,5 @@ the Free Software Foundation; either version 2 of the License, or
 enum sr_event_output_audio_mode {
 	SR_EVENT_OUTPUT_AUDIO_OFF = 0,
 	SR_EVENT_OUTPUT_AUDIO_MASTER = 1,
+	SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS = 2,
 };

@@ -115,6 +115,7 @@ QString channelSummary(enum sr_replay_bus bus, const QString &label)
 		flags += QStringLiteral(" LOOP");
 	if (state.partial_coverage)
 		flags += QStringLiteral(" PARTIAL");
+	flags += state.audio_mode == SR_REPLAY_AUDIO_MASTER ? QStringLiteral(" AUDIO") : QStringLiteral(" MUTE");
 
 	return QStringLiteral("%1: #%2  %3  %4%  %5/%6 s  %7%8")
 		.arg(label)
@@ -241,6 +242,11 @@ public:
 			speedCombo->addItem(QStringLiteral("%1%").arg(speed), speed);
 		speedCombo->setCurrentIndex(speedCombo->findData(100));
 		cueBar->addWidget(speedCombo);
+		cueBar->addWidget(new QLabel(T("EventDock.Audio"), this));
+		audioCombo = new QComboBox(this);
+		audioCombo->addItem(T("EventDock.AudioMaster"), SR_REPLAY_AUDIO_MASTER);
+		audioCombo->addItem(T("EventDock.AudioOff"), SR_REPLAY_AUDIO_OFF);
+		cueBar->addWidget(audioCombo);
 		root->addLayout(cueBar);
 
 		auto *takeBar = new QHBoxLayout();
@@ -295,6 +301,13 @@ public:
 		connect(speedCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
 			if (index >= 0)
 				sr_replay_channel_set_speed(transportBus(), speedCombo->itemData(index).toDouble());
+		});
+		connect(audioCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+			if (index >= 0)
+				sr_replay_channel_set_audio_mode(
+					transportBus(),
+					static_cast<sr_replay_audio_mode>(audioCombo->itemData(index).toInt()));
+			refreshTransportStatus();
 		});
 		connect(takeA, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_A); });
 		connect(takeB, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_B); });
@@ -391,6 +404,9 @@ private:
 		const int speedIndex = speedCombo->findData((int)state.speed_percent);
 		if (speedIndex >= 0)
 			speedCombo->setCurrentIndex(speedIndex);
+		const int audioIndex = audioCombo->findData((int)state.audio_mode);
+		if (audioIndex >= 0)
+			audioCombo->setCurrentIndex(audioIndex);
 		refreshTransportStatus();
 	}
 
@@ -701,6 +717,7 @@ private:
 	QComboBox *cameraCombo = nullptr;
 	QComboBox *busCombo = nullptr;
 	QComboBox *speedCombo = nullptr;
+	QComboBox *audioCombo = nullptr;
 	QPushButton *reverseButton = nullptr;
 	QPushButton *loopButton = nullptr;
 	QTableWidget *table = nullptr;

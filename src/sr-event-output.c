@@ -109,8 +109,11 @@ static uint64_t abs_delta_u64(uint64_t a, uint64_t b)
 
 static bool master_audio_allowed(const struct sr_event_output *output, const struct sr_replay_channel_state *state)
 {
-	return output->audio_mode == SR_EVENT_OUTPUT_AUDIO_MASTER && state->cued && state->playing && !state->paused &&
-	       !state->backward && fabs(state->speed_percent - 100.0) < 0.01;
+	const bool master_enabled =
+		output->audio_mode == SR_EVENT_OUTPUT_AUDIO_MASTER ||
+		(output->audio_mode == SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS && state->audio_mode == SR_REPLAY_AUDIO_MASTER);
+	return master_enabled && state->cued && state->playing && !state->paused && !state->backward &&
+	       fabs(state->speed_percent - 100.0) < 0.01;
 }
 
 static bool seek_audio_to_playhead(struct sr_event_output *output, const struct sr_replay_channel_state *state,
@@ -225,8 +228,8 @@ static void sr_event_output_update(void *data, obs_data_t *settings)
 		bus = SR_REPLAY_BUS_A;
 
 	int audio_mode = (int)obs_data_get_int(settings, SR_EVENT_OUTPUT_SETTING_AUDIO_MODE);
-	if (audio_mode < SR_EVENT_OUTPUT_AUDIO_OFF || audio_mode > SR_EVENT_OUTPUT_AUDIO_MASTER)
-		audio_mode = SR_EVENT_OUTPUT_AUDIO_MASTER;
+	if (audio_mode < SR_EVENT_OUTPUT_AUDIO_OFF || audio_mode > SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS)
+		audio_mode = SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS;
 
 	if (output->bus != (enum sr_replay_bus)bus || output->audio_mode != (enum sr_event_output_audio_mode)audio_mode)
 		reset_audio_transport(output);
@@ -239,7 +242,7 @@ static void *sr_event_output_create(obs_data_t *settings, obs_source_t *source)
 	struct sr_event_output *output = bzalloc(sizeof(*output));
 	output->self = source;
 	output->bus = SR_REPLAY_BUS_A;
-	output->audio_mode = SR_EVENT_OUTPUT_AUDIO_MASTER;
+	output->audio_mode = SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS;
 	sr_event_output_update(output, settings);
 	return output;
 }
@@ -289,6 +292,8 @@ static obs_properties_t *sr_event_output_properties(void *unused)
 	obs_property_t *audio = obs_properties_add_list(props, SR_EVENT_OUTPUT_SETTING_AUDIO_MODE,
 							obs_module_text("EventOutput.Audio"), OBS_COMBO_TYPE_LIST,
 							OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(audio, obs_module_text("EventOutput.AudioFollowBus"),
+				  SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS);
 	obs_property_list_add_int(audio, obs_module_text("EventOutput.AudioOff"), SR_EVENT_OUTPUT_AUDIO_OFF);
 	obs_property_list_add_int(audio, obs_module_text("EventOutput.AudioMaster"), SR_EVENT_OUTPUT_AUDIO_MASTER);
 	obs_property_set_long_description(audio, obs_module_text("EventOutput.Audio.Description"));
@@ -298,7 +303,7 @@ static obs_properties_t *sr_event_output_properties(void *unused)
 static void sr_event_output_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_int(settings, SR_EVENT_OUTPUT_SETTING_BUS, SR_REPLAY_BUS_A);
-	obs_data_set_default_int(settings, SR_EVENT_OUTPUT_SETTING_AUDIO_MODE, SR_EVENT_OUTPUT_AUDIO_MASTER);
+	obs_data_set_default_int(settings, SR_EVENT_OUTPUT_SETTING_AUDIO_MODE, SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS);
 }
 
 static uint32_t sr_event_output_width(void *data)
