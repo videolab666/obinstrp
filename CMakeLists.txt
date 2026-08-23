@@ -54,6 +54,8 @@ target_sources(
     src/sr-save.c
     src/sr-load.c
     src/sr-config.c
+    src/sr-session.c
+    src/sr-segment-writer.c
     src/sr-thumb.c
     src/sr-dock.cpp
 )
