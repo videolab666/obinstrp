@@ -132,8 +132,7 @@ static bool append_descriptor(struct sr_master_audio_descriptor **items, size_t 
 	return true;
 }
 
-bool sr_master_audio_catalog_scan(const char *session_dir, struct sr_master_audio_descriptor **segments,
-				  size_t *count)
+bool sr_master_audio_catalog_scan(const char *session_dir, struct sr_master_audio_descriptor **segments, size_t *count)
 {
 	if (!segments || !count)
 		return false;
@@ -196,7 +195,7 @@ void sr_master_audio_catalog_free(struct sr_master_audio_descriptor *segments, s
 }
 
 const struct sr_master_audio_descriptor *sr_master_audio_catalog_find(const struct sr_master_audio_descriptor *segments,
-							      size_t count, uint64_t timestamp_ns)
+								      size_t count, uint64_t timestamp_ns)
 {
 	if (!segments || !count)
 		return NULL;

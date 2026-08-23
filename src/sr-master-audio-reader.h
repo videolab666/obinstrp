@@ -55,9 +55,8 @@ bool sr_master_audio_reader_find_position(const struct sr_master_audio_reader *r
 					  size_t *position, struct sr_audio_index_entry *entry);
 
 /* Returns an owned AVPacket; release it with av_packet_free(). */
-bool sr_master_audio_reader_read_packet(struct sr_master_audio_reader *reader,
-					const struct sr_audio_index_entry *entry, AVPacket **packet,
-					uint64_t *timestamp_ns);
+bool sr_master_audio_reader_read_packet(struct sr_master_audio_reader *reader, const struct sr_audio_index_entry *entry,
+					AVPacket **packet, uint64_t *timestamp_ns);
 
 #ifdef __cplusplus
 }

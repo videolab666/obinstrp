@@ -31,12 +31,11 @@ struct sr_master_audio_descriptor {
 
 /* Scans <session>/audio-master and includes both finalized .sraud pairs and a
  * flushed active .sraud.part/.sraidx.part pair. */
-bool sr_master_audio_catalog_scan(const char *session_dir, struct sr_master_audio_descriptor **segments,
-				  size_t *count);
+bool sr_master_audio_catalog_scan(const char *session_dir, struct sr_master_audio_descriptor **segments, size_t *count);
 void sr_master_audio_catalog_free(struct sr_master_audio_descriptor *segments, size_t count);
 
 const struct sr_master_audio_descriptor *sr_master_audio_catalog_find(const struct sr_master_audio_descriptor *segments,
-							      size_t count, uint64_t timestamp_ns);
+								      size_t count, uint64_t timestamp_ns);
 
 #ifdef __cplusplus
 }
