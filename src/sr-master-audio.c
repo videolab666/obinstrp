@@ -62,6 +62,9 @@ struct sr_master_audio_state {
 	char *session_dir;
 	char *audio_dir;
 	uint64_t target_segment_ns;
+	uint64_t min_free_bytes;
+	bool reserve_blocked;
+	uint64_t reserve_recheck_after_ns;
 	uint32_t next_sequence;
 
 	AVCodecContext *encoder;
@@ -164,6 +167,59 @@ static void stats_add_packet(struct sr_master_audio_state *state, uint64_t bytes
 	state->stats.packets_written++;
 	state->stats.bytes_written += bytes;
 	pthread_mutex_unlock(&state->mutex);
+}
+
+static void stats_add_packet_drop(struct sr_master_audio_state *state)
+{
+	pthread_mutex_lock(&state->mutex);
+	state->stats.packets_dropped++;
+	pthread_mutex_unlock(&state->mutex);
+}
+
+static void stats_set_reserve_blocked(struct sr_master_audio_state *state, bool blocked)
+{
+	pthread_mutex_lock(&state->mutex);
+	state->stats.reserve_blocked = blocked;
+	pthread_mutex_unlock(&state->mutex);
+}
+
+static bool storage_reserve_allows(struct sr_master_audio_state *state, uint64_t timestamp_ns)
+{
+	if (!state->min_free_bytes) {
+		if (state->reserve_blocked) {
+			state->reserve_blocked = false;
+			state->reserve_recheck_after_ns = 0;
+			stats_set_reserve_blocked(state, false);
+		}
+		return true;
+	}
+
+	if (state->reserve_blocked && timestamp_ns < state->reserve_recheck_after_ns)
+		return false;
+
+	const uint64_t free_bytes = state->audio_dir ? os_get_free_disk_space(state->audio_dir) : 0;
+	if (free_bytes < state->min_free_bytes) {
+		if (!state->reserve_blocked) {
+			blog(LOG_ERROR,
+			     "Sports Replay: master replay audio paused: disk free space %.1f GB is below the %.1f GB reserve",
+			     (double)free_bytes / (1024.0 * 1024.0 * 1024.0),
+			     (double)state->min_free_bytes / (1024.0 * 1024.0 * 1024.0));
+		}
+		state->reserve_blocked = true;
+		state->reserve_recheck_after_ns = timestamp_ns + 1000000000ULL;
+		state->next_segment_discontinuity = true;
+		stats_set_reserve_blocked(state, true);
+		return false;
+	}
+
+	if (state->reserve_blocked) {
+		blog(LOG_INFO, "Sports Replay: disk reserve restored; master replay audio resumed");
+		state->reserve_blocked = false;
+		state->reserve_recheck_after_ns = 0;
+		state->next_segment_discontinuity = true;
+		stats_set_reserve_blocked(state, false);
+	}
+	return true;
 }
 
 static void clear_segment_paths(struct sr_master_audio_state *state)
@@ -273,8 +329,14 @@ static bool write_packet(struct sr_master_audio_state *state, AVPacket *packet, 
 	    timestamp_ns - state->segment_start_ns >= state->target_segment_ns)
 		close_segment(state, true);
 
-	if (!state->audio_file && !open_segment(state, timestamp_ns))
-		return false;
+	if (!state->audio_file) {
+		if (!storage_reserve_allows(state, timestamp_ns)) {
+			stats_add_packet_drop(state);
+			return true;
+		}
+		if (!open_segment(state, timestamp_ns))
+			return false;
+	}
 
 	const int64_t offset = os_ftelli64(state->audio_file);
 	if (offset < 0)
@@ -444,6 +506,9 @@ static void finish_stream(struct sr_master_audio_state *state)
 	destroy_encoder(state);
 	state->have_write_epoch = false;
 	state->next_segment_discontinuity = false;
+	state->reserve_blocked = false;
+	state->reserve_recheck_after_ns = 0;
+	stats_set_reserve_blocked(state, false);
 	state->encoder_failed_session = false;
 }
 
@@ -610,7 +675,12 @@ bool sr_master_audio_init(void)
 
 	struct sr_master_audio_state *state = bzalloc(sizeof(*state));
 	state->max_queue_chunks = MASTER_AUDIO_MAX_QUEUE_CHUNKS;
-	if (pthread_mutex_init(&state->mutex, NULL) != 0 || pthread_cond_init(&state->cond, NULL) != 0) {
+	if (pthread_mutex_init(&state->mutex, NULL) != 0) {
+		bfree(state);
+		return false;
+	}
+	if (pthread_cond_init(&state->cond, NULL) != 0) {
+		pthread_mutex_destroy(&state->mutex);
 		bfree(state);
 		return false;
 	}
@@ -691,6 +761,11 @@ bool sr_master_audio_acquire(void)
 		state->session_dir = session_dir;
 		state->audio_dir = audio_dir;
 		state->target_segment_ns = (uint64_t)sr_config_get_segment_duration_ms() * 1000000ULL;
+		state->min_free_bytes = sr_config_get_low_space_action() == SR_STORAGE_LOW_SPACE_WARN_ONLY
+						? 0
+						: sr_config_get_min_free_bytes();
+		state->reserve_blocked = false;
+		state->reserve_recheck_after_ns = 0;
 		state->next_sequence = find_next_sequence(state->audio_dir);
 		state->enqueue_epoch++;
 		state->active = true;

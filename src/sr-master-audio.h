@@ -22,12 +22,14 @@ struct sr_master_audio_stats {
 	uint64_t chunks_received;
 	uint64_t chunks_dropped;
 	uint64_t packets_written;
+	uint64_t packets_dropped;
 	uint64_t bytes_written;
 	uint64_t segments_finalized;
 	size_t queue_depth;
 	size_t queue_high_watermark;
 	bool encoder_failed;
 	bool write_failed;
+	bool reserve_blocked;
 };
 
 /* Registers one raw callback on OBS mix 0 and starts the non-realtime worker.
