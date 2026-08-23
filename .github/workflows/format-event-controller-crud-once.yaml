@@ -1,0 +1,49 @@
+name: One-shot EventController CRUD formatting
+
+on:
+  push:
+    branches:
+      - feature/disk-replay-core
+    paths:
+      - '.github/workflows/format-event-controller-crud-once.yaml'
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/disk-replay-core
+          fetch-depth: 0
+
+      - name: Install clang-format 19
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install --quiet zsh
+          brew tap obsproject/tools
+          brew install --quiet obsproject/tools/clang-format@19
+          echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> "$GITHUB_PATH"
+          echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> "$GITHUB_PATH"
+
+      - name: Format EventController
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          ./build-aux/run-clang-format src/sr-event-controller.c src/sr-event-controller.h src/plugin-main.c
+
+      - name: Commit formatting
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "Nothing to change"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/sr-event-controller.c src/sr-event-controller.h src/plugin-main.c
+          git commit -m "style: format EventController CRUD"
+          git push origin HEAD:feature/disk-replay-core
