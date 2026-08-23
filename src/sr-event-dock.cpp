@@ -62,7 +62,8 @@ QString durationText(const sr_event_record &event)
 class SrEventDock : public QWidget {
 public:
 	explicit SrEventDock(sr_event_controller *controller, QWidget *parent = nullptr)
-		: QWidget(parent), controller(controller)
+		: QWidget(parent),
+		  controller(controller)
 	{
 		auto *root = new QVBoxLayout(this);
 		root->setContentsMargins(4, 4, 4, 4);
@@ -172,15 +173,9 @@ public:
 	}
 
 private:
-	unsigned currentList() const
-	{
-		return listCombo ? listCombo->currentData().toUInt() : 1;
-	}
+	unsigned currentList() const { return listCombo ? listCombo->currentData().toUInt() : 1; }
 
-	unsigned targetList() const
-	{
-		return targetCombo ? targetCombo->currentData().toUInt() : 1;
-	}
+	unsigned targetList() const { return targetCombo ? targetCombo->currentData().toUInt() : 1; }
 
 	uint64_t selectedEventId() const
 	{
@@ -191,15 +186,9 @@ private:
 		return item ? item->data(Qt::UserRole).toULongLong() : 0;
 	}
 
-	void setStatus(const char *key)
-	{
-		status->setText(T(key));
-	}
+	void setStatus(const char *key) { status->setText(T(key)); }
 
-	void setCreatedStatus(uint64_t eventId)
-	{
-		status->setText(T("EventDock.Created").arg(eventId));
-	}
+	void setCreatedStatus(uint64_t eventId) { status->setText(T("EventDock.Created").arg(eventId)); }
 
 	void setMarkIn()
 	{
@@ -224,9 +213,8 @@ private:
 	void quickMark(unsigned seconds)
 	{
 		uint64_t eventId = 0;
-		if (!controller ||
-		    !sr_event_controller_quick_mark(controller, obs_get_video_frame_time(), seconds * NS_PER_SECOND, 0,
-						    &eventId)) {
+		if (!controller || !sr_event_controller_quick_mark(controller, obs_get_video_frame_time(),
+								   seconds * NS_PER_SECOND, 0, &eventId)) {
 			setStatus("EventDock.Failed");
 			return;
 		}
@@ -261,7 +249,8 @@ private:
 			table->setItem((int)i, 0, id);
 			table->setItem((int)i, 1, new QTableWidgetItem(durationText(event)));
 			table->setItem((int)i, 2,
-				       new QTableWidgetItem(QString::number(event.speed_percent, 'f', 0) + QStringLiteral("%")));
+				       new QTableWidgetItem(QString::number(event.speed_percent, 'f', 0) +
+							    QStringLiteral("%")));
 			table->setItem((int)i, 3, new QTableWidgetItem(stateText(event)));
 			table->setItem((int)i, 4,
 				       new QTableWidgetItem(QString::fromUtf8(event.name ? event.name : "")));
