@@ -15,6 +15,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <stdint.h>
 
 #include <libavcodec/avcodec.h>
+#include <plugin-support.h>
 
 #include "sr-segment-format.h"
 
