@@ -13,6 +13,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-capture.h"
 #include "sr-event-controller.h"
 #include "sr-replay-channel.h"
+#include "sr-replay-take.h"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -87,7 +88,8 @@ bool enum_camera_source(void *param, obs_source_t *source)
 QStringList captureCameraNames()
 {
 	QStringList names;
-	camera_enum_ctx ctx = {.names = &names};
+	camera_enum_ctx ctx;
+	ctx.names = &names;
 	obs_enum_sources(enum_camera_source, &ctx);
 	names.sort(Qt::CaseInsensitive);
 	return names;
@@ -230,11 +232,22 @@ public:
 		cueBar->addWidget(reverseButton);
 		cueBar->addWidget(loopButton);
 		speedCombo = new QComboBox(this);
-		for (int speed : {25, 33, 50, 75, 100})
+		const int speeds[] = {25, 33, 50, 75, 100};
+		for (int speed : speeds)
 			speedCombo->addItem(QStringLiteral("%1%").arg(speed), speed);
 		speedCombo->setCurrentIndex(speedCombo->findData(100));
 		cueBar->addWidget(speedCombo);
 		root->addLayout(cueBar);
+
+		auto *takeBar = new QHBoxLayout();
+		takeBar->addStretch(1);
+		auto *takeA = new QPushButton(T("EventDock.TakeA"), this);
+		auto *takeB = new QPushButton(T("EventDock.TakeB"), this);
+		auto *takeToggle = new QPushButton(T("EventDock.TakeToggle"), this);
+		takeBar->addWidget(takeA);
+		takeBar->addWidget(takeB);
+		takeBar->addWidget(takeToggle);
+		root->addLayout(takeBar);
 
 		transportStatus = new QLabel(this);
 		transportStatus->setStyleSheet(QStringLiteral("color: gray;"));
@@ -278,6 +291,9 @@ public:
 			if (index >= 0)
 				sr_replay_channel_set_speed(transportBus(), speedCombo->itemData(index).toDouble());
 		});
+		connect(takeA, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_A); });
+		connect(takeB, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_B); });
+		connect(takeToggle, &QPushButton::clicked, this, [this]() { takeToggleBus(); });
 
 		refreshTimer = new QTimer(this);
 		refreshTimer->setInterval(750);
@@ -393,6 +409,28 @@ private:
 					.arg(eventId));
 		if (transportBus() == bus)
 			syncTransportControls();
+		refreshTransportStatus();
+	}
+
+	void takeBus(enum sr_replay_bus bus)
+	{
+		if (!controller || !sr_replay_take_bus(controller, bus)) {
+			setStatus("EventDock.TakeFailed");
+			return;
+		}
+		status->setText(T("EventDock.Taken").arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B")));
+		refresh();
+		refreshTransportStatus();
+	}
+
+	void takeToggleBus()
+	{
+		if (!controller || !sr_replay_take_toggle(controller)) {
+			setStatus("EventDock.TakeFailed");
+			return;
+		}
+		setStatus("EventDock.ToggleTaken");
+		refresh();
 		refreshTransportStatus();
 	}
 
