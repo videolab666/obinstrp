@@ -143,6 +143,7 @@ static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi
 		.extradata = extradata,
 		.extradata_size = extradata_size,
 		.target_segment_ms = sr_config_get_segment_duration_ms(),
+		.min_free_bytes = sr_config_get_min_free_bytes(),
 		.max_queue_packets = 600,
 	};
 
@@ -172,11 +173,12 @@ static void log_buffer_stats(struct sr_capture *c, uint64_t now)
 	struct sr_segment_writer_stats stats;
 	sr_segment_writer_get_stats(c->writer, &stats);
 	obs_log(LOG_INFO,
-		"'%s': replay RAM %.1f MB; disk packets %llu, %.1f MB, segments %llu, queue %zu (peak %zu), dropped %llu%s",
+		"'%s': replay RAM %.1f MB; disk packets %llu, %.1f MB, segments %llu, queue %zu (peak %zu), dropped %llu%s%s",
 		obs_source_get_name(c->self), (double)bytes / (1024.0 * 1024.0),
 		(unsigned long long)stats.packets_written, (double)stats.bytes_written / (1024.0 * 1024.0),
 		(unsigned long long)stats.segments_finalized, stats.queue_depth, stats.queue_high_watermark,
-		(unsigned long long)stats.packets_dropped, stats.write_failed ? ", WRITE ERROR" : "");
+		(unsigned long long)stats.packets_dropped, stats.reserve_blocked ? ", DISK RESERVE" : "",
+		stats.write_failed ? ", WRITE ERROR" : "");
 }
 
 static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_source_frame *frame)
