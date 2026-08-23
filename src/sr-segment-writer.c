@@ -172,16 +172,36 @@ static uint32_t find_next_sequence(const char *camera_dir)
 		os_globfree(glob);
 	}
 	dstr_free(&pattern);
-	return max_sequence + 1u;
+	return max_sequence == UINT32_MAX ? UINT32_MAX : max_sequence + 1u;
 }
 
 static bool write_exact(FILE *f, const void *data, size_t bytes)
 {
-	return bytes == 0 || fwrite(data, 1, bytes, f) == bytes;
+	return bytes == 0 || (data && fwrite(data, 1, bytes, f) == bytes);
+}
+
+static void close_open_files(struct sr_segment_writer *w)
+{
+	if (w->segment_file) {
+		fflush(w->segment_file);
+		fclose(w->segment_file);
+		w->segment_file = NULL;
+	}
+	if (w->index_file) {
+		fflush(w->index_file);
+		fclose(w->index_file);
+		w->index_file = NULL;
+	}
 }
 
 static bool open_segment(struct sr_segment_writer *w, uint64_t start_ns, bool discontinuity)
 {
+	if (w->next_sequence == UINT32_MAX) {
+		obs_log(LOG_ERROR, "Sports Replay: segment sequence exhausted for camera '%s'", w->camera_name);
+		stats_set_failed(w);
+		return false;
+	}
+
 	const uint32_t sequence = w->next_sequence++;
 	clear_current_paths(w);
 	w->segment_part_path = make_path(w->camera_dir, sequence, ".srseg.part");
@@ -193,12 +213,7 @@ static bool open_segment(struct sr_segment_writer *w, uint64_t start_ns, bool di
 	w->index_file = os_fopen(w->index_part_path, "wb");
 	if (!w->segment_file || !w->index_file) {
 		obs_log(LOG_ERROR, "Sports Replay: could not open segment files for camera '%s'", w->camera_name);
-		if (w->segment_file)
-			fclose(w->segment_file);
-		if (w->index_file)
-			fclose(w->index_file);
-		w->segment_file = NULL;
-		w->index_file = NULL;
+		close_open_files(w);
 		w->current_segment_failed = true;
 		stats_set_failed(w);
 		return false;
@@ -225,13 +240,14 @@ static bool open_segment(struct sr_segment_writer *w, uint64_t start_ns, bool di
 	ih.sequence = sequence;
 	ih.segment_start_ns = start_ns;
 
-	bool ok = write_exact(w->segment_file, &sh, sizeof(sh)) &&
-		      write_exact(w->segment_file, w->extradata, sh.extradata_size) &&
-		      write_exact(w->index_file, &ih, sizeof(ih));
+	const bool ok = write_exact(w->segment_file, &sh, sizeof(sh)) &&
+			write_exact(w->segment_file, w->extradata, sh.extradata_size) &&
+			write_exact(w->index_file, &ih, sizeof(ih));
 	if (!ok) {
 		obs_log(LOG_ERROR, "Sports Replay: failed to write segment header for camera '%s'", w->camera_name);
 		w->current_segment_failed = true;
 		stats_set_failed(w);
+		close_open_files(w);
 		return false;
 	}
 
@@ -247,16 +263,7 @@ static void close_segment(struct sr_segment_writer *w, bool finalize)
 	if (!w->segment_file && !w->index_file)
 		return;
 
-	if (w->segment_file) {
-		fflush(w->segment_file);
-		fclose(w->segment_file);
-		w->segment_file = NULL;
-	}
-	if (w->index_file) {
-		fflush(w->index_file);
-		fclose(w->index_file);
-		w->index_file = NULL;
-	}
+	close_open_files(w);
 
 	if (finalize && !w->current_segment_failed) {
 		const int seg_rc = os_rename(w->segment_part_path, w->segment_final_path);
@@ -394,6 +401,24 @@ static void *writer_thread(void *param)
 			}
 		}
 
+		if (node->timestamp_ns < w->segment_start_ns) {
+			/* Timestamp discontinuity: never append backwards in the same
+			 * segment. Resync on a keyframe and mark the new segment. */
+			close_segment(w, true);
+			w->need_keyframe = true;
+			w->discontinuity_for_next_packet = true;
+			if (!node->keyframe) {
+				stats_add_drop(w);
+				free_packet_node(node);
+				continue;
+			}
+			if (!open_segment(w, node->timestamp_ns, true)) {
+				free_packet_node(node);
+				continue;
+			}
+			w->need_keyframe = false;
+		}
+
 		if (node->keyframe && w->segment_start_ns &&
 		    node->timestamp_ns - w->segment_start_ns >= w->target_segment_ns) {
 			close_segment(w, true);
@@ -435,12 +460,14 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	w->height = config->height;
 	w->fps_num = config->fps_num;
 	w->fps_den = config->fps_den;
-	w->extradata_size = config->extradata_size > 0 ? config->extradata_size : 0;
+	w->extradata_size = config->extradata && config->extradata_size > 0 ? config->extradata_size : 0;
 	if (w->extradata_size)
 		w->extradata = bmemdup(config->extradata, (size_t)w->extradata_size);
 	w->target_segment_ns = (uint64_t)(config->target_segment_ms ? config->target_segment_ms : 4000) * 1000000ULL;
 	w->max_queue_packets = config->max_queue_packets ? config->max_queue_packets : 600;
-	w->need_keyframe = true;
+	/* Initial acquisition is handled by the !segment_file branch below, so
+	 * the first valid segment is not incorrectly marked as a discontinuity. */
+	w->need_keyframe = false;
 
 	char camera_folder[32];
 	snprintf(camera_folder, sizeof(camera_folder), "cam-%08x", w->camera_hash);
