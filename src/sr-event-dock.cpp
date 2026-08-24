@@ -15,6 +15,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-event-controller.h"
 #include "sr-replay-channel.h"
 #include "sr-replay-coverage.h"
+#include "sr-replay-playlist.h"
 #include "sr-replay-take.h"
 #include "sr-storage-cleanup.h"
 
@@ -309,6 +310,15 @@ public:
 		auto *takeB = new QPushButton(T("EventDock.TakeB"), this);
 		auto *takeToggle = new QPushButton(T("EventDock.TakeToggle"), this);
 		auto *returnLive = new QPushButton(T("EventDock.ReturnLive"), this);
+		auto *playlistA = new QPushButton(T("EventDock.PlaylistA"), this);
+		auto *playlistB = new QPushButton(T("EventDock.PlaylistB"), this);
+		auto *playlistNext = new QPushButton(T("EventDock.PlaylistNext"), this);
+		auto *playlistStop = new QPushButton(T("EventDock.PlaylistStop"), this);
+		takeBar->addWidget(playlistA);
+		takeBar->addWidget(playlistB);
+		takeBar->addWidget(playlistNext);
+		takeBar->addWidget(playlistStop);
+		takeBar->addSpacing(10);
 		takeBar->addWidget(takeA);
 		takeBar->addWidget(takeB);
 		takeBar->addWidget(takeToggle);
@@ -385,6 +395,10 @@ public:
 			jogLastValue = 0;
 		});
 		connect(shuttleSlider, &QSlider::valueChanged, this, [this](int value) { applyShuttle(value); });
+		connect(playlistA, &QPushButton::clicked, this, [this]() { startPlaylist(SR_REPLAY_BUS_A); });
+		connect(playlistB, &QPushButton::clicked, this, [this]() { startPlaylist(SR_REPLAY_BUS_B); });
+		connect(playlistNext, &QPushButton::clicked, this, [this]() { nextPlaylist(); });
+		connect(playlistStop, &QPushButton::clicked, this, [this]() { stopPlaylist(); });
 		connect(takeA, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_A); });
 		connect(takeB, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_B); });
 		connect(takeToggle, &QPushButton::clicked, this, [this]() { takeToggleBus(); });
@@ -619,12 +633,27 @@ private:
 		refreshAngleCoverage();
 	}
 
+	QString playlistSummary(enum sr_replay_bus bus) const
+	{
+		sr_replay_playlist_state state = {};
+		if (!sr_replay_playlist_get_state(bus, &state) || !state.active)
+			return QString();
+		return T("EventDock.PlaylistState").arg(state.list_id).arg(state.position + 1).arg(state.count);
+	}
+
 	void refreshTransportStatus()
 	{
 		if (!transportStatus)
 			return;
-		transportStatus->setText(channelSummary(SR_REPLAY_BUS_A, QStringLiteral("A")) + QStringLiteral("    ") +
-					 channelSummary(SR_REPLAY_BUS_B, QStringLiteral("B")));
+		QString a = channelSummary(SR_REPLAY_BUS_A, QStringLiteral("A"));
+		QString b = channelSummary(SR_REPLAY_BUS_B, QStringLiteral("B"));
+		const QString pa = playlistSummary(SR_REPLAY_BUS_A);
+		const QString pb = playlistSummary(SR_REPLAY_BUS_B);
+		if (!pa.isEmpty())
+			a += QStringLiteral("  [") + pa + QStringLiteral("]");
+		if (!pb.isEmpty())
+			b += QStringLiteral("  [") + pb + QStringLiteral("]");
+		transportStatus->setText(a + QStringLiteral("    ") + b);
 	}
 
 	void syncTransportControls()
@@ -798,6 +827,7 @@ private:
 			return;
 		}
 		const QByteArray cameraUtf8 = camera.toUtf8();
+		sr_replay_playlist_stop(bus);
 		if (!sr_replay_channel_cue(bus, eventId, cameraUtf8.constData())) {
 			setStatus("EventDock.CueFailed");
 			return;
@@ -807,6 +837,47 @@ private:
 					.arg(eventId));
 		if (transportBus() == bus)
 			syncTransportControls();
+		refreshTransportStatus();
+	}
+
+	void startPlaylist(enum sr_replay_bus bus)
+	{
+		const QString camera = selectedCamera();
+		const QByteArray cameraUtf8 = camera.toUtf8();
+		const char *preferred = camera.isEmpty() ? nullptr : cameraUtf8.constData();
+		if (!controller || !sr_replay_playlist_start(bus, currentList(), preferred)) {
+			setStatus("EventDock.PlaylistFailed");
+			return;
+		}
+		if (!sr_replay_take_bus(controller, bus)) {
+			sr_replay_playlist_stop(bus);
+			sr_replay_channel_stop(bus);
+			setStatus("EventDock.TakeFailed");
+			return;
+		}
+		status->setText(T("EventDock.PlaylistStarted")
+					.arg(currentList())
+					.arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B")));
+		refresh();
+		refreshTransportStatus();
+	}
+
+	void nextPlaylist()
+	{
+		if (!sr_replay_playlist_next(transportBus())) {
+			setStatus("EventDock.PlaylistFinished");
+			refreshTransportStatus();
+			return;
+		}
+		setStatus("EventDock.PlaylistAdvanced");
+		refresh();
+		refreshTransportStatus();
+	}
+
+	void stopPlaylist()
+	{
+		sr_replay_playlist_stop(transportBus());
+		setStatus("EventDock.PlaylistStopped");
 		refreshTransportStatus();
 	}
 
@@ -861,6 +932,7 @@ private:
 
 	void stopTransport()
 	{
+		sr_replay_playlist_stop(transportBus());
 		sr_replay_channel_stop(transportBus());
 		refreshTransportStatus();
 	}

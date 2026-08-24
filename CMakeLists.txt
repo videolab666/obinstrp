@@ -104,6 +104,7 @@ target_sources(
     src/sr-event-dock.cpp
     src/sr-replay-channel.c
     src/sr-replay-coverage.c
+    src/sr-replay-playlist.c
     src/sr-replay-take.c
     src/sr-event-output.c
     src/sr-storage-cleanup.c

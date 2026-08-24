@@ -187,6 +187,19 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	const uint64_t event_out_ns = event.out_ns;
 	sr_event_controller_free_event(&event);
 
+	/* Refuse a cue that cannot actually decode its first visible frame. Apart
+	 * from avoiding a black first frame, this lets Event List playback safely
+	 * fall through to another camera when coarse catalog bounds hide a gap. */
+	AVFrame *first_frame = NULL;
+	if (!sr_disk_player_decode_at(player, in_ns, &first_frame, NULL) || !first_frame) {
+		av_frame_free(&first_frame);
+		sr_disk_player_destroy(player);
+		blog(LOG_WARNING, "Sports Replay: could not cue Event %llu on '%s': no decodable start frame",
+		     (unsigned long long)event_id, camera_name);
+		return false;
+	}
+	av_frame_free(&first_frame);
+
 	char *new_camera_name = bstrdup(camera_name);
 	if (!new_camera_name) {
 		sr_disk_player_destroy(player);

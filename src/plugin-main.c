@@ -18,6 +18,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-event-dock.h"
 #include "sr-master-audio.h"
 #include "sr-replay-channel.h"
+#include "sr-replay-playlist.h"
 #include "sr-replay-take.h"
 #include "sr-scene-tracker.h"
 #include "sr-session.h"
@@ -44,6 +45,10 @@ static obs_hotkey_id hk_take_a = OBS_INVALID_HOTKEY_ID;
 static obs_hotkey_id hk_take_b = OBS_INVALID_HOTKEY_ID;
 static obs_hotkey_id hk_take_toggle = OBS_INVALID_HOTKEY_ID;
 static obs_hotkey_id hk_return_live = OBS_INVALID_HOTKEY_ID;
+static obs_hotkey_id hk_playlist_a = OBS_INVALID_HOTKEY_ID;
+static obs_hotkey_id hk_playlist_b = OBS_INVALID_HOTKEY_ID;
+static obs_hotkey_id hk_playlist_next = OBS_INVALID_HOTKEY_ID;
+static obs_hotkey_id hk_playlist_stop = OBS_INVALID_HOTKEY_ID;
 static obs_hotkey_id hk_angles[SR_ANGLE_HOTKEY_COUNT];
 
 static void log_created_event(const char *action, uint64_t event_id)
@@ -162,6 +167,66 @@ static void return_live_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, b
 		obs_log(LOG_WARNING, "Sports Replay: RETURN LIVE failed");
 }
 
+static void start_playlist_bus(enum sr_replay_bus bus)
+{
+	if (!event_controller)
+		return;
+	const unsigned list_id = sr_event_controller_get_current_list(event_controller);
+	if (!sr_replay_playlist_start(bus, list_id, NULL)) {
+		obs_log(LOG_WARNING, "Sports Replay: no playable Event in list %u for bus %c", list_id,
+			bus == SR_REPLAY_BUS_A ? 'A' : 'B');
+		return;
+	}
+	if (!sr_replay_take_bus(event_controller, bus)) {
+		sr_replay_playlist_stop(bus);
+		sr_replay_channel_stop(bus);
+		obs_log(LOG_WARNING, "Sports Replay: Event List %u started but TAKE %c failed", list_id,
+			bus == SR_REPLAY_BUS_A ? 'A' : 'B');
+	}
+}
+
+static void playlist_a_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (pressed)
+		start_playlist_bus(SR_REPLAY_BUS_A);
+}
+
+static void playlist_b_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (pressed)
+		start_playlist_bus(SR_REPLAY_BUS_B);
+}
+
+static void playlist_next_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	enum sr_replay_bus bus;
+	if (!sr_replay_take_current_bus(&bus) || !sr_replay_playlist_next(bus))
+		obs_log(LOG_WARNING, "Sports Replay: no later playable highlight on the active bus");
+}
+
+static void playlist_stop_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	enum sr_replay_bus bus;
+	if (sr_replay_take_current_bus(&bus))
+		sr_replay_playlist_stop(bus);
+}
+
 static void angle_hotkey_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
 {
 	UNUSED_PARAMETER(id);
@@ -222,6 +287,14 @@ static void register_event_hotkeys(void)
 						      take_toggle_cb, NULL);
 	hk_return_live = obs_hotkey_register_frontend("SportsReplay.ReturnLive", obs_module_text("Hotkey.ReturnLive"),
 						      return_live_cb, NULL);
+	hk_playlist_a = obs_hotkey_register_frontend("SportsReplay.PlaylistA", obs_module_text("Hotkey.PlaylistA"),
+						     playlist_a_cb, NULL);
+	hk_playlist_b = obs_hotkey_register_frontend("SportsReplay.PlaylistB", obs_module_text("Hotkey.PlaylistB"),
+						     playlist_b_cb, NULL);
+	hk_playlist_next = obs_hotkey_register_frontend("SportsReplay.PlaylistNext",
+							obs_module_text("Hotkey.PlaylistNext"), playlist_next_cb, NULL);
+	hk_playlist_stop = obs_hotkey_register_frontend("SportsReplay.PlaylistStop",
+							obs_module_text("Hotkey.PlaylistStop"), playlist_stop_cb, NULL);
 
 	static const char *const angle_ids[SR_ANGLE_HOTKEY_COUNT] = {
 		"SportsReplay.Angle1", "SportsReplay.Angle2", "SportsReplay.Angle3", "SportsReplay.Angle4",
@@ -256,6 +329,14 @@ static void unregister_event_hotkeys(void)
 		obs_hotkey_unregister(hk_take_toggle);
 	if (hk_return_live != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(hk_return_live);
+	if (hk_playlist_a != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(hk_playlist_a);
+	if (hk_playlist_b != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(hk_playlist_b);
+	if (hk_playlist_next != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(hk_playlist_next);
+	if (hk_playlist_stop != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(hk_playlist_stop);
 	for (size_t i = 0; i < SR_ANGLE_HOTKEY_COUNT; i++) {
 		if (hk_angles[i] != OBS_INVALID_HOTKEY_ID)
 			obs_hotkey_unregister(hk_angles[i]);
@@ -271,6 +352,10 @@ static void unregister_event_hotkeys(void)
 	hk_take_b = OBS_INVALID_HOTKEY_ID;
 	hk_take_toggle = OBS_INVALID_HOTKEY_ID;
 	hk_return_live = OBS_INVALID_HOTKEY_ID;
+	hk_playlist_a = OBS_INVALID_HOTKEY_ID;
+	hk_playlist_b = OBS_INVALID_HOTKEY_ID;
+	hk_playlist_next = OBS_INVALID_HOTKEY_ID;
+	hk_playlist_stop = OBS_INVALID_HOTKEY_ID;
 }
 
 bool obs_module_load(void)
@@ -291,8 +376,10 @@ bool obs_module_load(void)
 		return false;
 	}
 	event_controller = sr_event_controller_create();
-	if (!event_controller || !sr_replay_channels_init(event_controller) || !sr_storage_manager_start()) {
+	if (!event_controller || !sr_replay_channels_init(event_controller) ||
+	    !sr_replay_playlist_init(event_controller) || !sr_storage_manager_start()) {
 		sr_storage_manager_stop();
+		sr_replay_playlist_shutdown();
 		sr_replay_channels_shutdown();
 		sr_event_controller_destroy(event_controller);
 		event_controller = NULL;
@@ -325,6 +412,7 @@ void obs_module_unload(void)
 	unregister_event_hotkeys();
 	sr_storage_manager_stop();
 	sr_replay_take_reset();
+	sr_replay_playlist_shutdown();
 	sr_replay_channels_shutdown();
 	sr_event_controller_destroy(event_controller);
 	event_controller = NULL;

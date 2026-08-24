@@ -12,6 +12,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-master-audio-player.h"
 #include "sr-replay-channel.h"
+#include "sr-replay-playlist.h"
 #include "sr-scene-tracker.h"
 #include "sr-session.h"
 
@@ -270,6 +271,11 @@ static void sr_event_output_tick(void *data, float seconds)
 		av_frame_free(&decoded);
 	}
 
+	if (ended && sr_replay_playlist_advance_on_end(output->bus)) {
+		ended = false;
+		reset_audio_transport(output);
+	}
+
 	struct sr_replay_channel_state state;
 	if (sr_replay_channel_get_state(output->bus, &state))
 		output_master_audio(output, &state, clock_ns);
@@ -291,6 +297,7 @@ static void sr_event_output_deactivate(void *data)
 	 * has finished and is also the safety net for an operator cutting away
 	 * manually instead of pressing RETURN LIVE. */
 	reset_audio_transport(output);
+	sr_replay_playlist_stop(output->bus);
 	sr_replay_channel_stop(output->bus);
 	sr_scene_tracker_end_replay_guard();
 }
