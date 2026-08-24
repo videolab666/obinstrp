@@ -1,0 +1,398 @@
+/*
+Pitel Instant Replay
+Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+*/
+
+#include "sr-gpu-video.h"
+
+#include <obs-module.h>
+#include <graphics/graphics.h>
+
+#include <libavutil/hwcontext.h>
+#include <libavutil/pixfmt.h>
+#include <libswscale/swscale.h>
+
+#include <limits>
+#include <vector>
+
+#ifdef _WIN32
+#include <d3d11.h>
+#include <libavutil/hwcontext_d3d11va.h>
+#endif
+
+struct sr_gpu_renderer {
+	gs_texture_t *texture = nullptr;
+	uint32_t width = 0;
+	uint32_t height = 0;
+	SwsContext *sws = nullptr;
+	std::vector<uint8_t> bgra;
+	bool native_failure_logged = false;
+
+#ifdef _WIN32
+	ID3D11Device *device = nullptr; /* borrowed from OBS */
+	ID3D11DeviceContext *context = nullptr;
+	ID3D11VideoDevice *video_device = nullptr;
+	ID3D11VideoContext *video_context = nullptr;
+	ID3D11VideoProcessorEnumerator *enumerator = nullptr;
+	ID3D11VideoProcessor *processor = nullptr;
+	ID3D11VideoProcessorOutputView *output_view = nullptr;
+	uint32_t processor_width = 0;
+	uint32_t processor_height = 0;
+#endif
+};
+
+#ifdef _WIN32
+template<typename T> static void com_release(T *&value)
+{
+	if (value) {
+		value->Release();
+		value = nullptr;
+	}
+}
+
+static void release_d3d11_pipeline(sr_gpu_renderer *renderer)
+{
+	if (!renderer)
+		return;
+	com_release(renderer->output_view);
+	com_release(renderer->processor);
+	com_release(renderer->enumerator);
+	com_release(renderer->video_context);
+	com_release(renderer->video_device);
+	com_release(renderer->context);
+	renderer->device = nullptr;
+	renderer->processor_width = 0;
+	renderer->processor_height = 0;
+}
+#endif
+
+static void destroy_graphics_resources(sr_gpu_renderer *renderer)
+{
+	if (!renderer)
+		return;
+#ifdef _WIN32
+	release_d3d11_pipeline(renderer);
+#endif
+	if (renderer->texture) {
+		gs_texture_destroy(renderer->texture);
+		renderer->texture = nullptr;
+	}
+	renderer->width = 0;
+	renderer->height = 0;
+}
+
+extern "C" AVBufferRef *sr_gpu_create_replay_decode_device(void)
+{
+#ifdef _WIN32
+	AVBufferRef *device_ref = nullptr;
+	obs_enter_graphics();
+	if (gs_get_device_type() == GS_DEVICE_DIRECT3D_11) {
+		ID3D11Device *device = static_cast<ID3D11Device *>(gs_get_device_obj());
+		if (device) {
+			device_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
+			if (device_ref) {
+				AVHWDeviceContext *hw = reinterpret_cast<AVHWDeviceContext *>(device_ref->data);
+				AVD3D11VADeviceContext *d3d = static_cast<AVD3D11VADeviceContext *>(hw->hwctx);
+				device->AddRef();
+				d3d->device = device;
+				/* Decoder surfaces are consumed by the D3D11 video processor on
+				 * the same device. D3D11_BIND_DECODER is the only binding the
+				 * decoder requires; avoiding an unnecessary SRV binding keeps
+				 * compatibility with older decode drivers. */
+				d3d->BindFlags = D3D11_BIND_DECODER;
+				if (av_hwdevice_ctx_init(device_ref) < 0)
+					av_buffer_unref(&device_ref);
+			}
+		}
+	}
+	obs_leave_graphics();
+	return device_ref;
+#else
+	return nullptr;
+#endif
+}
+
+extern "C" bool sr_gpu_replay_zero_copy_available(void)
+{
+#ifdef _WIN32
+	bool available = false;
+	obs_enter_graphics();
+	available = gs_get_device_type() == GS_DEVICE_DIRECT3D_11 && gs_get_device_obj() != nullptr;
+	obs_leave_graphics();
+	return available;
+#else
+	return false;
+#endif
+}
+
+extern "C" bool sr_gpu_frame_is_native(const AVFrame *frame)
+{
+#ifdef _WIN32
+	return frame && frame->format == AV_PIX_FMT_D3D11 && frame->data[0] != nullptr;
+#else
+	(void)frame;
+	return false;
+#endif
+}
+
+extern "C" sr_gpu_renderer *sr_gpu_renderer_create(void)
+{
+	return new sr_gpu_renderer();
+}
+
+extern "C" void sr_gpu_renderer_destroy(sr_gpu_renderer *renderer)
+{
+	if (!renderer)
+		return;
+
+	/* Source destruction can happen outside the render thread. libobs uses
+	 * this same enter/leave pair for sources that own graphics resources. */
+	obs_enter_graphics();
+	destroy_graphics_resources(renderer);
+	obs_leave_graphics();
+
+	if (renderer->sws)
+		sws_freeContext(renderer->sws);
+	delete renderer;
+}
+
+static bool ensure_target_texture(sr_gpu_renderer *renderer, uint32_t width, uint32_t height)
+{
+	if (!renderer || !width || !height)
+		return false;
+	if (renderer->texture && renderer->width == width && renderer->height == height)
+		return true;
+
+#ifdef _WIN32
+	com_release(renderer->output_view);
+	renderer->processor_width = 0;
+	renderer->processor_height = 0;
+#endif
+	if (renderer->texture)
+		gs_texture_destroy(renderer->texture);
+
+	/* A typed BGRA resource can be both an OBS shader input and a D3D11 video
+	 * processor output. This is the only GPU-side copy/conversion in the
+	 * native path; decoded NV12 never enters system memory. */
+	renderer->texture = gs_texture_create(width, height, GS_BGRA_UNORM, 1, nullptr, GS_RENDER_TARGET);
+	if (!renderer->texture) {
+		renderer->width = 0;
+		renderer->height = 0;
+		return false;
+	}
+	renderer->width = width;
+	renderer->height = height;
+	return true;
+}
+
+#ifdef _WIN32
+static bool ensure_d3d11_pipeline(sr_gpu_renderer *renderer, uint32_t width, uint32_t height)
+{
+	if (!renderer || gs_get_device_type() != GS_DEVICE_DIRECT3D_11)
+		return false;
+
+	ID3D11Device *current_device = static_cast<ID3D11Device *>(gs_get_device_obj());
+	if (!current_device)
+		return false;
+
+	if (renderer->device && renderer->device != current_device) {
+		/* OBS recreated the graphics device. Drop every native object and let
+		 * the next frame rebuild against the new device. */
+		release_d3d11_pipeline(renderer);
+	}
+
+	if (!renderer->device) {
+		renderer->device = current_device;
+		current_device->GetImmediateContext(&renderer->context);
+		if (!renderer->context ||
+		    FAILED(current_device->QueryInterface(__uuidof(ID3D11VideoDevice),
+						 reinterpret_cast<void **>(&renderer->video_device))) ||
+		    FAILED(renderer->context->QueryInterface(__uuidof(ID3D11VideoContext),
+							 reinterpret_cast<void **>(&renderer->video_context)))) {
+			release_d3d11_pipeline(renderer);
+			return false;
+		}
+	}
+
+	if (renderer->processor && renderer->processor_width == width && renderer->processor_height == height &&
+	    renderer->output_view)
+		return true;
+
+	com_release(renderer->output_view);
+	com_release(renderer->processor);
+	com_release(renderer->enumerator);
+
+	D3D11_VIDEO_PROCESSOR_CONTENT_DESC content = {};
+	content.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+	content.InputFrameRate.Numerator = 60;
+	content.InputFrameRate.Denominator = 1;
+	content.InputWidth = width;
+	content.InputHeight = height;
+	content.OutputFrameRate.Numerator = 60;
+	content.OutputFrameRate.Denominator = 1;
+	content.OutputWidth = width;
+	content.OutputHeight = height;
+	content.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+
+	if (FAILED(renderer->video_device->CreateVideoProcessorEnumerator(&content, &renderer->enumerator)) ||
+	    FAILED(renderer->video_device->CreateVideoProcessor(renderer->enumerator, 0, &renderer->processor))) {
+		com_release(renderer->processor);
+		com_release(renderer->enumerator);
+		return false;
+	}
+
+	ID3D11Texture2D *target = static_cast<ID3D11Texture2D *>(gs_texture_get_obj(renderer->texture));
+	if (!target)
+		return false;
+
+	D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC output_desc = {};
+	output_desc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+	output_desc.Texture2D.MipSlice = 0;
+	if (FAILED(renderer->video_device->CreateVideoProcessorOutputView(target, renderer->enumerator, &output_desc,
+									&renderer->output_view))) {
+		return false;
+	}
+
+	renderer->processor_width = width;
+	renderer->processor_height = height;
+	return true;
+}
+
+static bool draw_native_d3d11(sr_gpu_renderer *renderer, const AVFrame *frame, uint32_t width, uint32_t height)
+{
+	if (!sr_gpu_frame_is_native(frame) || !ensure_target_texture(renderer, width, height) ||
+	    !ensure_d3d11_pipeline(renderer, width, height))
+		return false;
+
+	ID3D11Texture2D *input = reinterpret_cast<ID3D11Texture2D *>(frame->data[0]);
+	const UINT array_slice = static_cast<UINT>(reinterpret_cast<uintptr_t>(frame->data[1]));
+
+	ID3D11Device *input_device = nullptr;
+	input->GetDevice(&input_device);
+	const bool same_device = input_device == renderer->device;
+	if (input_device)
+		input_device->Release();
+	if (!same_device)
+		return false;
+
+	D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC input_desc = {};
+	input_desc.FourCC = 0;
+	input_desc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+	input_desc.Texture2D.MipSlice = 0;
+	input_desc.Texture2D.ArraySlice = array_slice;
+
+	ID3D11VideoProcessorInputView *input_view = nullptr;
+	if (FAILED(renderer->video_device->CreateVideoProcessorInputView(input, renderer->enumerator, &input_desc,
+									 &input_view)))
+		return false;
+
+	RECT source_rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+	RECT dest_rect = source_rect;
+	renderer->video_context->VideoProcessorSetStreamFrameFormat(renderer->processor, 0,
+								     D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+	renderer->video_context->VideoProcessorSetStreamSourceRect(renderer->processor, 0, TRUE, &source_rect);
+	renderer->video_context->VideoProcessorSetStreamDestRect(renderer->processor, 0, TRUE, &dest_rect);
+	renderer->video_context->VideoProcessorSetOutputTargetRect(renderer->processor, TRUE, &dest_rect);
+
+	/* Stored replay is tagged BT.709 limited-range. Tell the video processor
+	 * explicitly rather than relying on driver defaults (often BT.601). */
+	D3D11_VIDEO_PROCESSOR_COLOR_SPACE input_color = {};
+	input_color.YCbCr_Matrix = 1; /* BT.709 */
+	input_color.Nominal_Range = 1; /* 16-235 */
+	D3D11_VIDEO_PROCESSOR_COLOR_SPACE output_color = {};
+	output_color.RGB_Range = 0; /* full-range RGB */
+	output_color.Nominal_Range = 2; /* 0-255 */
+	renderer->video_context->VideoProcessorSetStreamColorSpace(renderer->processor, 0, &input_color);
+	renderer->video_context->VideoProcessorSetOutputColorSpace(renderer->processor, &output_color);
+
+	D3D11_VIDEO_PROCESSOR_STREAM stream = {};
+	stream.Enable = TRUE;
+	stream.pInputSurface = input_view;
+	const HRESULT hr = renderer->video_context->VideoProcessorBlt(renderer->processor, renderer->output_view, 0, 1,
+									 &stream);
+	input_view->Release();
+	if (FAILED(hr))
+		return false;
+
+	obs_source_draw(renderer->texture, 0, 0, width, height, false);
+	return true;
+}
+#endif
+
+static bool draw_software(sr_gpu_renderer *renderer, const AVFrame *frame, uint32_t width, uint32_t height)
+{
+	if (!renderer || !frame || width == 0 || height == 0)
+		return false;
+
+	const AVFrame *source = frame;
+	AVFrame *transferred = nullptr;
+	if (sr_gpu_frame_is_native(frame)) {
+		transferred = av_frame_alloc();
+		if (!transferred || av_hwframe_transfer_data(transferred, frame, 0) < 0) {
+			av_frame_free(&transferred);
+			return false;
+		}
+		av_frame_copy_props(transferred, frame);
+		source = transferred;
+	}
+
+	if (source->format < 0 || !ensure_target_texture(renderer, width, height)) {
+		av_frame_free(&transferred);
+		return false;
+	}
+
+	const uint64_t bytes64 = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ULL;
+	if (bytes64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+		av_frame_free(&transferred);
+		return false;
+	}
+	renderer->bgra.resize(static_cast<size_t>(bytes64));
+
+	renderer->sws = sws_getCachedContext(renderer->sws, source->width, source->height,
+						      static_cast<AVPixelFormat>(source->format), width, height,
+						      AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+	if (!renderer->sws) {
+		av_frame_free(&transferred);
+		return false;
+	}
+
+	const int *coefficients = sws_getCoefficients(SWS_CS_ITU709);
+	const int source_full_range = source->color_range == AVCOL_RANGE_JPEG ? 1 : 0;
+	sws_setColorspaceDetails(renderer->sws, coefficients, source_full_range, coefficients, 1, 0, 1 << 16, 1 << 16);
+
+	uint8_t *dst_data[4] = {renderer->bgra.data(), nullptr, nullptr, nullptr};
+	int dst_linesize[4] = {static_cast<int>(width * 4u), 0, 0, 0};
+	const int rows = sws_scale(renderer->sws, source->data, source->linesize, 0, source->height, dst_data,
+				   dst_linesize);
+	av_frame_free(&transferred);
+	if (rows <= 0)
+		return false;
+
+	gs_texture_set_image(renderer->texture, renderer->bgra.data(), width * 4u, false);
+	obs_source_draw(renderer->texture, 0, 0, width, height, false);
+	return true;
+}
+
+extern "C" bool sr_gpu_renderer_draw(sr_gpu_renderer *renderer, const AVFrame *frame, uint32_t width, uint32_t height)
+{
+	if (!renderer || !frame)
+		return false;
+
+#ifdef _WIN32
+	if (sr_gpu_frame_is_native(frame)) {
+		if (draw_native_d3d11(renderer, frame, width, height))
+			return true;
+		if (!renderer->native_failure_logged) {
+			blog(LOG_WARNING,
+			     "Pitel Instant Replay: D3D11 zero-CPU-copy presentation failed; using GPU->CPU fallback");
+			renderer->native_failure_logged = true;
+		}
+	}
+#endif
+	return draw_software(renderer, frame, width, height);
+}
