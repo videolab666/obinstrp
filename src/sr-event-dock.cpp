@@ -13,28 +13,41 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-camera-list.h"
 #include "sr-capture.h"
 #include "sr-event-controller.h"
+#include "sr-event-export.h"
 #include "sr-replay-channel.h"
 #include "sr-replay-coverage.h"
 #include "sr-replay-playlist.h"
 #include "sr-replay-take.h"
 #include "sr-storage-cleanup.h"
+#include "sr-session.h"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <util/bmem.h>
 
 #include <cstring>
+#include <atomic>
+#include <memory>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
 #include <QAbstractItemView>
 #include <QComboBox>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QProgressBar>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QStandardPaths>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTimer>
@@ -128,6 +141,95 @@ QString channelSummary(enum sr_replay_bus bus, const QString &label)
 		.arg(flags);
 }
 
+QString safeFilePart(const QString &value)
+{
+	QString safe;
+	safe.reserve(value.size());
+	for (const QChar character : value) {
+		if (character.isLetterOrNumber() || character == QChar('-') || character == QChar('_'))
+			safe.append(character);
+		else if (safe.isEmpty() || safe.back() != QChar('_'))
+			safe.append(QChar('_'));
+	}
+	while (safe.endsWith(QChar('_')))
+		safe.chop(1);
+	return safe.isEmpty() ? QStringLiteral("camera") : safe.left(80);
+}
+
+QString unusedAnglePath(const QDir &directory, uint64_t eventId, const QString &camera)
+{
+	const QString stem = QStringLiteral("Event_%1_%2").arg(eventId, 6, 10, QChar('0')).arg(safeFilePart(camera));
+	QString path = directory.filePath(stem + QStringLiteral(".mp4"));
+	for (unsigned suffix = 2; QFileInfo::exists(path); suffix++)
+		path = directory.filePath(stem + QStringLiteral("-%1.mp4").arg(suffix));
+	return path;
+}
+
+struct ExportTask {
+	std::string sessionDir;
+	std::string camera;
+	std::string outputPath;
+	uint64_t eventInNs = 0;
+	uint64_t eventOutNs = 0;
+	int64_t syncOffsetNs = 0;
+	bool includeMasterAudio = false;
+};
+
+struct ExportJob {
+	std::vector<ExportTask> tasks;
+	std::atomic<bool> cancel{false};
+	std::atomic<bool> done{false};
+	std::atomic<unsigned> progress{0};
+	std::thread worker;
+	bool success = false;
+	size_t completed = 0;
+	std::string failedCamera;
+	sr_event_export_result result = {};
+};
+
+bool exportCancelled(void *data)
+{
+	return static_cast<ExportJob *>(data)->cancel.load(std::memory_order_relaxed);
+}
+
+void exportProgress(void *data, unsigned percent)
+{
+	auto *job = static_cast<ExportJob *>(data);
+	const unsigned taskCount = (unsigned)job->tasks.size();
+	const unsigned completed = (unsigned)job->completed;
+	job->progress.store(taskCount ? (completed * 100U + percent) / taskCount : 0, std::memory_order_relaxed);
+}
+
+void runExportJob(ExportJob *job)
+{
+	job->success = true;
+	for (size_t i = 0; i < job->tasks.size(); i++) {
+		if (job->cancel.load(std::memory_order_relaxed)) {
+			job->success = false;
+			job->result.error = SR_EVENT_EXPORT_CANCELLED;
+			break;
+		}
+
+		const ExportTask &task = job->tasks[i];
+		sr_event_export_spec spec = {};
+		spec.session_dir = task.sessionDir.c_str();
+		spec.camera_name = task.camera.c_str();
+		spec.output_path = task.outputPath.c_str();
+		spec.event_in_ns = task.eventInNs;
+		spec.event_out_ns = task.eventOutNs;
+		spec.camera_sync_offset_ns = task.syncOffsetNs;
+		spec.include_master_audio = task.includeMasterAudio;
+		job->failedCamera = task.camera;
+		if (!sr_event_export_fast(&spec, exportCancelled, exportProgress, job, &job->result)) {
+			job->success = false;
+			break;
+		}
+		job->completed = i + 1;
+		job->progress.store((unsigned)(job->completed * 100 / job->tasks.size()), std::memory_order_relaxed);
+	}
+	job->done.store(true, std::memory_order_release);
+}
+
 class SrEventDock : public QWidget {
 public:
 	explicit SrEventDock(sr_event_controller *eventController, QWidget *parent = nullptr)
@@ -208,6 +310,24 @@ public:
 		actionBar->addWidget(move);
 		actionBar->addWidget(duplicate);
 		root->addLayout(actionBar);
+
+		auto *exportBar = new QHBoxLayout();
+		exportBar->addWidget(new QLabel(T("EventDock.Export"), this));
+		exportModeCombo = new QComboBox(this);
+		exportModeCombo->addItem(T("EventDock.ExportPreferred"), 0);
+		exportModeCombo->addItem(T("EventDock.ExportAll"), 1);
+		exportBar->addWidget(exportModeCombo);
+		auto *exportFast = new QPushButton(T("EventDock.ExportFast"), this);
+		exportCancelButton = new QPushButton(T("EventDock.ExportCancel"), this);
+		exportCancelButton->setEnabled(false);
+		exportProgressBar = new QProgressBar(this);
+		exportProgressBar->setRange(0, 100);
+		exportProgressBar->setValue(0);
+		exportProgressBar->setMinimumWidth(120);
+		exportBar->addWidget(exportFast);
+		exportBar->addWidget(exportCancelButton);
+		exportBar->addWidget(exportProgressBar, 1);
+		root->addLayout(exportBar);
 
 		auto *cueBar = new QHBoxLayout();
 		cueBar->addWidget(new QLabel(T("EventDock.Camera"), this));
@@ -358,6 +478,8 @@ public:
 		connect(copy, &QPushButton::clicked, this, [this]() { copySelected(); });
 		connect(move, &QPushButton::clicked, this, [this]() { moveSelected(); });
 		connect(duplicate, &QPushButton::clicked, this, [this]() { duplicateSelected(); });
+		connect(exportFast, &QPushButton::clicked, this, [this]() { startExport(); });
+		connect(exportCancelButton, &QPushButton::clicked, this, [this]() { cancelExport(); });
 		connect(setPreferred, &QPushButton::clicked, this, [this]() { setPreferredCamera(false); });
 		connect(clearPreferred, &QPushButton::clicked, this, [this]() { setPreferredCamera(true); });
 		connect(cueA, &QPushButton::clicked, this, [this]() { cueSelected(SR_REPLAY_BUS_A); });
@@ -429,6 +551,7 @@ public:
 			refreshTransportStatus();
 			syncTimeline();
 			syncAngleButtonState();
+			pollExport();
 		});
 		transportTimer->start();
 
@@ -438,6 +561,15 @@ public:
 		refresh();
 		refreshTransportStatus();
 		syncTransportControls();
+	}
+
+	~SrEventDock() override
+	{
+		if (exportJob) {
+			exportJob->cancel.store(true, std::memory_order_relaxed);
+			if (exportJob->worker.joinable())
+				exportJob->worker.join();
+		}
 	}
 
 private:
@@ -563,6 +695,7 @@ private:
 			button->setProperty("coverage", (int)coverage.coverage);
 			button->setProperty("playableInNs", QVariant::fromValue<qulonglong>(coverage.playable_in_ns));
 			button->setProperty("playableOutNs", QVariant::fromValue<qulonglong>(coverage.playable_out_ns));
+			button->setProperty("syncOffsetNs", QVariant::fromValue<qlonglong>(coverage.sync_offset_ns));
 
 			QString marker = QStringLiteral("○");
 			QString tooltip = haveEvent ? T("EventDock.AngleNone").arg(camera)
@@ -995,6 +1128,170 @@ private:
 		refreshTransportStatus();
 	}
 
+	QPushButton *angleButton(const QString &camera) const
+	{
+		for (QPushButton *button : angleButtons) {
+			if (button->property("cameraName").toString() == camera)
+				return button;
+		}
+		return nullptr;
+	}
+
+	bool addExportTask(std::vector<ExportTask> &tasks, const std::string &sessionDir, const QString &camera,
+			   const QString &outputPath, const sr_event_record &event)
+	{
+		QPushButton *button = angleButton(camera);
+		if (!button || button->property("coverage").toInt() != SR_REPLAY_COVERAGE_FULL)
+			return false;
+
+		ExportTask task;
+		task.sessionDir = sessionDir;
+		task.camera = camera.toUtf8().constData();
+		task.outputPath = outputPath.toUtf8().constData();
+		task.eventInNs = event.in_ns;
+		task.eventOutNs = event.out_ns;
+		task.syncOffsetNs = button->property("syncOffsetNs").toLongLong();
+		task.includeMasterAudio = event.audio_mode == SR_EVENT_AUDIO_MASTER;
+		tasks.emplace_back(std::move(task));
+		return true;
+	}
+
+	void startExport()
+	{
+		if (exportJob) {
+			setStatus("EventDock.ExportBusy");
+			return;
+		}
+
+		const uint64_t eventId = selectedEventId();
+		sr_event_record event = {};
+		if (!controller || !eventId || !sr_event_controller_get_event(controller, eventId, &event)) {
+			setStatus("EventDock.NoEventSelected");
+			return;
+		}
+		if (event.pending || event.out_ns <= event.in_ns) {
+			sr_event_controller_free_event(&event);
+			setStatus("EventDock.ExportPending");
+			return;
+		}
+
+		QString preferred;
+		if (event.preferred_camera_id) {
+			char *name = nullptr;
+			if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &name) && name)
+				preferred = QString::fromUtf8(name);
+			bfree(name);
+		}
+
+		QStringList fullAngles;
+		for (QPushButton *button : angleButtons) {
+			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_FULL)
+				fullAngles.append(button->property("cameraName").toString());
+		}
+		if (fullAngles.isEmpty()) {
+			sr_event_controller_free_event(&event);
+			setStatus("EventDock.ExportNoCoverage");
+			return;
+		}
+
+		char *sessionPath = sr_session_get_or_create_path();
+		if (!sessionPath) {
+			sr_event_controller_free_event(&event);
+			setStatus("EventDock.ExportFailed");
+			return;
+		}
+		const std::string sessionDir(sessionPath);
+		bfree(sessionPath);
+
+		std::vector<ExportTask> tasks;
+		const bool allAngles = exportModeCombo && exportModeCombo->currentData().toInt() == 1;
+		if (allAngles) {
+			const QString directoryPath = QFileDialog::getExistingDirectory(this, T("EventDock.ExportFolder"));
+			if (directoryPath.isEmpty()) {
+				sr_event_controller_free_event(&event);
+				return;
+			}
+			const QDir directory(directoryPath);
+			for (const QString &camera : fullAngles)
+				addExportTask(tasks, sessionDir, camera, unusedAnglePath(directory, eventId, camera), event);
+		} else {
+			QString camera = preferred;
+			if (!fullAngles.contains(camera))
+				camera = selectedCamera();
+			if (!fullAngles.contains(camera))
+				camera = fullAngles.first();
+
+			QString baseDirectory = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+			if (baseDirectory.isEmpty())
+				baseDirectory = QDir::homePath();
+			const QString suggested = QDir(baseDirectory).filePath(
+				QStringLiteral("Event_%1_%2.mp4").arg(eventId, 6, 10, QChar('0')).arg(safeFilePart(camera)));
+			QString outputPath = QFileDialog::getSaveFileName(this, T("EventDock.ExportFile"), suggested,
+								     T("EventDock.ExportFilter"));
+			if (outputPath.isEmpty()) {
+				sr_event_controller_free_event(&event);
+				return;
+			}
+			if (!outputPath.endsWith(QStringLiteral(".mp4"), Qt::CaseInsensitive))
+				outputPath += QStringLiteral(".mp4");
+			if (QFileInfo::exists(outputPath)) {
+				sr_event_controller_free_event(&event);
+				setStatus("EventDock.ExportExists");
+				return;
+			}
+			addExportTask(tasks, sessionDir, camera, outputPath, event);
+		}
+		sr_event_controller_free_event(&event);
+
+		if (tasks.empty()) {
+			setStatus("EventDock.ExportNoCoverage");
+			return;
+		}
+
+		exportJob = std::make_unique<ExportJob>();
+		exportJob->tasks = std::move(tasks);
+		exportProgressBar->setValue(0);
+		exportCancelButton->setEnabled(true);
+		exportModeCombo->setEnabled(false);
+		status->setText(T("EventDock.ExportStarted").arg(exportJob->tasks.size()));
+		ExportJob *job = exportJob.get();
+		job->worker = std::thread([job]() { runExportJob(job); });
+	}
+
+	void cancelExport()
+	{
+		if (!exportJob)
+			return;
+		exportJob->cancel.store(true, std::memory_order_relaxed);
+		exportCancelButton->setEnabled(false);
+		setStatus("EventDock.ExportCancelling");
+	}
+
+	void pollExport()
+	{
+		if (!exportJob)
+			return;
+		exportProgressBar->setValue((int)exportJob->progress.load(std::memory_order_relaxed));
+		if (!exportJob->done.load(std::memory_order_acquire))
+			return;
+
+		if (exportJob->worker.joinable())
+			exportJob->worker.join();
+		exportProgressBar->setValue(exportJob->success ? 100 : (int)exportJob->progress.load());
+		if (exportJob->success) {
+			status->setText(T("EventDock.ExportComplete").arg(exportJob->completed));
+		} else if (exportJob->result.error == SR_EVENT_EXPORT_CANCELLED) {
+			setStatus("EventDock.ExportCancelled");
+		} else {
+			status->setText(T("EventDock.ExportError")
+						.arg(QString::fromUtf8(exportJob->failedCamera.c_str()),
+						     QString::fromUtf8(sr_event_export_error_text(exportJob->result.error))));
+		}
+		exportCancelButton->setEnabled(false);
+		exportModeCombo->setEnabled(true);
+		exportJob.reset();
+	}
+
 	void setMarkIn()
 	{
 		if (!controller || !sr_event_controller_mark_in(controller, obs_get_video_frame_time())) {
@@ -1227,6 +1524,7 @@ private:
 	QComboBox *busCombo = nullptr;
 	QComboBox *speedCombo = nullptr;
 	QComboBox *audioCombo = nullptr;
+	QComboBox *exportModeCombo = nullptr;
 	QGridLayout *angleGrid = nullptr;
 	QVector<QPushButton *> angleButtons;
 	QSlider *timelineSlider = nullptr;
@@ -1236,6 +1534,8 @@ private:
 	QLabel *shuttleValue = nullptr;
 	QPushButton *reverseButton = nullptr;
 	QPushButton *loopButton = nullptr;
+	QPushButton *exportCancelButton = nullptr;
+	QProgressBar *exportProgressBar = nullptr;
 	QTableWidget *table = nullptr;
 	QLabel *transportStatus = nullptr;
 	QLabel *status = nullptr;
@@ -1244,6 +1544,7 @@ private:
 	bool timelineDragging = false;
 	int jogLastValue = 0;
 	unsigned cameraRefreshTicks = 0;
+	std::unique_ptr<ExportJob> exportJob;
 };
 
 } // namespace

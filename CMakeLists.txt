@@ -108,6 +108,7 @@ target_sources(
     src/sr-replay-playlist.c
     src/sr-replay-take.c
     src/sr-event-output.c
+    src/sr-event-export.c
     src/sr-recovery.c
     src/sr-storage-cleanup.c
     src/sr-storage-manager.c
