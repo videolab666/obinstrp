@@ -181,8 +181,8 @@ extern "C" AVFrame *sr_gpu_frame_clone_for_cache(const AVFrame *frame)
 
 		obs_enter_graphics();
 		ID3D11Device *obs_device = gs_get_device_type() == GS_DEVICE_DIRECT3D_11
-					   ? static_cast<ID3D11Device *>(gs_get_device_obj())
-					   : nullptr;
+						   ? static_cast<ID3D11Device *>(gs_get_device_obj())
+						   : nullptr;
 		ID3D11Device *input_device = nullptr;
 		input->GetDevice(&input_device);
 
@@ -200,9 +200,10 @@ extern "C" AVFrame *sr_gpu_frame_clone_for_cache(const AVFrame *frame)
 				ID3D11DeviceContext *context = nullptr;
 				obs_device->GetImmediateContext(&context);
 				if (context) {
-					const UINT source_subresource = D3D11CalcSubresource(0, array_slice, source_mip_levels);
-					context->CopySubresourceRegion(cached_texture, 0, 0, 0, 0, input, source_subresource,
-								       nullptr);
+					const UINT source_subresource =
+						D3D11CalcSubresource(0, array_slice, source_mip_levels);
+					context->CopySubresourceRegion(cached_texture, 0, 0, 0, 0, input,
+								       source_subresource, nullptr);
 					context->Release();
 				} else {
 					cached_texture->Release();
@@ -225,7 +226,7 @@ extern "C" AVFrame *sr_gpu_frame_clone_for_cache(const AVFrame *frame)
 		}
 
 		AVBufferRef *texture_ref = av_buffer_create(reinterpret_cast<uint8_t *>(cached_texture), 1,
-							 release_cached_d3d11_texture, nullptr, 0);
+							    release_cached_d3d11_texture, nullptr, 0);
 		if (!texture_ref) {
 			cached_texture->Release();
 			av_frame_free(&copy);
@@ -319,9 +320,9 @@ static bool ensure_d3d11_pipeline(sr_gpu_renderer *renderer, uint32_t width, uin
 		current_device->GetImmediateContext(&renderer->context);
 		if (!renderer->context ||
 		    FAILED(current_device->QueryInterface(__uuidof(ID3D11VideoDevice),
-						 reinterpret_cast<void **>(&renderer->video_device))) ||
+							  reinterpret_cast<void **>(&renderer->video_device))) ||
 		    FAILED(renderer->context->QueryInterface(__uuidof(ID3D11VideoContext),
-							 reinterpret_cast<void **>(&renderer->video_context)))) {
+							     reinterpret_cast<void **>(&renderer->video_context)))) {
 			release_d3d11_pipeline(renderer);
 			return false;
 		}
@@ -362,7 +363,7 @@ static bool ensure_d3d11_pipeline(sr_gpu_renderer *renderer, uint32_t width, uin
 	output_desc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
 	output_desc.Texture2D.MipSlice = 0;
 	if (FAILED(renderer->video_device->CreateVideoProcessorOutputView(target, renderer->enumerator, &output_desc,
-									&renderer->output_view))) {
+									  &renderer->output_view))) {
 		return false;
 	}
 
@@ -402,7 +403,7 @@ static bool draw_native_d3d11(sr_gpu_renderer *renderer, const AVFrame *frame, u
 	RECT source_rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
 	RECT dest_rect = source_rect;
 	renderer->video_context->VideoProcessorSetStreamFrameFormat(renderer->processor, 0,
-								     D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+								    D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
 	renderer->video_context->VideoProcessorSetStreamSourceRect(renderer->processor, 0, TRUE, &source_rect);
 	renderer->video_context->VideoProcessorSetStreamDestRect(renderer->processor, 0, TRUE, &dest_rect);
 	renderer->video_context->VideoProcessorSetOutputTargetRect(renderer->processor, TRUE, &dest_rect);
@@ -410,10 +411,10 @@ static bool draw_native_d3d11(sr_gpu_renderer *renderer, const AVFrame *frame, u
 	/* Stored replay is tagged BT.709 limited-range. Tell the video processor
 	 * explicitly rather than relying on driver defaults (often BT.601). */
 	D3D11_VIDEO_PROCESSOR_COLOR_SPACE input_color = {};
-	input_color.YCbCr_Matrix = 1; /* BT.709 */
+	input_color.YCbCr_Matrix = 1;  /* BT.709 */
 	input_color.Nominal_Range = 1; /* 16-235 */
 	D3D11_VIDEO_PROCESSOR_COLOR_SPACE output_color = {};
-	output_color.RGB_Range = 0; /* full-range RGB */
+	output_color.RGB_Range = 0;     /* full-range RGB */
 	output_color.Nominal_Range = 2; /* 0-255 */
 	renderer->video_context->VideoProcessorSetStreamColorSpace(renderer->processor, 0, &input_color);
 	renderer->video_context->VideoProcessorSetOutputColorSpace(renderer->processor, &output_color);
@@ -421,8 +422,8 @@ static bool draw_native_d3d11(sr_gpu_renderer *renderer, const AVFrame *frame, u
 	D3D11_VIDEO_PROCESSOR_STREAM stream = {};
 	stream.Enable = TRUE;
 	stream.pInputSurface = input_view;
-	const HRESULT hr = renderer->video_context->VideoProcessorBlt(renderer->processor, renderer->output_view, 0, 1,
-									 &stream);
+	const HRESULT hr =
+		renderer->video_context->VideoProcessorBlt(renderer->processor, renderer->output_view, 0, 1, &stream);
 	input_view->Release();
 	if (FAILED(hr))
 		return false;
@@ -462,8 +463,8 @@ static bool draw_software(sr_gpu_renderer *renderer, const AVFrame *frame, uint3
 	renderer->bgra.resize(static_cast<size_t>(bytes64));
 
 	renderer->sws = sws_getCachedContext(renderer->sws, source->width, source->height,
-						      static_cast<AVPixelFormat>(source->format), width, height,
-						      AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+					     static_cast<AVPixelFormat>(source->format), width, height, AV_PIX_FMT_BGRA,
+					     SWS_BILINEAR, nullptr, nullptr, nullptr);
 	if (!renderer->sws) {
 		av_frame_free(&transferred);
 		return false;
@@ -475,8 +476,8 @@ static bool draw_software(sr_gpu_renderer *renderer, const AVFrame *frame, uint3
 
 	uint8_t *dst_data[4] = {renderer->bgra.data(), nullptr, nullptr, nullptr};
 	int dst_linesize[4] = {static_cast<int>(width * 4u), 0, 0, 0};
-	const int rows = sws_scale(renderer->sws, source->data, source->linesize, 0, source->height, dst_data,
-				   dst_linesize);
+	const int rows =
+		sws_scale(renderer->sws, source->data, source->linesize, 0, source->height, dst_data, dst_linesize);
 	av_frame_free(&transferred);
 	if (rows <= 0)
 		return false;
