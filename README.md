@@ -15,8 +15,8 @@ streaming PCs.
 
 The popular raw-buffer replay plugins keep every frame uncompressed in memory
 (~8 MB per 1080p frame). With several cameras and a long buffer that easily
-reaches many gigabytes and pushes a PC to its limit mid-broadcast. Sports
-Replay solves that by encoding the buffer with your GPU, keeping quality high
+reaches many gigabytes and pushes a PC to its limit mid-broadcast. Pitel
+Instant Replay solves that by encoding the buffer with your GPU, keeping quality high
 while cutting memory use by roughly **50–100×**.
 
 ## Features
@@ -53,7 +53,7 @@ For the stable RAM-replay version, download and run the installer from the
 The vMix-style disk/Event operator is currently developed on
 `feature/disk-replay-core`. Open the latest successful workflow run for
 [pull request #1](../../pull/1/checks), download the Windows x64 artifact,
-unpack its inner `sports-replay-*-windows-x64.zip`, and copy the contained
+unpack its inner `pitel-instant-replay-*-windows-x64.zip`, and copy the contained
 `obs-plugins` and `data` directories into the OBS installation directory.
 Close OBS before replacing plugin files, then restart it.
 
@@ -79,6 +79,16 @@ second tab. Development artifacts are unsigned and require OBS Studio 31+.
 5. **Cue A/B** and **TAKE A/B** remain available for advanced two-bus operation:
    prepare B while A is on air, then switch without replaying the IN Stinger.
    Use **RETURN LIVE** to return to the scene that was live before replay.
+6. The angle buttons show recorded previews for the selected Event. Double-click
+   the Speed, Name or Tag cell to edit a highlight; use arrows and
+   Move/Copy/Duplicate to assemble the 20 highlight lists.
+7. Choose **Master**, **Selected camera** or **Off** in the bus audio control.
+   In Event Output properties, set **Replay gain** and choose whether live audio
+   is kept, ducked or muted during TAKE. Audio currently plays at normal forward
+   speed; reverse and variable-speed replay remain muted.
+8. Open the **Storage** tab to see every replay session and its size, inspect the
+   last automatic-cleanup result, or permanently delete a closed session. The
+   active session is protected from manual deletion.
 
 Continuous recording keeps its camera sources showing internally even when
 they are not in the current OBS scene. **STOP RECORD** releases those holds and

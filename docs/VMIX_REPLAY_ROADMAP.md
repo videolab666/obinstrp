@@ -634,10 +634,10 @@ Metadata DB error: avoid destructive cleanup and preserve media for recovery.
 - [ ] Take A/B and A↔B.
 
 ### M8 — Audio v1
-- [ ] Master and optional camera audio to disk.
-- [ ] AAC timestamps/indexing.
-- [ ] Off/Master/Camera playback.
-- [ ] Replay gain and Keep/Duck/Mute live policy.
+- [x] Master and optional camera audio to disk.
+- [x] AAC timestamps/indexing.
+- [x] Off/Master/Camera playback.
+- [x] Replay gain and Keep/Duck/Mute live policy.
 
 ### M9 — Native stingers
 - [ ] Replay IN.
@@ -648,19 +648,19 @@ Metadata DB error: avoid destructive cleanup and preserve media for recovery.
 - [ ] Studio Mode tests.
 
 ### M10 — Storage GC/delete
-- [ ] Free-space monitor.
-- [ ] hysteresis.
-- [ ] protected interval checks.
-- [ ] safe automatic purge.
-- [ ] manual session/media delete.
+- [x] Free-space monitor.
+- [x] hysteresis.
+- [x] protected interval checks.
+- [x] safe automatic purge.
+- [x] manual session/media delete and session/GC diagnostics.
 
 ### M11 — Operator Dock
 - [ ] QTableView/QAbstractTableModel.
-- [ ] vMix-like event grid.
-- [ ] mark controls.
-- [ ] A/B controls.
-- [ ] transport/jog/speed/audio.
-- [ ] storage/session diagnostics.
+- [x] vMix-like editable event grid with recorded angle previews.
+- [x] mark controls.
+- [x] A/B controls with explicit Cue/Program state.
+- [x] transport/jog/speed/audio.
+- [x] storage/session diagnostics.
 
 ### M12 — Export/recovery/reliability
 - [ ] Fast MP4 remux.
