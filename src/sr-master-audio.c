@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-master-audio.h"
 
 #include "sr-audio-format.h"
+#include "sr-camera-identity.h"
 #include "sr-config.h"
 #include "sr-session.h"
 
@@ -62,6 +63,7 @@ struct sr_master_audio_state {
 
 	char *session_dir;
 	char *audio_dir;
+	uint32_t sample_rate;
 	uint64_t target_segment_ns;
 	uint64_t min_free_bytes;
 	bool reserve_blocked;
@@ -89,6 +91,10 @@ struct sr_master_audio_state {
 	uint64_t last_publish_ns;
 
 	struct sr_master_audio_stats stats;
+};
+
+struct sr_camera_audio_writer {
+	struct sr_master_audio_state *state;
 };
 
 static struct sr_master_audio_state *g_audio;
@@ -418,7 +424,7 @@ static bool open_encoder(struct sr_master_audio_state *state)
 	AVCodecContext *encoder = avcodec_alloc_context3(codec);
 	if (!encoder)
 		return false;
-	encoder->sample_rate = MASTER_AUDIO_SAMPLE_RATE;
+	encoder->sample_rate = (int)(state->sample_rate ? state->sample_rate : MASTER_AUDIO_SAMPLE_RATE);
 	encoder->sample_fmt = AV_SAMPLE_FMT_FLTP;
 	encoder->bit_rate = MASTER_AUDIO_BIT_RATE;
 	encoder->time_base = (AVRational){1, MASTER_AUDIO_SAMPLE_RATE};
@@ -552,8 +558,7 @@ static bool encode_chunk(struct sr_master_audio_state *state, struct sr_master_a
 		const uint32_t capacity = (uint32_t)state->frame->nb_samples - state->pending_frames;
 		const uint32_t copy_frames = chunk->frames - offset < capacity ? chunk->frames - offset : capacity;
 		if (!state->pending_frames)
-			state->pending_start_ns =
-				chunk->timestamp_ns + audio_frames_to_ns(MASTER_AUDIO_SAMPLE_RATE, offset);
+			state->pending_start_ns = chunk->timestamp_ns + audio_frames_to_ns(state->sample_rate, offset);
 
 		for (uint32_t channel = 0; channel < MASTER_AUDIO_CHANNELS; channel++) {
 			float *dst = (float *)state->frame->data[channel] + state->pending_frames;
@@ -639,25 +644,24 @@ static void *audio_worker(void *param)
 	return NULL;
 }
 
-static void master_audio_callback(void *param, size_t mix_idx, struct audio_data *data)
+static bool enqueue_audio(struct sr_master_audio_state *state, const uint8_t *left, const uint8_t *right,
+			  uint32_t frames, uint64_t timestamp_ns)
 {
-	UNUSED_PARAMETER(mix_idx);
-	struct sr_master_audio_state *state = param;
-	if (!state || !data || !data->frames || !data->data[0] || !data->data[1])
-		return;
+	if (!state || !frames || !left)
+		return false;
 
 	pthread_mutex_lock(&state->mutex);
 	const bool active = state->active && !state->stopping;
 	pthread_mutex_unlock(&state->mutex);
 	if (!active)
-		return;
+		return false;
 
 	struct sr_master_audio_chunk *chunk = bzalloc(sizeof(*chunk));
-	chunk->frames = data->frames;
-	chunk->timestamp_ns = data->timestamp;
-	chunk->samples = bmalloc((size_t)data->frames * MASTER_AUDIO_CHANNELS * sizeof(float));
-	memcpy(chunk->samples, data->data[0], (size_t)data->frames * sizeof(float));
-	memcpy(chunk->samples + data->frames, data->data[1], (size_t)data->frames * sizeof(float));
+	chunk->frames = frames;
+	chunk->timestamp_ns = timestamp_ns;
+	chunk->samples = bmalloc((size_t)frames * MASTER_AUDIO_CHANNELS * sizeof(float));
+	memcpy(chunk->samples, left, (size_t)frames * sizeof(float));
+	memcpy(chunk->samples + frames, right ? right : left, (size_t)frames * sizeof(float));
 
 	pthread_mutex_lock(&state->mutex);
 	state->stats.chunks_received++;
@@ -668,7 +672,7 @@ static void master_audio_callback(void *param, size_t mix_idx, struct audio_data
 		}
 		pthread_mutex_unlock(&state->mutex);
 		free_chunk(chunk);
-		return;
+		return false;
 	}
 
 	chunk->epoch = state->enqueue_epoch;
@@ -683,6 +687,17 @@ static void master_audio_callback(void *param, size_t mix_idx, struct audio_data
 		state->stats.queue_high_watermark = state->queue_depth;
 	pthread_cond_signal(&state->cond);
 	pthread_mutex_unlock(&state->mutex);
+	return true;
+}
+
+static void master_audio_callback(void *param, size_t mix_idx, struct audio_data *data)
+{
+	UNUSED_PARAMETER(mix_idx);
+	struct sr_master_audio_state *state = param;
+	if (!state || !data || !data->frames || !data->data[0] || !data->data[1])
+		return;
+
+	enqueue_audio(state, data->data[0], data->data[1], data->frames, data->timestamp);
 }
 
 bool sr_master_audio_init(void)
@@ -692,6 +707,7 @@ bool sr_master_audio_init(void)
 
 	struct sr_master_audio_state *state = bzalloc(sizeof(*state));
 	state->max_queue_chunks = MASTER_AUDIO_MAX_QUEUE_CHUNKS;
+	state->sample_rate = MASTER_AUDIO_SAMPLE_RATE;
 	if (pthread_mutex_init(&state->mutex, NULL) != 0) {
 		bfree(state);
 		return false;
@@ -827,4 +843,100 @@ void sr_master_audio_get_stats(struct sr_master_audio_stats *stats)
 	*stats = state->stats;
 	stats->queue_depth = state->queue_depth;
 	pthread_mutex_unlock(&state->mutex);
+}
+
+struct sr_camera_audio_writer *sr_camera_audio_writer_create(const char *session_dir, const char *camera_name,
+							     uint32_t sample_rate)
+{
+	if (!session_dir || !*session_dir || !camera_name || !*camera_name || !sample_rate)
+		return NULL;
+	char camera_key[SR_CAMERA_STABLE_KEY_MAX] = {0};
+	if (!sr_camera_key_from_name(camera_name, camera_key, sizeof(camera_key)))
+		return NULL;
+	char *camera_dir = sr_camera_directory_for_key(session_dir, camera_key);
+	if (!camera_dir || os_mkdirs(camera_dir) == MKDIR_ERROR) {
+		bfree(camera_dir);
+		return NULL;
+	}
+
+	struct sr_master_audio_state *state = bzalloc(sizeof(*state));
+	state->max_queue_chunks = MASTER_AUDIO_MAX_QUEUE_CHUNKS;
+	state->sample_rate = sample_rate;
+	state->session_dir = bstrdup(session_dir);
+	state->audio_dir = camera_dir;
+	state->target_segment_ns = (uint64_t)sr_config_get_segment_duration_ms() * 1000000ULL;
+	state->min_free_bytes =
+		sr_config_get_low_space_action() == SR_STORAGE_LOW_SPACE_WARN_ONLY ? 0 : sr_config_get_min_free_bytes();
+	state->next_sequence = find_next_sequence(state->audio_dir);
+	state->active = true;
+	state->active_refs = 1;
+	if (pthread_mutex_init(&state->mutex, NULL) != 0) {
+		bfree(state->session_dir);
+		bfree(state->audio_dir);
+		bfree(state);
+		return NULL;
+	}
+	if (pthread_cond_init(&state->cond, NULL) != 0) {
+		pthread_mutex_destroy(&state->mutex);
+		bfree(state->session_dir);
+		bfree(state->audio_dir);
+		bfree(state);
+		return NULL;
+	}
+	if (pthread_create(&state->thread, NULL, audio_worker, state) != 0) {
+		pthread_cond_destroy(&state->cond);
+		pthread_mutex_destroy(&state->mutex);
+		bfree(state->session_dir);
+		bfree(state->audio_dir);
+		bfree(state);
+		return NULL;
+	}
+	state->thread_started = true;
+
+	struct sr_camera_audio_writer *writer = bzalloc(sizeof(*writer));
+	writer->state = state;
+	blog(LOG_INFO, "Pitel Instant Replay: camera replay audio recording started for '%s' (%u Hz stereo AAC)",
+	     camera_name, sample_rate);
+	return writer;
+}
+
+void sr_camera_audio_writer_destroy(struct sr_camera_audio_writer *writer)
+{
+	if (!writer)
+		return;
+	struct sr_master_audio_state *state = writer->state;
+	if (state) {
+		pthread_mutex_lock(&state->mutex);
+		state->stopping = true;
+		state->active = false;
+		state->active_refs = 0;
+		pthread_cond_broadcast(&state->cond);
+		pthread_mutex_unlock(&state->mutex);
+		if (state->thread_started)
+			pthread_join(state->thread, NULL);
+		while (state->head) {
+			struct sr_master_audio_chunk *chunk = state->head;
+			state->head = chunk->next;
+			free_chunk(chunk);
+		}
+		close_segment(state, false);
+		destroy_encoder(state);
+		deque_free(&state->submitted_timestamps);
+		bfree(state->session_dir);
+		bfree(state->audio_dir);
+		pthread_cond_destroy(&state->cond);
+		pthread_mutex_destroy(&state->mutex);
+		bfree(state);
+	}
+	bfree(writer);
+}
+
+bool sr_camera_audio_writer_push(struct sr_camera_audio_writer *writer, const struct obs_audio_data *audio,
+				 size_t channels, uint64_t timestamp_ns)
+{
+	if (!writer || !writer->state || !audio || !audio->frames || !audio->data[0])
+		return false;
+	const uint8_t *right = channels > 1 ? audio->data[1] : audio->data[0];
+	return enqueue_audio(writer->state, audio->data[0], right, audio->frames,
+			     timestamp_ns ? timestamp_ns : audio->timestamp);
 }

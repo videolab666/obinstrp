@@ -23,6 +23,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "sr-capture.h"
 #include "sr-credit.h"
 #include "sr-scene-tracker.h"
+#include "sr-session.h"
+#include "sr-storage-manager.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -35,6 +37,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -46,6 +49,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFileSystemWatcher>
 #include <QTimer>
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QImage>
 #include <QPixmap>
@@ -57,6 +61,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QTabWidget>
+#include <QTableWidget>
+#include <QHeaderView>
 
 #define THUMB_W 112
 #define THUMB_H 63
@@ -604,6 +610,174 @@ private:
 	QSet<QString> playedPaths;
 };
 
+QString formattedBytes(quint64 bytes)
+{
+	const double gib = 1024.0 * 1024.0 * 1024.0;
+	const double mib = 1024.0 * 1024.0;
+	return bytes >= (quint64)gib ? QStringLiteral("%1 GB").arg((double)bytes / gib, 0, 'f', 2)
+				     : QStringLiteral("%1 MB").arg((double)bytes / mib, 0, 'f', 1);
+}
+
+quint64 directoryBytes(const QString &path)
+{
+	quint64 total = 0;
+	QDirIterator iterator(path, QDir::Files | QDir::Hidden | QDir::System, QDirIterator::Subdirectories);
+	while (iterator.hasNext()) {
+		iterator.next();
+		total += (quint64)iterator.fileInfo().size();
+	}
+	return total;
+}
+
+qint64 sessionCreatedUnix(const QString &path)
+{
+	const QByteArray metadataPath = QDir(path).filePath(QStringLiteral("session.json")).toUtf8();
+	obs_data_t *metadata = obs_data_create_from_json_file(metadataPath.constData());
+	if (!metadata)
+		return QFileInfo(path).lastModified().toSecsSinceEpoch();
+	const qint64 created = (qint64)obs_data_get_int(metadata, "created_unix");
+	obs_data_release(metadata);
+	return created;
+}
+
+class SrStoragePanel : public QWidget {
+public:
+	explicit SrStoragePanel(QWidget *parent = nullptr) : QWidget(parent)
+	{
+		auto *rootLayout = new QVBoxLayout(this);
+		rootLabel = new QLabel(this);
+		rootLabel->setWordWrap(true);
+		rootLayout->addWidget(rootLabel);
+
+		table = new QTableWidget(this);
+		table->setColumnCount(4);
+		table->setHorizontalHeaderLabels({T("Storage.Column.Session"), T("Storage.Column.Created"),
+						  T("Storage.Column.Size"), T("Storage.Column.Status")});
+		table->setSelectionBehavior(QAbstractItemView::SelectRows);
+		table->setSelectionMode(QAbstractItemView::SingleSelection);
+		table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+		table->verticalHeader()->setVisible(false);
+		table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+		table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+		table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+		table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+		rootLayout->addWidget(table, 1);
+
+		auto *buttons = new QHBoxLayout();
+		auto *refresh = new QPushButton(T("Storage.Refresh"), this);
+		auto *remove = new QPushButton(T("Storage.Delete"), this);
+		buttons->addWidget(refresh);
+		buttons->addWidget(remove);
+		buttons->addStretch(1);
+		rootLayout->addLayout(buttons);
+
+		gcStatus = new QLabel(this);
+		gcStatus->setWordWrap(true);
+		gcStatus->setStyleSheet(QStringLiteral("color: gray;"));
+		rootLayout->addWidget(gcStatus);
+
+		connect(refresh, &QPushButton::clicked, this, [this]() { refreshSessions(); });
+		connect(remove, &QPushButton::clicked, this, [this]() { deleteSelectedSession(); });
+
+		statusTimer = new QTimer(this);
+		statusTimer->setInterval(2000);
+		connect(statusTimer, &QTimer::timeout, this, [this]() { refreshStatus(); });
+		statusTimer->start();
+		refreshSessions();
+	}
+
+private:
+	void refreshStatus()
+	{
+		char *rootRaw = sr_config_get_session_root();
+		const QString root = QString::fromUtf8(rootRaw ? rootRaw : "");
+		bfree(rootRaw);
+		const QByteArray rootUtf8 = root.toUtf8();
+		const quint64 freeBytes = root.isEmpty() ? 0 : os_get_free_disk_space(rootUtf8.constData());
+		rootLabel->setText(T("Storage.RootSummary").arg(root).arg(formattedBytes(freeBytes)));
+
+		sr_storage_manager_status manager = {};
+		sr_storage_manager_get_status(&manager);
+		if (!manager.cleanup_passes) {
+			gcStatus->setText(T("Storage.GcNever"));
+			return;
+		}
+		const QString when = QDateTime::fromSecsSinceEpoch((qint64)manager.last_cleanup_unix)
+					     .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+		gcStatus->setText(T("Storage.GcSummary")
+					  .arg(manager.cleanup_passes)
+					  .arg(when)
+					  .arg(manager.last_cleanup.segments_deleted)
+					  .arg(manager.last_cleanup.segments_pinned)
+					  .arg(manager.last_cleanup.errors)
+					  .arg(formattedBytes(manager.last_cleanup.free_bytes_before))
+					  .arg(formattedBytes(manager.last_cleanup.free_bytes_after)));
+	}
+
+	void refreshSessions()
+	{
+		refreshStatus();
+		char *rootRaw = sr_config_get_session_root();
+		const QString root = QString::fromUtf8(rootRaw ? rootRaw : "");
+		bfree(rootRaw);
+		QDir directory(root);
+		const QFileInfoList sessions = directory.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time);
+		table->setRowCount(sessions.size());
+		for (int row = 0; row < sessions.size(); row++) {
+			const QFileInfo &session = sessions.at(row);
+			const QString path = session.absoluteFilePath();
+			const bool active = sr_session_path_is_active(path.toUtf8().constData());
+			auto *name = new QTableWidgetItem(session.fileName());
+			name->setData(Qt::UserRole, path);
+			table->setItem(row, 0, name);
+			const qint64 created = sessionCreatedUnix(path);
+			table->setItem(row, 1,
+				       new QTableWidgetItem(QDateTime::fromSecsSinceEpoch(created).toString(
+					       QStringLiteral("yyyy-MM-dd HH:mm:ss"))));
+			table->setItem(row, 2, new QTableWidgetItem(formattedBytes(directoryBytes(path))));
+			table->setItem(row, 3,
+				       new QTableWidgetItem(active ? T("Storage.Active") : T("Storage.Inactive")));
+		}
+	}
+
+	void deleteSelectedSession()
+	{
+		const int row = table->currentRow();
+		QTableWidgetItem *item = row >= 0 ? table->item(row, 0) : nullptr;
+		if (!item)
+			return;
+		const QString path = item->data(Qt::UserRole).toString();
+		const QByteArray pathUtf8 = path.toUtf8();
+		if (sr_session_path_is_active(pathUtf8.constData())) {
+			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteActive"));
+			return;
+		}
+
+		char *rootRaw = sr_config_get_session_root();
+		const QString canonicalRoot = QFileInfo(QString::fromUtf8(rootRaw ? rootRaw : "")).canonicalFilePath();
+		bfree(rootRaw);
+		const QFileInfo selected(path);
+		if (canonicalRoot.isEmpty() || selected.dir().canonicalPath() != canonicalRoot) {
+			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteInvalid"));
+			return;
+		}
+
+		if (QMessageBox::question(this, T("Storage.DeleteTitle"),
+					  T("Storage.DeleteConfirm").arg(selected.fileName())) != QMessageBox::Yes)
+			return;
+		if (!QDir(path).removeRecursively()) {
+			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteFailed"));
+			return;
+		}
+		refreshSessions();
+	}
+
+	QLabel *rootLabel = nullptr;
+	QLabel *gcStatus = nullptr;
+	QTableWidget *table = nullptr;
+	QTimer *statusTimer = nullptr;
+};
+
 /* The live dock, so replays that go to air from a hotkey can be marked
  * without a lookup. QPointer so it reads back null once OBS destroys it. */
 QPointer<SrDock> g_dock;
@@ -631,8 +805,10 @@ void sr_dock_register(struct sr_event_controller *controller)
 	operatorScroll->setWidget(sr_event_dock_create(controller, operatorScroll));
 
 	auto *clips = new SrDock(tabs);
+	auto *storage = new SrStoragePanel(tabs);
 	tabs->addTab(operatorScroll, T("Dock.TabOperator"));
 	tabs->addTab(clips, T("Dock.TabClips"));
+	tabs->addTab(storage, T("Dock.TabStorage"));
 	tabs->setCurrentIndex(0);
 
 	if (!obs_frontend_add_dock_by_id("sports_replay_dock", obs_module_text("Dock.Title"), tabs)) {

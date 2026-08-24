@@ -19,10 +19,100 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <util/bmem.h>
+#include <util/darray.h>
 
+#include <math.h>
 #include <string.h>
 
 static char *g_return_scene;
+static char *output_source_name(enum sr_replay_bus bus);
+
+struct live_audio_snapshot {
+	obs_source_t *source;
+	float volume;
+	bool muted;
+};
+
+static DARRAY(struct live_audio_snapshot) g_live_audio_sources;
+static bool g_live_audio_active;
+static enum sr_replay_bus g_live_audio_bus;
+
+struct live_audio_capture_ctx {
+	enum sr_live_audio_policy policy;
+	float duck_factor;
+};
+
+static bool capture_live_audio_source(void *param, obs_source_t *source)
+{
+	struct live_audio_capture_ctx *ctx = param;
+	if (!ctx || !source || obs_source_get_type(source) != OBS_SOURCE_TYPE_INPUT ||
+	    !(obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) ||
+	    strcmp(obs_source_get_unversioned_id(source), SR_EVENT_OUTPUT_ID) == 0)
+		return true;
+
+	struct live_audio_snapshot snapshot = {
+		.source = obs_source_get_ref(source),
+		.volume = obs_source_get_volume(source),
+		.muted = obs_source_muted(source),
+	};
+	if (!snapshot.source)
+		return true;
+	da_push_back(g_live_audio_sources, &snapshot);
+
+	if (ctx->policy == SR_LIVE_AUDIO_MUTE)
+		obs_source_set_muted(source, true);
+	else if (ctx->policy == SR_LIVE_AUDIO_DUCK)
+		obs_source_set_volume(source, snapshot.volume * ctx->duck_factor);
+	return true;
+}
+
+static void restore_live_audio(void)
+{
+	for (size_t i = 0; i < g_live_audio_sources.num; i++) {
+		struct live_audio_snapshot *snapshot = &g_live_audio_sources.array[i];
+		obs_source_set_volume(snapshot->source, snapshot->volume);
+		obs_source_set_muted(snapshot->source, snapshot->muted);
+		obs_source_release(snapshot->source);
+	}
+	da_free(g_live_audio_sources);
+	g_live_audio_active = false;
+}
+
+static void apply_live_audio(enum sr_replay_bus bus, enum sr_live_audio_policy policy, double duck_db)
+{
+	restore_live_audio();
+	if (policy == SR_LIVE_AUDIO_KEEP)
+		return;
+
+	if (!isfinite(duck_db) || duck_db < -60.0 || duck_db > 0.0)
+		duck_db = -12.0;
+	struct live_audio_capture_ctx ctx = {
+		.policy = policy,
+		.duck_factor = (float)pow(10.0, duck_db / 20.0),
+	};
+	g_live_audio_bus = bus;
+	g_live_audio_active = true;
+	obs_enum_sources(capture_live_audio_source, &ctx);
+}
+
+static void get_live_audio_settings(enum sr_replay_bus bus, enum sr_live_audio_policy *policy, double *duck_db)
+{
+	*policy = SR_LIVE_AUDIO_KEEP;
+	*duck_db = -12.0;
+	char *source_name = output_source_name(bus);
+	obs_source_t *source = source_name ? obs_get_source_by_name(source_name) : NULL;
+	bfree(source_name);
+	if (!source)
+		return;
+
+	obs_data_t *settings = obs_source_get_settings(source);
+	const int configured_policy = (int)obs_data_get_int(settings, SR_EVENT_OUTPUT_SETTING_LIVE_AUDIO_POLICY);
+	if (configured_policy >= SR_LIVE_AUDIO_KEEP && configured_policy <= SR_LIVE_AUDIO_MUTE)
+		*policy = (enum sr_live_audio_policy)configured_policy;
+	*duck_db = obs_data_get_double(settings, SR_EVENT_OUTPUT_SETTING_LIVE_DUCK_DB);
+	obs_data_release(settings);
+	obs_source_release(source);
+}
 
 struct find_output_ctx {
 	enum sr_replay_bus bus;
@@ -104,6 +194,11 @@ bool sr_replay_take_bus(struct sr_event_controller *events, enum sr_replay_bus b
 		bfree(scene_name);
 		return false;
 	}
+
+	enum sr_live_audio_policy live_audio_policy;
+	double live_duck_db;
+	get_live_audio_settings(bus, &live_audio_policy, &live_duck_db);
+	apply_live_audio(bus, live_audio_policy, live_duck_db);
 
 	char *take_in = already_in_replay ? NULL : sr_config_get_take_in_transition();
 	if (take_in && *take_in)
@@ -215,8 +310,23 @@ void sr_replay_take_return_on_end(enum sr_replay_bus bus, uint64_t event_id)
 	obs_queue_task(OBS_TASK_UI, auto_return_task, request, false);
 }
 
+static void release_live_audio_task(void *param)
+{
+	const enum sr_replay_bus bus = (enum sr_replay_bus)(uintptr_t)param;
+	if (g_live_audio_active && g_live_audio_bus == bus)
+		restore_live_audio();
+}
+
+void sr_replay_take_release_live_audio(enum sr_replay_bus bus)
+{
+	if (bus != SR_REPLAY_BUS_A && bus != SR_REPLAY_BUS_B)
+		return;
+	obs_queue_task(OBS_TASK_UI, release_live_audio_task, (void *)(uintptr_t)bus, false);
+}
+
 void sr_replay_take_reset(void)
 {
+	restore_live_audio();
 	bfree(g_return_scene);
 	g_return_scene = NULL;
 }
@@ -250,6 +360,30 @@ bool sr_replay_take_current_bus(enum sr_replay_bus *bus)
 			*bus = SR_REPLAY_BUS_B;
 			found = true;
 		}
+	}
+
+	obs_source_release(current);
+	bfree(scene_a);
+	bfree(scene_b);
+	return found;
+}
+
+bool sr_replay_take_program_bus(enum sr_replay_bus *bus)
+{
+	if (!bus)
+		return false;
+
+	char *scene_a = output_scene_name(SR_REPLAY_BUS_A);
+	char *scene_b = output_scene_name(SR_REPLAY_BUS_B);
+	obs_source_t *current = obs_frontend_get_current_scene();
+	const char *current_name = current ? obs_source_get_name(current) : NULL;
+	bool found = false;
+	if (current_name && scene_a && strcmp(current_name, scene_a) == 0) {
+		*bus = SR_REPLAY_BUS_A;
+		found = true;
+	} else if (current_name && scene_b && strcmp(current_name, scene_b) == 0) {
+		*bus = SR_REPLAY_BUS_B;
+		found = true;
 	}
 
 	obs_source_release(current);

@@ -30,6 +30,11 @@ extern "C" {
  * bfree. Returns false on failure. */
 bool sr_thumbnail_rgba(const char *path, int w, int h, uint8_t **out);
 
+/* Decodes a frame from one continuous-recording camera at timestamp_ns and
+ * scales it to tightly packed RGBA for the operator angle preview. */
+bool sr_disk_thumbnail_rgba(const char *session_dir, const char *camera_name, uint64_t timestamp_ns, int w, int h,
+			    uint8_t **out);
+
 #ifdef __cplusplus
 }
 #endif

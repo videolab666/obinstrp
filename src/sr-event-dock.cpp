@@ -34,6 +34,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <vector>
 
 #include <QAbstractItemView>
+#include <QAbstractItemDelegate>
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
@@ -128,7 +129,9 @@ QString channelSummary(enum sr_replay_bus bus, const QString &label)
 		flags += QStringLiteral(" LOOP");
 	if (state.partial_coverage)
 		flags += QStringLiteral(" PARTIAL");
-	flags += state.audio_mode == SR_REPLAY_AUDIO_MASTER ? QStringLiteral(" AUDIO") : QStringLiteral(" MUTE");
+	flags += state.audio_mode == SR_REPLAY_AUDIO_MASTER   ? QStringLiteral(" MASTER")
+		 : state.audio_mode == SR_REPLAY_AUDIO_CAMERA ? QStringLiteral(" CAMERA")
+							      : QStringLiteral(" MUTE");
 
 	return QStringLiteral("%1: #%2  %3  %4%  %5/%6 s  %7%8")
 		.arg(label)
@@ -186,6 +189,46 @@ struct ExportJob {
 	std::string failedCamera;
 	sr_event_export_result result = {};
 };
+
+constexpr int ANGLE_PREVIEW_WIDTH = 128;
+constexpr int ANGLE_PREVIEW_HEIGHT = 72;
+
+struct AnglePreviewResult {
+	std::string camera;
+	std::vector<uint8_t> rgba;
+};
+
+struct AnglePreviewTask {
+	std::string camera;
+	uint64_t timestampNs = 0;
+};
+
+struct AnglePreviewJob {
+	uint64_t eventId = 0;
+	std::string sessionDir;
+	std::vector<AnglePreviewTask> tasks;
+	std::vector<AnglePreviewResult> results;
+	std::atomic<bool> done{false};
+	std::thread worker;
+};
+
+void runAnglePreviewJob(AnglePreviewJob *job)
+{
+	for (const AnglePreviewTask &task : job->tasks) {
+		uint8_t *rgba = nullptr;
+		AnglePreviewResult result;
+		result.camera = task.camera;
+		if (sr_disk_thumbnail_rgba(job->sessionDir.c_str(), task.camera.c_str(), task.timestampNs,
+					   ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT, &rgba) &&
+		    rgba) {
+			const size_t bytes = (size_t)ANGLE_PREVIEW_WIDTH * ANGLE_PREVIEW_HEIGHT * 4;
+			result.rgba.assign(rgba, rgba + bytes);
+		}
+		bfree(rgba);
+		job->results.emplace_back(std::move(result));
+	}
+	job->done.store(true, std::memory_order_release);
+}
 
 bool exportCancelled(void *data)
 {
@@ -259,6 +302,17 @@ public:
 		recordBar->addWidget(recordStatus, 1);
 		root->addLayout(recordBar);
 
+		auto *programBar = new QHBoxLayout();
+		programStatus = new QLabel(this);
+		cueAStatus = new QLabel(this);
+		cueBStatus = new QLabel(this);
+		for (QLabel *label : {programStatus, cueAStatus, cueBStatus}) {
+			label->setAlignment(Qt::AlignCenter);
+			label->setMinimumHeight(28);
+			programBar->addWidget(label, 1);
+		}
+		root->addLayout(programBar);
+
 		auto *markBar = new QHBoxLayout();
 		markBar->addWidget(new QLabel(T("EventDock.List"), this));
 		listCombo = new QComboBox(this);
@@ -292,7 +346,7 @@ public:
 						  T("EventDock.Column.Name"), T("EventDock.Column.Tag")});
 		table->setSelectionBehavior(QAbstractItemView::SelectRows);
 		table->setSelectionMode(QAbstractItemView::SingleSelection);
-		table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+		table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
 		table->verticalHeader()->setVisible(false);
 		table->horizontalHeader()->setStretchLastSection(true);
 		table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
@@ -394,6 +448,7 @@ public:
 		cueBar->addWidget(new QLabel(T("EventDock.Audio"), this));
 		audioCombo = new QComboBox(this);
 		audioCombo->addItem(T("EventDock.AudioMaster"), SR_REPLAY_AUDIO_MASTER);
+		audioCombo->addItem(T("EventDock.AudioCamera"), SR_REPLAY_AUDIO_CAMERA);
 		audioCombo->addItem(T("EventDock.AudioOff"), SR_REPLAY_AUDIO_OFF);
 		cueBar->addWidget(audioCombo);
 		root->addLayout(cueBar);
@@ -557,8 +612,15 @@ public:
 		connect(takeToggle, &QPushButton::clicked, this, [this]() { takeToggleBus(); });
 		connect(returnLive, &QPushButton::clicked, this, [this]() { returnLiveBus(); });
 		connect(table, &QTableWidget::itemSelectionChanged, this, [this]() { refreshAngleCoverage(); });
-		connect(table, &QTableWidget::itemDoubleClicked, this,
-			[this](QTableWidgetItem *) { playSelectedEvent(); });
+		connect(table, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) { editEvent(item); });
+		connect(table->itemDelegate(), &QAbstractItemDelegate::closeEditor, this,
+			[this]() { tableEditing = false; });
+		connect(table, &QTableWidget::itemDoubleClicked, this, [this](QTableWidgetItem *item) {
+			if (item && (item->column() == 2 || item->column() == 4 || item->column() == 5))
+				tableEditing = true;
+			else if (item)
+				playSelectedEvent();
+		});
 
 		refreshTimer = new QTimer(this);
 		refreshTimer->setInterval(750);
@@ -577,9 +639,11 @@ public:
 		transportTimer->setInterval(100);
 		connect(transportTimer, &QTimer::timeout, this, [this]() {
 			refreshTransportStatus();
+			refreshProgramState();
 			syncTimeline();
 			syncAngleButtonState();
 			pollExport();
+			pollAnglePreviews();
 		});
 		transportTimer->start();
 
@@ -588,6 +652,7 @@ public:
 		refreshCameras();
 		refresh();
 		refreshTransportStatus();
+		refreshProgramState();
 		refreshRecordingStatus();
 		syncTransportControls();
 	}
@@ -599,6 +664,8 @@ public:
 			if (exportJob->worker.joinable())
 				exportJob->worker.join();
 		}
+		if (anglePreviewJob && anglePreviewJob->worker.joinable())
+			anglePreviewJob->worker.join();
 	}
 
 private:
@@ -700,7 +767,8 @@ private:
 			const QString camera = names.at(i);
 			auto *button = new QPushButton(camera, this);
 			button->setCheckable(true);
-			button->setMinimumWidth(92);
+			button->setMinimumSize(170, 86);
+			button->setIconSize(QSize(ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT));
 			button->setProperty("cameraName", camera);
 			button->setProperty("coverage", (int)SR_REPLAY_COVERAGE_NONE);
 			button->setProperty("playableInNs", QVariant::fromValue<qulonglong>(0));
@@ -811,8 +879,72 @@ private:
 		}
 
 		if (haveEvent)
+			requestAnglePreviews(event.id, event.in_ns + (event.out_ns - event.in_ns) / 2);
+
+		if (haveEvent)
 			sr_event_controller_free_event(&event);
 		syncAngleButtonState();
+	}
+
+	void requestAnglePreviews(uint64_t eventId, uint64_t timestampNs)
+	{
+		if (previewTargetEventId != eventId) {
+			previewTargetEventId = eventId;
+			previewLoadedEventId = 0;
+			for (QPushButton *button : angleButtons)
+				button->setIcon(QIcon());
+		}
+		if (!eventId || previewLoadedEventId == eventId || anglePreviewJob)
+			return;
+
+		char *sessionPath = sr_session_get_or_create_path();
+		if (!sessionPath)
+			return;
+		auto job = std::make_unique<AnglePreviewJob>();
+		job->eventId = eventId;
+		job->sessionDir = sessionPath;
+		bfree(sessionPath);
+		for (QPushButton *button : angleButtons) {
+			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_NONE)
+				continue;
+			const qint64 offset = button->property("syncOffsetNs").toLongLong();
+			uint64_t cameraTimestamp = timestampNs;
+			if (offset >= 0 && (uint64_t)offset <= UINT64_MAX - cameraTimestamp)
+				cameraTimestamp += (uint64_t)offset;
+			else if (offset < 0 && (uint64_t)(-offset) < cameraTimestamp)
+				cameraTimestamp -= (uint64_t)(-offset);
+			AnglePreviewTask task;
+			task.camera = button->property("cameraName").toString().toUtf8().constData();
+			task.timestampNs = cameraTimestamp;
+			job->tasks.emplace_back(std::move(task));
+		}
+		if (job->tasks.empty())
+			return;
+		anglePreviewJob = std::move(job);
+		AnglePreviewJob *workerJob = anglePreviewJob.get();
+		workerJob->worker = std::thread([workerJob]() { runAnglePreviewJob(workerJob); });
+	}
+
+	void pollAnglePreviews()
+	{
+		if (!anglePreviewJob || !anglePreviewJob->done.load(std::memory_order_acquire))
+			return;
+		if (anglePreviewJob->worker.joinable())
+			anglePreviewJob->worker.join();
+		if (anglePreviewJob->eventId == previewTargetEventId && angleEventId() == previewTargetEventId) {
+			for (const AnglePreviewResult &result : anglePreviewJob->results) {
+				if (result.rgba.empty())
+					continue;
+				QPushButton *button = angleButton(QString::fromUtf8(result.camera.c_str()));
+				if (!button)
+					continue;
+				const QImage image(result.rgba.data(), ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT,
+						   ANGLE_PREVIEW_WIDTH * 4, QImage::Format_RGBA8888);
+				button->setIcon(QIcon(QPixmap::fromImage(image.copy())));
+			}
+			previewLoadedEventId = anglePreviewJob->eventId;
+		}
+		anglePreviewJob.reset();
 	}
 
 	void syncAngleButtonState()
@@ -916,6 +1048,41 @@ private:
 		if (!pb.isEmpty())
 			b += QStringLiteral("  [") + pb + QStringLiteral("]");
 		transportStatus->setText(a + QStringLiteral("    ") + b);
+	}
+
+	QString cueStatus(enum sr_replay_bus bus, const QString &label) const
+	{
+		sr_replay_channel_state state = {};
+		if (!sr_replay_channel_get_state(bus, &state) || !state.cued)
+			return T("EventDock.CueStateEmpty").arg(label);
+		return T("EventDock.CueStateEvent")
+			.arg(label)
+			.arg(state.event_id)
+			.arg(QString::fromUtf8(state.camera_name));
+	}
+
+	void refreshProgramState()
+	{
+		if (!programStatus || !cueAStatus || !cueBStatus)
+			return;
+		enum sr_replay_bus programBus;
+		if (sr_replay_take_program_bus(&programBus)) {
+			programStatus->setText(T("EventDock.ProgramReplay")
+						       .arg(programBus == SR_REPLAY_BUS_A ? QStringLiteral("A")
+											  : QStringLiteral("B")));
+			programStatus->setStyleSheet(QStringLiteral(
+				"font-weight: bold; color: white; background: #b52b2b; border-radius: 3px; padding: 4px;"));
+		} else {
+			programStatus->setText(T("EventDock.ProgramLive"));
+			programStatus->setStyleSheet(QStringLiteral(
+				"font-weight: bold; color: white; background: #247a3b; border-radius: 3px; padding: 4px;"));
+		}
+		cueAStatus->setText(cueStatus(SR_REPLAY_BUS_A, QStringLiteral("A")));
+		cueBStatus->setText(cueStatus(SR_REPLAY_BUS_B, QStringLiteral("B")));
+		cueAStatus->setStyleSheet(QStringLiteral(
+			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #3f78c5; border-radius: 3px; padding: 4px;"));
+		cueBStatus->setStyleSheet(QStringLiteral(
+			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #d49a2a; border-radius: 3px; padding: 4px;"));
 	}
 
 	void syncTransportControls()
@@ -1439,7 +1606,7 @@ private:
 
 	void refresh(uint64_t selectEventId = 0)
 	{
-		if (!controller || !table)
+		if (!controller || !table || tableEditing)
 			return;
 		if (!selectEventId)
 			selectEventId = selectedEventId();
@@ -1451,6 +1618,7 @@ private:
 			return;
 		}
 
+		tableRefreshing = true;
 		table->setUpdatesEnabled(false);
 		table->setRowCount((int)count);
 		int selectedRow = -1;
@@ -1461,12 +1629,17 @@ private:
 
 			auto *id = new QTableWidgetItem(QString::number(event.id));
 			id->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(event.id));
+			id->setFlags(id->flags() & ~Qt::ItemIsEditable);
 			table->setItem((int)i, 0, id);
-			table->setItem((int)i, 1, new QTableWidgetItem(durationText(event)));
+			auto *duration = new QTableWidgetItem(durationText(event));
+			duration->setFlags(duration->flags() & ~Qt::ItemIsEditable);
+			table->setItem((int)i, 1, duration);
 			table->setItem((int)i, 2,
 				       new QTableWidgetItem(QString::number(event.speed_percent, 'f', 0) +
 							    QStringLiteral("%")));
-			table->setItem((int)i, 3, new QTableWidgetItem(stateText(event)));
+			auto *state = new QTableWidgetItem(stateText(event));
+			state->setFlags(state->flags() & ~Qt::ItemIsEditable);
+			table->setItem((int)i, 3, state);
 			table->setItem((int)i, 4,
 				       new QTableWidgetItem(QString::fromUtf8(event.name ? event.name : "")));
 			table->setItem((int)i, 5, new QTableWidgetItem(QString::fromUtf8(event.tag ? event.tag : "")));
@@ -1476,8 +1649,57 @@ private:
 		}
 		bfree(eventIds);
 		table->setUpdatesEnabled(true);
+		tableRefreshing = false;
 		if (selectedRow >= 0)
 			table->selectRow(selectedRow);
+	}
+
+	void editEvent(QTableWidgetItem *item)
+	{
+		if (tableRefreshing || !controller || !item ||
+		    (item->column() != 2 && item->column() != 4 && item->column() != 5))
+			return;
+		tableEditing = false;
+		QTableWidgetItem *idItem = table->item(item->row(), 0);
+		const uint64_t eventId = idItem ? idItem->data(Qt::UserRole).toULongLong() : 0;
+		sr_event_record event = {};
+		if (!eventId || !sr_event_controller_get_event(controller, eventId, &event)) {
+			setStatus("EventDock.Failed");
+			return;
+		}
+
+		QString speedText = table->item(item->row(), 2)->text();
+		speedText.remove(QChar('%'));
+		bool speedOk = false;
+		const double speed = speedText.trimmed().toDouble(&speedOk);
+		const QByteArray name = table->item(item->row(), 4)->text().trimmed().toUtf8();
+		const QByteArray tag = table->item(item->row(), 5)->text().trimmed().toUtf8();
+		if (!speedOk || speed < 10.0 || speed > 400.0) {
+			sr_event_controller_free_event(&event);
+			setStatus("EventDock.InvalidSpeed");
+			refresh(eventId);
+			return;
+		}
+
+		const sr_event_write update = {
+			.in_ns = event.in_ns,
+			.out_ns = event.out_ns,
+			.preferred_camera_id = event.preferred_camera_id,
+			.speed_percent = speed,
+			.audio_mode = event.audio_mode,
+			.protected_event = event.protected_event,
+			.played = event.played,
+			.pending = event.pending,
+			.name = name.constData(),
+			.tag = tag.constData(),
+		};
+		const bool ok = sr_event_controller_update_event(controller, eventId, &update);
+		sr_event_controller_free_event(&event);
+		if (!ok)
+			setStatus("EventDock.Failed");
+		else
+			setStatus("EventDock.Edited");
+		refresh(eventId);
 	}
 
 	void moveRow(int delta)
@@ -1651,14 +1873,22 @@ private:
 	QProgressBar *exportProgressBar = nullptr;
 	QTableWidget *table = nullptr;
 	QLabel *recordStatus = nullptr;
+	QLabel *programStatus = nullptr;
+	QLabel *cueAStatus = nullptr;
+	QLabel *cueBStatus = nullptr;
 	QLabel *transportStatus = nullptr;
 	QLabel *status = nullptr;
 	QTimer *refreshTimer = nullptr;
 	QTimer *transportTimer = nullptr;
 	bool timelineDragging = false;
+	bool tableRefreshing = false;
+	bool tableEditing = false;
 	int jogLastValue = 0;
 	unsigned cameraRefreshTicks = 0;
 	std::unique_ptr<ExportJob> exportJob;
+	std::unique_ptr<AnglePreviewJob> anglePreviewJob;
+	uint64_t previewTargetEventId = 0;
+	uint64_t previewLoadedEventId = 0;
 };
 
 } // namespace

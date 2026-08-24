@@ -16,6 +16,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-module.h>
 #include <util/bmem.h>
 #include <util/deque.h>
+#include <util/dstr.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
@@ -25,7 +26,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <string.h>
 
 struct sr_master_audio_player {
-	char *session_dir;
+	char *audio_dir;
 	struct sr_master_audio_descriptor *segments;
 	size_t segment_count;
 
@@ -125,7 +126,7 @@ bool sr_master_audio_player_refresh(struct sr_master_audio_player *player)
 
 	struct sr_master_audio_descriptor *segments = NULL;
 	size_t count = 0;
-	if (!sr_master_audio_catalog_scan(player->session_dir, &segments, &count))
+	if (!sr_audio_catalog_scan_directory(player->audio_dir, &segments, &count))
 		return false;
 
 	sr_master_audio_catalog_free(player->segments, player->segment_count);
@@ -310,9 +311,24 @@ struct sr_master_audio_player *sr_master_audio_player_create(const char *session
 {
 	if (!session_dir || !*session_dir)
 		return NULL;
+	struct dstr audio_dir = {0};
+	dstr_copy(&audio_dir, session_dir);
+	dstr_replace(&audio_dir, "\\", "/");
+	if (audio_dir.len && dstr_end(&audio_dir) != '/')
+		dstr_cat_ch(&audio_dir, '/');
+	dstr_cat(&audio_dir, "audio-master");
+	struct sr_master_audio_player *player = sr_audio_player_create_from_directory(audio_dir.array);
+	dstr_free(&audio_dir);
+	return player;
+}
+
+struct sr_master_audio_player *sr_audio_player_create_from_directory(const char *audio_dir)
+{
+	if (!audio_dir || !*audio_dir)
+		return NULL;
 	struct sr_master_audio_player *player = bzalloc(sizeof(*player));
-	player->session_dir = bstrdup(session_dir);
-	if (!player->session_dir) {
+	player->audio_dir = bstrdup(audio_dir);
+	if (!player->audio_dir) {
 		bfree(player);
 		return NULL;
 	}
@@ -327,6 +343,6 @@ void sr_master_audio_player_destroy(struct sr_master_audio_player *player)
 	close_decoder(player);
 	deque_free(&player->submitted_timestamps);
 	sr_master_audio_catalog_free(player->segments, player->segment_count);
-	bfree(player->session_dir);
+	bfree(player->audio_dir);
 	bfree(player);
 }

@@ -34,6 +34,8 @@ struct sr_capture {
 	struct sr_buffer buffer;
 	struct sr_encoder *encoder;
 	struct sr_segment_writer *writer;
+	struct sr_camera_audio_writer *camera_audio_writer;
+	pthread_mutex_t camera_audio_mutex;
 
 	enum sr_encoder_backend backend;
 	int qp;
@@ -125,6 +127,11 @@ static const char *sr_capture_get_name(void *unused)
 
 static void destroy_writer(struct sr_capture *c)
 {
+	pthread_mutex_lock(&c->camera_audio_mutex);
+	struct sr_camera_audio_writer *camera_audio = c->camera_audio_writer;
+	c->camera_audio_writer = NULL;
+	pthread_mutex_unlock(&c->camera_audio_mutex);
+	sr_camera_audio_writer_destroy(camera_audio);
 	if (c->writer) {
 		sr_segment_writer_destroy(c->writer);
 		c->writer = NULL;
@@ -177,6 +184,7 @@ static void *sr_capture_create(obs_data_t *settings, obs_source_t *source)
 	struct sr_capture *c = bzalloc(sizeof(struct sr_capture));
 	c->self = source;
 	pthread_mutex_init(&c->status_mutex, NULL);
+	pthread_mutex_init(&c->camera_audio_mutex, NULL);
 	sr_buffer_init(&c->buffer);
 	c->backend = SR_ENC_AUTO;
 	c->qp = 23;
@@ -193,6 +201,7 @@ static void sr_capture_destroy(void *data)
 	sr_encoder_destroy(c->encoder);
 	sr_buffer_free(&c->buffer);
 	pthread_mutex_destroy(&c->status_mutex);
+	pthread_mutex_destroy(&c->camera_audio_mutex);
 	bfree(c);
 }
 
@@ -251,8 +260,8 @@ static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi
 	};
 
 	c->writer = sr_segment_writer_create(&cfg);
-	bfree(session_dir);
 	if (!c->writer) {
+		bfree(session_dir);
 		c->writer_failed = true;
 		obs_log(LOG_ERROR, "'%s': could not start continuous replay recorder", obs_source_get_name(c->self));
 		return false;
@@ -266,6 +275,19 @@ static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi
 				"'%s': continuous video is recording, but master replay audio could not start",
 				obs_source_get_name(c->self));
 	}
+	struct obs_audio_info audio_info;
+	if (!c->camera_audio_writer && obs_get_audio_info(&audio_info)) {
+		struct sr_camera_audio_writer *camera_audio =
+			sr_camera_audio_writer_create(session_dir, capture_camera_name(c), audio_info.samples_per_sec);
+		pthread_mutex_lock(&c->camera_audio_mutex);
+		c->camera_audio_writer = camera_audio;
+		pthread_mutex_unlock(&c->camera_audio_mutex);
+		if (!c->camera_audio_writer)
+			obs_log(LOG_WARNING,
+				"'%s': continuous video is recording, but selected-camera replay audio could not start",
+				obs_source_get_name(c->self));
+	}
+	bfree(session_dir);
 	publish_status(c, 0, true);
 	return true;
 }
@@ -396,6 +418,11 @@ static struct obs_audio_data *sr_capture_filter_audio(void *data, struct obs_aud
 
 	if (c->buffer.samples_per_sec)
 		sr_buffer_push_audio(&c->buffer, audio, get_audio_channels(c->buffer.speakers));
+	pthread_mutex_lock(&c->camera_audio_mutex);
+	if (c->camera_audio_writer)
+		sr_camera_audio_writer_push(c->camera_audio_writer, audio, get_audio_channels(c->buffer.speakers),
+					    obs_get_video_frame_time());
+	pthread_mutex_unlock(&c->camera_audio_mutex);
 
 	return audio;
 }

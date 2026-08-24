@@ -30,6 +30,10 @@ bool sr_replay_take_bus(struct sr_event_controller *events, enum sr_replay_bus b
  * hotkeys so one CAM1..CAM8 bank follows the active replay transport. */
 bool sr_replay_take_current_bus(enum sr_replay_bus *bus);
 
+/* Returns true only when an Event Output scene is actually on Program. Unlike
+ * sr_replay_take_current_bus(), this never falls back to a merely cued bus. */
+bool sr_replay_take_program_bus(enum sr_replay_bus *bus);
+
 /* If A is on program, TAKE B; if B is on program, TAKE A. Outside either
  * replay scene, prefer A when cued, otherwise B. */
 bool sr_replay_take_toggle(struct sr_event_controller *events);
@@ -43,6 +47,10 @@ bool sr_replay_take_return(struct sr_event_controller *events);
  * task runs. Event List playback calls this only after its final playable
  * item, so intermediate highlights remain on the replay scene. */
 void sr_replay_take_return_on_end(enum sr_replay_bus bus, uint64_t event_id);
+
+/* Called by an Event Output after it has actually left Program. The bus check
+ * prevents A deactivation from restoring live audio after an A -> B TAKE. */
+void sr_replay_take_release_live_audio(enum sr_replay_bus bus);
 
 /* Releases process-local TAKE state during module shutdown. */
 void sr_replay_take_reset(void);

@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "sr-thumb.h"
 
+#include "sr-disk-player.h"
+
 #include <obs-module.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -94,5 +96,46 @@ bool sr_thumbnail_rgba(const char *path, int w, int h, uint8_t **out)
 	av_packet_free(&pkt);
 	avcodec_free_context(&dec);
 	avformat_close_input(&fmt);
+	return ok;
+}
+
+bool sr_disk_thumbnail_rgba(const char *session_dir, const char *camera_name, uint64_t timestamp_ns, int w, int h,
+			    uint8_t **out)
+{
+	if (!out)
+		return false;
+	*out = NULL;
+	if (!session_dir || !*session_dir || !camera_name || !*camera_name || !timestamp_ns || w <= 0 || h <= 0)
+		return false;
+
+	struct sr_disk_player *player = sr_disk_player_create(session_dir, camera_name);
+	if (!player)
+		return false;
+	AVFrame *frame = NULL;
+	bool have_frame = sr_disk_player_decode_at(player, timestamp_ns, &frame, NULL);
+	if (!have_frame) {
+		uint64_t first_ns = 0;
+		if (sr_disk_player_get_bounds(player, &first_ns, NULL))
+			have_frame = sr_disk_player_decode_at(player, first_ns, &frame, NULL);
+	}
+
+	bool ok = false;
+	if (have_frame && frame) {
+		struct SwsContext *sws = sws_getContext(frame->width, frame->height, frame->format, w, h,
+							AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
+		if (sws) {
+			uint8_t *buf = bzalloc((size_t)w * h * 4);
+			uint8_t *dst[4] = {buf, NULL, NULL, NULL};
+			int dst_linesize[4] = {w * 4, 0, 0, 0};
+			sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, frame->height, dst,
+				  dst_linesize);
+			sws_freeContext(sws);
+			*out = buf;
+			ok = true;
+		}
+	}
+
+	av_frame_free(&frame);
+	sr_disk_player_destroy(player);
 	return ok;
 }

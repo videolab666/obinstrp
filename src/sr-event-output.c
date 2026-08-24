@@ -10,6 +10,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-event-output.h"
 
+#include "sr-camera-identity.h"
 #include "sr-master-audio-player.h"
 #include "sr-replay-channel.h"
 #include "sr-replay-playlist.h"
@@ -27,6 +28,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <libavutil/samplefmt.h>
 
 #include <math.h>
+#include <string.h>
 
 #define AUDIO_LEAD_NS 60000000ULL
 #define AUDIO_RESYNC_NS 100000000ULL
@@ -36,10 +38,13 @@ struct sr_event_output {
 	obs_source_t *self;
 	enum sr_replay_bus bus;
 	enum sr_event_output_audio_mode audio_mode;
+	float replay_gain;
 	uint32_t width;
 	uint32_t height;
 
 	struct sr_master_audio_player *audio_player;
+	bool audio_player_camera_mode;
+	char audio_camera[256];
 	uint64_t audio_event_id;
 	uint64_t audio_anchor_media_ns;
 	uint64_t audio_anchor_clock_ns;
@@ -92,15 +97,36 @@ static void reset_audio_transport(struct sr_event_output *output)
 	output->audio_started = false;
 }
 
-static bool ensure_audio_player(struct sr_event_output *output)
+static bool ensure_audio_player(struct sr_event_output *output, const struct sr_replay_channel_state *state)
 {
-	if (output->audio_player)
+	const bool camera_audio =
+		output->audio_mode == SR_EVENT_OUTPUT_AUDIO_CAMERA ||
+		(output->audio_mode == SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS && state->audio_mode == SR_REPLAY_AUDIO_CAMERA);
+	if (output->audio_player && output->audio_player_camera_mode == camera_audio &&
+	    (!camera_audio || strcmp(output->audio_camera, state->camera_name) == 0))
 		return true;
+	sr_master_audio_player_destroy(output->audio_player);
+	output->audio_player = NULL;
+	output->audio_player_camera_mode = false;
+	output->audio_camera[0] = '\0';
 
 	char *session_dir = sr_session_get_or_create_path();
 	if (!session_dir)
 		return false;
-	output->audio_player = sr_master_audio_player_create(session_dir);
+	if (camera_audio) {
+		char camera_key[SR_CAMERA_STABLE_KEY_MAX] = {0};
+		char *camera_dir = sr_camera_key_from_name(state->camera_name, camera_key, sizeof(camera_key))
+					   ? sr_camera_directory_for_key(session_dir, camera_key)
+					   : NULL;
+		if (camera_dir)
+			output->audio_player = sr_audio_player_create_from_directory(camera_dir);
+		bfree(camera_dir);
+		if (output->audio_player)
+			strncpy(output->audio_camera, state->camera_name, sizeof(output->audio_camera) - 1);
+	} else {
+		output->audio_player = sr_master_audio_player_create(session_dir);
+	}
+	output->audio_player_camera_mode = output->audio_player && camera_audio;
 	bfree(session_dir);
 	return output->audio_player != NULL;
 }
@@ -112,17 +138,19 @@ static uint64_t abs_delta_u64(uint64_t a, uint64_t b)
 
 static bool master_audio_allowed(const struct sr_event_output *output, const struct sr_replay_channel_state *state)
 {
-	const bool master_enabled =
+	const bool audio_enabled =
 		output->audio_mode == SR_EVENT_OUTPUT_AUDIO_MASTER ||
-		(output->audio_mode == SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS && state->audio_mode == SR_REPLAY_AUDIO_MASTER);
-	return master_enabled && state->cued && state->playing && !state->paused && !state->backward &&
+		output->audio_mode == SR_EVENT_OUTPUT_AUDIO_CAMERA ||
+		(output->audio_mode == SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS && state->audio_mode != SR_REPLAY_AUDIO_OFF);
+	return audio_enabled && state->cued && state->playing && !state->paused && !state->backward &&
 	       fabs(state->speed_percent - 100.0) < 0.01;
 }
 
 static bool seek_audio_to_playhead(struct sr_event_output *output, const struct sr_replay_channel_state *state,
 				   uint64_t clock_ns)
 {
-	if (!ensure_audio_player(output) || !sr_master_audio_player_seek(output->audio_player, state->playhead_ns)) {
+	if (!ensure_audio_player(output, state) ||
+	    !sr_master_audio_player_seek(output->audio_player, state->playhead_ns)) {
 		reset_audio_transport(output);
 		return false;
 	}
@@ -171,6 +199,14 @@ static void output_audio_frame(struct sr_event_output *output, AVFrame *decoded,
 			return;
 		if (allowed < frames)
 			frames = (uint32_t)allowed;
+	}
+
+	if (fabsf(output->replay_gain - 1.0f) > 0.0001f) {
+		for (size_t channel = 0; channel < 2; channel++) {
+			float *samples = (float *)decoded->extended_data[channel] + skip_frames;
+			for (uint32_t frame = 0; frame < frames; frame++)
+				samples[frame] *= output->replay_gain;
+		}
 	}
 
 	struct obs_source_audio audio = {0};
@@ -231,13 +267,17 @@ static void sr_event_output_update(void *data, obs_data_t *settings)
 		bus = SR_REPLAY_BUS_A;
 
 	int audio_mode = (int)obs_data_get_int(settings, SR_EVENT_OUTPUT_SETTING_AUDIO_MODE);
-	if (audio_mode < SR_EVENT_OUTPUT_AUDIO_OFF || audio_mode > SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS)
+	if (audio_mode < SR_EVENT_OUTPUT_AUDIO_OFF || audio_mode > SR_EVENT_OUTPUT_AUDIO_CAMERA)
 		audio_mode = SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS;
 
 	if (output->bus != (enum sr_replay_bus)bus || output->audio_mode != (enum sr_event_output_audio_mode)audio_mode)
 		reset_audio_transport(output);
 	output->bus = (enum sr_replay_bus)bus;
 	output->audio_mode = (enum sr_event_output_audio_mode)audio_mode;
+	double replay_gain_db = obs_data_get_double(settings, SR_EVENT_OUTPUT_SETTING_REPLAY_GAIN_DB);
+	if (!isfinite(replay_gain_db) || replay_gain_db < -30.0 || replay_gain_db > 12.0)
+		replay_gain_db = 0.0;
+	output->replay_gain = (float)pow(10.0, replay_gain_db / 20.0);
 }
 
 static void *sr_event_output_create(obs_data_t *settings, obs_source_t *source)
@@ -246,6 +286,7 @@ static void *sr_event_output_create(obs_data_t *settings, obs_source_t *source)
 	output->self = source;
 	output->bus = SR_REPLAY_BUS_A;
 	output->audio_mode = SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS;
+	output->replay_gain = 1.0f;
 	sr_event_output_update(output, settings);
 	return output;
 }
@@ -304,6 +345,7 @@ static void sr_event_output_deactivate(void *data)
 	reset_audio_transport(output);
 	sr_replay_playlist_stop(output->bus);
 	sr_replay_channel_stop(output->bus);
+	sr_replay_take_release_live_audio(output->bus);
 	sr_scene_tracker_end_replay_guard();
 }
 
@@ -324,7 +366,22 @@ static obs_properties_t *sr_event_output_properties(void *unused)
 				  SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS);
 	obs_property_list_add_int(audio, obs_module_text("EventOutput.AudioOff"), SR_EVENT_OUTPUT_AUDIO_OFF);
 	obs_property_list_add_int(audio, obs_module_text("EventOutput.AudioMaster"), SR_EVENT_OUTPUT_AUDIO_MASTER);
+	obs_property_list_add_int(audio, obs_module_text("EventOutput.AudioCamera"), SR_EVENT_OUTPUT_AUDIO_CAMERA);
 	obs_property_set_long_description(audio, obs_module_text("EventOutput.Audio.Description"));
+
+	obs_properties_add_float_slider(props, SR_EVENT_OUTPUT_SETTING_REPLAY_GAIN_DB,
+					obs_module_text("EventOutput.ReplayGain"), -30.0, 12.0, 0.5);
+
+	obs_property_t *live_policy = obs_properties_add_list(props, SR_EVENT_OUTPUT_SETTING_LIVE_AUDIO_POLICY,
+							      obs_module_text("EventOutput.LiveAudioPolicy"),
+							      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(live_policy, obs_module_text("EventOutput.LiveAudioKeep"), SR_LIVE_AUDIO_KEEP);
+	obs_property_list_add_int(live_policy, obs_module_text("EventOutput.LiveAudioDuck"), SR_LIVE_AUDIO_DUCK);
+	obs_property_list_add_int(live_policy, obs_module_text("EventOutput.LiveAudioMute"), SR_LIVE_AUDIO_MUTE);
+	obs_property_set_long_description(live_policy, obs_module_text("EventOutput.LiveAudioPolicy.Description"));
+
+	obs_properties_add_float_slider(props, SR_EVENT_OUTPUT_SETTING_LIVE_DUCK_DB,
+					obs_module_text("EventOutput.LiveDuckLevel"), -60.0, 0.0, 1.0);
 	return props;
 }
 
@@ -332,6 +389,9 @@ static void sr_event_output_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_int(settings, SR_EVENT_OUTPUT_SETTING_BUS, SR_REPLAY_BUS_A);
 	obs_data_set_default_int(settings, SR_EVENT_OUTPUT_SETTING_AUDIO_MODE, SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS);
+	obs_data_set_default_double(settings, SR_EVENT_OUTPUT_SETTING_REPLAY_GAIN_DB, 0.0);
+	obs_data_set_default_int(settings, SR_EVENT_OUTPUT_SETTING_LIVE_AUDIO_POLICY, SR_LIVE_AUDIO_KEEP);
+	obs_data_set_default_double(settings, SR_EVENT_OUTPUT_SETTING_LIVE_DUCK_DB, -12.0);
 }
 
 static uint32_t sr_event_output_width(void *data)

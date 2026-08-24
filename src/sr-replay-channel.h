@@ -30,6 +30,7 @@ enum sr_replay_bus {
 enum sr_replay_audio_mode {
 	SR_REPLAY_AUDIO_OFF = 0,
 	SR_REPLAY_AUDIO_MASTER = 1,
+	SR_REPLAY_AUDIO_CAMERA = 2,
 };
 
 struct sr_replay_channel_state {

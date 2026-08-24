@@ -20,11 +20,15 @@ the Free Software Foundation; either version 2 of the License, or
 #include <util/platform.h>
 #include <util/threading.h>
 
+#include <string.h>
+#include <time.h>
+
 static pthread_mutex_t g_manager_mutex;
 static pthread_t g_manager_thread;
 static bool g_manager_mutex_initialized;
 static bool g_manager_thread_started;
 static bool g_manager_stopping;
+static struct sr_storage_manager_status g_manager_status;
 
 static bool manager_should_stop(void)
 {
@@ -81,6 +85,11 @@ static void run_policy_once(void)
 		struct sr_storage_cleanup_result result = {0};
 		const uint64_t target = purge_target >= min_free ? purge_target : min_free;
 		const bool ok = sr_storage_gc_reclaim_unreferenced(session_dir, session_dir, target, &result);
+		pthread_mutex_lock(&g_manager_mutex);
+		g_manager_status.cleanup_passes++;
+		g_manager_status.last_cleanup_unix = (uint64_t)time(NULL);
+		g_manager_status.last_cleanup = result;
+		pthread_mutex_unlock(&g_manager_mutex);
 		blog(ok && !result.errors ? LOG_INFO : LOG_WARNING,
 		     "Pitel Instant Replay: storage manager GC deleted %zu segment(s), pinned %zu, errors %zu, free %.1f -> %.1f GB%s",
 		     result.segments_deleted, result.segments_pinned, result.errors,
@@ -119,11 +128,24 @@ bool sr_storage_manager_start(void)
 
 	pthread_mutex_lock(&g_manager_mutex);
 	g_manager_stopping = false;
+	memset(&g_manager_status, 0, sizeof(g_manager_status));
 	pthread_mutex_unlock(&g_manager_mutex);
 	if (pthread_create(&g_manager_thread, NULL, manager_thread, NULL) != 0)
 		return false;
 	g_manager_thread_started = true;
 	return true;
+}
+
+void sr_storage_manager_get_status(struct sr_storage_manager_status *status)
+{
+	if (!status)
+		return;
+	memset(status, 0, sizeof(*status));
+	if (!g_manager_mutex_initialized)
+		return;
+	pthread_mutex_lock(&g_manager_mutex);
+	*status = g_manager_status;
+	pthread_mutex_unlock(&g_manager_mutex);
 }
 
 void sr_storage_manager_stop(void)

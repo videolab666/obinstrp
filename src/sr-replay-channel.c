@@ -497,7 +497,8 @@ bool sr_replay_channel_set_speed(enum sr_replay_bus bus, double speed_percent)
 bool sr_replay_channel_set_audio_mode(enum sr_replay_bus bus, enum sr_replay_audio_mode audio_mode)
 {
 	struct sr_replay_channel *channel = get_bus(bus);
-	if (!channel || (audio_mode != SR_REPLAY_AUDIO_OFF && audio_mode != SR_REPLAY_AUDIO_MASTER))
+	if (!channel || (audio_mode != SR_REPLAY_AUDIO_OFF && audio_mode != SR_REPLAY_AUDIO_MASTER &&
+			 audio_mode != SR_REPLAY_AUDIO_CAMERA))
 		return false;
 	pthread_mutex_lock(&channel->mutex);
 	channel->audio_mode = audio_mode;

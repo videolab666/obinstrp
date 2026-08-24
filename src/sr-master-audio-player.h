@@ -26,6 +26,7 @@ struct sr_master_audio_player;
  * and advances across finalized or live .part segments without tying audio to
  * any camera angle. */
 struct sr_master_audio_player *sr_master_audio_player_create(const char *session_dir);
+struct sr_master_audio_player *sr_audio_player_create_from_directory(const char *audio_dir);
 void sr_master_audio_player_destroy(struct sr_master_audio_player *player);
 
 /* Re-scans the master-audio catalog. Existing decoder state is preserved until

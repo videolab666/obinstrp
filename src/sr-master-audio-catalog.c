@@ -132,20 +132,16 @@ static bool append_descriptor(struct sr_master_audio_descriptor **items, size_t 
 	return true;
 }
 
-bool sr_master_audio_catalog_scan(const char *session_dir, struct sr_master_audio_descriptor **segments, size_t *count)
+bool sr_audio_catalog_scan_directory(const char *audio_dir, struct sr_master_audio_descriptor **segments, size_t *count)
 {
 	if (!segments || !count)
 		return false;
 	*segments = NULL;
 	*count = 0;
-	if (!session_dir || !*session_dir)
+	if (!audio_dir || !*audio_dir)
 		return false;
 
-	char *audio_dir = join_path(session_dir, "audio-master");
-	if (!audio_dir)
-		return false;
 	char *pattern = join_path(audio_dir, "*.sraud*");
-	bfree(audio_dir);
 	if (!pattern)
 		return false;
 
@@ -181,6 +177,18 @@ bool sr_master_audio_catalog_scan(const char *session_dir, struct sr_master_audi
 	*segments = items;
 	*count = item_count;
 	return true;
+}
+
+bool sr_master_audio_catalog_scan(const char *session_dir, struct sr_master_audio_descriptor **segments, size_t *count)
+{
+	if (!session_dir || !*session_dir)
+		return false;
+	char *audio_dir = join_path(session_dir, "audio-master");
+	if (!audio_dir)
+		return false;
+	const bool ok = sr_audio_catalog_scan_directory(audio_dir, segments, count);
+	bfree(audio_dir);
+	return ok;
 }
 
 void sr_master_audio_catalog_free(struct sr_master_audio_descriptor *segments, size_t count)
