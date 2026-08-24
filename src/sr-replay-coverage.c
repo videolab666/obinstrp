@@ -61,10 +61,12 @@ static bool normal_handoff(const struct sr_segment_descriptor *previous, const s
 }
 
 static void consider_interval(const struct coverage_interval *interval, uint64_t event_in_ns, uint64_t event_out_ns,
-			      struct sr_replay_coverage_info *info, bool *have_best, bool *best_contains_in,
-			      uint64_t *best_duration)
+			      bool require_timestamp, uint64_t timestamp_ns, struct sr_replay_coverage_info *info,
+			      bool *have_best, bool *best_contains_in, uint64_t *best_duration)
 {
 	if (!interval || interval->end_ns < interval->start_ns)
+		return;
+	if (require_timestamp && (timestamp_ns < interval->start_ns || timestamp_ns > interval->end_ns))
 		return;
 
 	if (interval->start_ns == event_in_ns && interval->end_ns == event_out_ns) {
@@ -97,8 +99,9 @@ static void consider_interval(const struct coverage_interval *interval, uint64_t
 	*best_duration = duration;
 }
 
-bool sr_replay_coverage_query(const char *camera_name, uint64_t event_in_ns, uint64_t event_out_ns,
-			      struct sr_replay_coverage_info *info)
+static bool coverage_query_internal(const char *camera_name, uint64_t event_in_ns, uint64_t event_out_ns,
+				    bool require_timestamp, uint64_t timestamp_ns,
+				    struct sr_replay_coverage_info *info)
 {
 	if (!info)
 		return false;
@@ -107,6 +110,8 @@ bool sr_replay_coverage_query(const char *camera_name, uint64_t event_in_ns, uin
 	info->coverage = SR_REPLAY_COVERAGE_NONE;
 
 	if (!camera_name || !*camera_name || event_out_ns < event_in_ns)
+		return false;
+	if (require_timestamp && (timestamp_ns < event_in_ns || timestamp_ns > event_out_ns))
 		return false;
 
 	char *session_dir = sr_session_get_or_create_path();
@@ -151,8 +156,8 @@ bool sr_replay_coverage_query(const char *camera_name, uint64_t event_in_ns, uin
 			continue;
 		}
 
-		consider_interval(&current, event_in_ns, event_out_ns, info, &have_best, &best_contains_in,
-				  &best_duration);
+		consider_interval(&current, event_in_ns, event_out_ns, require_timestamp, timestamp_ns, info, &have_best,
+				  &best_contains_in, &best_duration);
 		current.start_ns = start_ns;
 		current.end_ns = end_ns;
 		current.active = segment->active;
@@ -160,9 +165,21 @@ bool sr_replay_coverage_query(const char *camera_name, uint64_t event_in_ns, uin
 	}
 
 	if (have_current)
-		consider_interval(&current, event_in_ns, event_out_ns, info, &have_best, &best_contains_in,
-				  &best_duration);
+		consider_interval(&current, event_in_ns, event_out_ns, require_timestamp, timestamp_ns, info, &have_best,
+				  &best_contains_in, &best_duration);
 
 	sr_segment_catalog_free(segments, count);
 	return true;
+}
+
+bool sr_replay_coverage_query(const char *camera_name, uint64_t event_in_ns, uint64_t event_out_ns,
+			      struct sr_replay_coverage_info *info)
+{
+	return coverage_query_internal(camera_name, event_in_ns, event_out_ns, false, 0, info);
+}
+
+bool sr_replay_coverage_query_at(const char *camera_name, uint64_t event_in_ns, uint64_t event_out_ns,
+				 uint64_t timestamp_ns, struct sr_replay_coverage_info *info)
+{
+	return coverage_query_internal(camera_name, event_in_ns, event_out_ns, true, timestamp_ns, info);
 }

@@ -40,6 +40,13 @@ struct sr_replay_coverage_info {
 bool sr_replay_coverage_query(const char *camera_name, uint64_t event_in_ns, uint64_t event_out_ns,
 			      struct sr_replay_coverage_info *info);
 
+/* Same scan, but returns only the contiguous interval that contains
+ * timestamp_ns. This is used for on-air angle changes so channel bounds stop
+ * before the next real recording gap instead of spanning it. A successful
+ * scan with no media at timestamp_ns returns true with coverage == NONE. */
+bool sr_replay_coverage_query_at(const char *camera_name, uint64_t event_in_ns, uint64_t event_out_ns,
+				 uint64_t timestamp_ns, struct sr_replay_coverage_info *info);
+
 #ifdef __cplusplus
 }
 #endif

@@ -12,6 +12,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-disk-player.h"
 #include "sr-event-controller.h"
+#include "sr-replay-coverage.h"
 #include "sr-session.h"
 
 #include <obs-module.h>
@@ -165,6 +166,13 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	if (!sr_event_controller_get_event(g_channels->events, event_id, &event))
 		return false;
 
+	struct sr_replay_coverage_info coverage = {0};
+	if (!sr_replay_coverage_query(camera_name, event.in_ns, event.out_ns, &coverage) ||
+	    coverage.coverage == SR_REPLAY_COVERAGE_NONE) {
+		sr_event_controller_free_event(&event);
+		return false;
+	}
+
 	uint64_t first_ns = 0;
 	uint64_t last_ns = 0;
 	struct sr_disk_player *player = open_camera_player(camera_name, &first_ns, &last_ns);
@@ -173,15 +181,9 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 		return false;
 	}
 
-	if (event.out_ns < first_ns || event.in_ns > last_ns) {
-		sr_disk_player_destroy(player);
-		sr_event_controller_free_event(&event);
-		return false;
-	}
-
-	const uint64_t in_ns = event.in_ns < first_ns ? first_ns : event.in_ns;
-	const uint64_t out_ns = event.out_ns > last_ns ? last_ns : event.out_ns;
-	const bool partial = in_ns != event.in_ns || out_ns != event.out_ns;
+	const uint64_t in_ns = coverage.playable_in_ns;
+	const uint64_t out_ns = coverage.playable_out_ns;
+	const bool partial = coverage.coverage != SR_REPLAY_COVERAGE_FULL;
 	const double speed = event.speed_percent;
 	const uint64_t event_in_ns = event.in_ns;
 	const uint64_t event_out_ns = event.out_ns;
@@ -189,7 +191,8 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 
 	/* Refuse a cue that cannot actually decode its first visible frame. Apart
 	 * from avoiding a black first frame, this lets Event List playback safely
-	 * fall through to another camera when coarse catalog bounds hide a gap. */
+	 * fall through to another camera when catalog metadata and the decoder do
+	 * not agree about the first usable frame. */
 	AVFrame *first_frame = NULL;
 	if (!sr_disk_player_decode_at(player, in_ns, &first_frame, NULL) || !first_frame) {
 		av_frame_free(&first_frame);
@@ -256,29 +259,25 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 	expected_playhead_ns = channel->playhead_ns;
 	pthread_mutex_unlock(&channel->mutex);
 
+	struct sr_replay_coverage_info coverage = {0};
+	if (!sr_replay_coverage_query_at(camera_name, event_in_ns, event_out_ns, expected_playhead_ns, &coverage) ||
+	    coverage.coverage == SR_REPLAY_COVERAGE_NONE)
+		return false;
+
+	const uint64_t new_in_ns = coverage.playable_in_ns;
+	const uint64_t new_out_ns = coverage.playable_out_ns;
+	const bool new_partial = coverage.coverage != SR_REPLAY_COVERAGE_FULL;
+
 	uint64_t first_ns = 0;
 	uint64_t last_ns = 0;
 	struct sr_disk_player *new_player = open_camera_player(camera_name, &first_ns, &last_ns);
 	if (!new_player)
 		return false;
 
-	if (event_out_ns < first_ns || event_in_ns > last_ns) {
-		sr_disk_player_destroy(new_player);
-		return false;
-	}
-
-	const uint64_t new_in_ns = event_in_ns < first_ns ? first_ns : event_in_ns;
-	const uint64_t new_out_ns = event_out_ns > last_ns ? last_ns : event_out_ns;
-	if (expected_playhead_ns < new_in_ns || expected_playhead_ns > new_out_ns) {
-		sr_disk_player_destroy(new_player);
-		return false;
-	}
-
-	/* Bounds alone are insufficient when a camera dropped packets or has an
-	 * internal recording gap. Decode the current target before swapping the
-	 * player so an on-air angle button can never replace a good frame with a
-	 * camera that cannot actually produce this playhead. The decode also warms
-	 * the new player's GOP/frame cache for the first rendered frame. */
+	/* The coverage scan selected the contiguous interval containing the
+	 * captured playhead. Decode that target before swapping the player so an
+	 * on-air angle button can never replace a good frame with a camera that
+	 * cannot actually produce it. This also warms the GOP/frame cache. */
 	AVFrame *probe_frame = NULL;
 	if (!sr_disk_player_decode_at(new_player, expected_playhead_ns, &probe_frame, NULL) || !probe_frame) {
 		av_frame_free(&probe_frame);
@@ -326,7 +325,7 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 			channel->out_ns = new_out_ns;
 			channel->width = 0;
 			channel->height = 0;
-			channel->partial_coverage = new_in_ns != event_in_ns || new_out_ns != event_out_ns;
+			channel->partial_coverage = new_partial;
 			partial = channel->partial_coverage;
 			channel->last_clock_ns = 0;
 			channel->need_frame = true;
