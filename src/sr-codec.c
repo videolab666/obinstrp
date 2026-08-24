@@ -17,10 +17,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "sr-codec.h"
+#include "sr-gpu-video.h"
 
 #include <plugin-support.h>
-#include <libavutil/opt.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 
 #include <limits.h>
@@ -35,11 +37,13 @@ struct sr_encoder {
 	uint32_t src_height;
 	int64_t next_pts;
 	bool unsupported_format_logged;
+	bool direct_nv12_logged;
 };
 
 struct sr_decoder {
 	AVCodecContext *ctx;
 	AVFrame *frame;
+	bool hardware;
 };
 
 static enum AVPixelFormat obs_to_av_format(enum video_format format)
@@ -232,6 +236,19 @@ void sr_encoder_destroy(struct sr_encoder *enc)
 	bfree(enc);
 }
 
+static bool copy_nv12_direct(struct sr_encoder *enc, const struct obs_source_frame *frame)
+{
+	if (!enc || !frame || frame->format != VIDEO_FORMAT_NV12 || !frame->data[0] || !frame->data[1] ||
+	    frame->width != (uint32_t)enc->ctx->width || frame->height != (uint32_t)enc->ctx->height)
+		return false;
+
+	av_image_copy_plane(enc->frame->data[0], enc->frame->linesize[0], frame->data[0], (int)frame->linesize[0],
+			    enc->ctx->width, enc->ctx->height);
+	av_image_copy_plane(enc->frame->data[1], enc->frame->linesize[1], frame->data[1], (int)frame->linesize[1],
+			    enc->ctx->width, enc->ctx->height / 2);
+	return true;
+}
+
 AVPacket *sr_encoder_encode(struct sr_encoder *enc, const struct obs_source_frame *frame)
 {
 	const enum AVPixelFormat src_format = obs_to_av_format(frame->format);
@@ -243,27 +260,36 @@ AVPacket *sr_encoder_encode(struct sr_encoder *enc, const struct obs_source_fram
 		return NULL;
 	}
 
-	if (enc->sws_src_format != src_format) {
-		if (enc->sws)
-			sws_freeContext(enc->sws);
-		enc->sws = sws_getContext((int)frame->width, (int)frame->height, src_format, enc->ctx->width,
-					  enc->ctx->height, AV_PIX_FMT_NV12, SWS_BILINEAR, NULL, NULL, NULL);
-		enc->sws_src_format = src_format;
-	}
-	if (!enc->sws)
-		return NULL;
-
 	if (av_frame_make_writable(enc->frame) < 0)
 		return NULL;
 
-	const uint8_t *src_data[MAX_AV_PLANES] = {0};
-	int src_linesize[MAX_AV_PLANES] = {0};
-	for (size_t i = 0; i < MAX_AV_PLANES; i++) {
-		src_data[i] = frame->data[i];
-		src_linesize[i] = (int)frame->linesize[i];
-	}
+	if (copy_nv12_direct(enc, frame)) {
+		if (!enc->direct_nv12_logged) {
+			obs_log(LOG_INFO, "replay encoder '%s': using direct NV12 input path (swscale bypassed)",
+				enc->codec->name);
+			enc->direct_nv12_logged = true;
+		}
+	} else {
+		if (enc->sws_src_format != src_format) {
+			if (enc->sws)
+				sws_freeContext(enc->sws);
+			enc->sws = sws_getContext((int)frame->width, (int)frame->height, src_format, enc->ctx->width,
+						  enc->ctx->height, AV_PIX_FMT_NV12, SWS_BILINEAR, NULL, NULL, NULL);
+			enc->sws_src_format = src_format;
+		}
+		if (!enc->sws)
+			return NULL;
 
-	sws_scale(enc->sws, src_data, src_linesize, 0, (int)frame->height, enc->frame->data, enc->frame->linesize);
+		const uint8_t *src_data[MAX_AV_PLANES] = {0};
+		int src_linesize[MAX_AV_PLANES] = {0};
+		for (size_t i = 0; i < MAX_AV_PLANES; i++) {
+			src_data[i] = frame->data[i];
+			src_linesize[i] = (int)frame->linesize[i];
+		}
+
+		sws_scale(enc->sws, src_data, src_linesize, 0, (int)frame->height, enc->frame->data,
+			  enc->frame->linesize);
+	}
 
 	enc->frame->pts = enc->next_pts++;
 
@@ -298,12 +324,22 @@ void sr_encoder_get_extradata(const struct sr_encoder *enc, const uint8_t **data
 	*size = enc->ctx->extradata_size;
 }
 
-struct sr_decoder *sr_decoder_create(enum AVCodecID codec_id, const uint8_t *extradata, int extradata_size)
+static enum AVPixelFormat replay_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *formats)
 {
-	const AVCodec *codec = avcodec_find_decoder(codec_id);
-	if (!codec)
-		return NULL;
+	UNUSED_PARAMETER(ctx);
+	for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
+		if (*format == AV_PIX_FMT_D3D11)
+			return *format;
+	}
 
+	/* If the decoder cannot expose D3D11 for this stream, select the first
+	 * software format offered by libavcodec. The same context then remains a
+	 * valid software decoder even though a hw_device_ctx was supplied. */
+	return formats[0];
+}
+
+static AVCodecContext *alloc_decoder_context(const AVCodec *codec, const uint8_t *extradata, int extradata_size)
+{
 	AVCodecContext *ctx = avcodec_alloc_context3(codec);
 	if (!ctx)
 		return NULL;
@@ -313,21 +349,71 @@ struct sr_decoder *sr_decoder_create(enum AVCodecID codec_id, const uint8_t *ext
 
 	if (extradata && extradata_size > 0) {
 		ctx->extradata = av_mallocz((size_t)extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
-		if (ctx->extradata) {
-			memcpy(ctx->extradata, extradata, (size_t)extradata_size);
-			ctx->extradata_size = extradata_size;
+		if (!ctx->extradata) {
+			avcodec_free_context(&ctx);
+			return NULL;
 		}
+		memcpy(ctx->extradata, extradata, (size_t)extradata_size);
+		ctx->extradata_size = extradata_size;
+	}
+	return ctx;
+}
+
+static struct sr_decoder *create_decoder(enum AVCodecID codec_id, const uint8_t *extradata, int extradata_size,
+					 bool prefer_hardware)
+{
+	const AVCodec *codec = avcodec_find_decoder(codec_id);
+	if (!codec)
+		return NULL;
+
+	AVCodecContext *ctx = alloc_decoder_context(codec, extradata, extradata_size);
+	if (!ctx)
+		return NULL;
+
+	AVBufferRef *hw_device = NULL;
+	if (prefer_hardware)
+		hw_device = sr_gpu_create_replay_decode_device();
+	if (hw_device) {
+		ctx->hw_device_ctx = av_buffer_ref(hw_device);
+		ctx->get_format = replay_hw_format;
+		av_buffer_unref(&hw_device);
 	}
 
 	if (avcodec_open2(ctx, codec, NULL) < 0) {
+		const bool attempted_hardware = ctx->hw_device_ctx != NULL;
 		avcodec_free_context(&ctx);
-		return NULL;
+		if (!attempted_hardware)
+			return NULL;
+
+		/* Hardware setup can fail for an old driver, unsupported codec profile,
+		 * or renderer/device mismatch. Rebuild a clean software context rather
+		 * than allowing replay to go black. */
+		ctx = alloc_decoder_context(codec, extradata, extradata_size);
+		if (!ctx || avcodec_open2(ctx, codec, NULL) < 0) {
+			avcodec_free_context(&ctx);
+			return NULL;
+		}
 	}
 
 	struct sr_decoder *dec = bzalloc(sizeof(struct sr_decoder));
 	dec->ctx = ctx;
 	dec->frame = av_frame_alloc();
+	if (!dec->frame) {
+		avcodec_free_context(&dec->ctx);
+		bfree(dec);
+		return NULL;
+	}
 	return dec;
+}
+
+struct sr_decoder *sr_decoder_create(enum AVCodecID codec_id, const uint8_t *extradata, int extradata_size)
+{
+	return create_decoder(codec_id, extradata, extradata_size, false);
+}
+
+struct sr_decoder *sr_decoder_create_replay(enum AVCodecID codec_id, const uint8_t *extradata, int extradata_size)
+{
+	return create_decoder(codec_id, extradata, extradata_size, true);
 }
 
 void sr_decoder_destroy(struct sr_decoder *dec)
@@ -337,6 +423,11 @@ void sr_decoder_destroy(struct sr_decoder *dec)
 	av_frame_free(&dec->frame);
 	avcodec_free_context(&dec->ctx);
 	bfree(dec);
+}
+
+bool sr_decoder_is_hardware(const struct sr_decoder *dec)
+{
+	return dec && dec->hardware;
 }
 
 void sr_decoder_flush(struct sr_decoder *dec)
@@ -353,6 +444,7 @@ bool sr_decoder_decode(struct sr_decoder *dec, const AVPacket *pkt, AVFrame **ou
 	if (avcodec_receive_frame(dec->ctx, dec->frame) < 0)
 		return false;
 
+	dec->hardware = sr_gpu_frame_is_native(dec->frame);
 	*out = dec->frame;
 	return true;
 }
