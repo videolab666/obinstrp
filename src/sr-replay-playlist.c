@@ -77,12 +77,18 @@ static bool cue_best_camera_locked(enum sr_replay_bus bus, uint64_t event_id, co
 		return false;
 	}
 
+	char *event_preferred = NULL;
+	if (event.preferred_camera_id &&
+	    !sr_event_controller_get_camera_name(g_events, event.preferred_camera_id, &event_preferred))
+		event_preferred = NULL;
+
 	struct sr_replay_channel_state current = {0};
 	const bool have_current = sr_replay_channel_get_state(bus, &current) && current.cued && current.camera_name[0];
 	const char *current_camera = have_current ? current.camera_name : NULL;
 
 	struct sr_camera_list cameras = {0};
 	if (!sr_camera_list_capture(&cameras)) {
+		bfree(event_preferred);
 		sr_event_controller_free_event(&event);
 		return false;
 	}
@@ -91,19 +97,24 @@ static bool cue_best_camera_locked(enum sr_replay_bus bus, uint64_t event_id, co
 	const enum sr_replay_coverage passes[] = {SR_REPLAY_COVERAGE_FULL, SR_REPLAY_COVERAGE_PARTIAL};
 	for (size_t pass = 0; pass < sizeof(passes) / sizeof(passes[0]) && !cued; pass++) {
 		const enum sr_replay_coverage wanted = passes[pass];
-		if (current_camera)
+		if (event_preferred)
+			cued = try_camera(bus, event_id, &event, event_preferred, wanted);
+		if (!cued && current_camera && !same_camera(current_camera, event_preferred))
 			cued = try_camera(bus, event_id, &event, current_camera, wanted);
-		if (!cued && preferred_camera && *preferred_camera && !same_camera(preferred_camera, current_camera))
+		if (!cued && preferred_camera && *preferred_camera && !same_camera(preferred_camera, event_preferred) &&
+		    !same_camera(preferred_camera, current_camera))
 			cued = try_camera(bus, event_id, &event, preferred_camera, wanted);
 		for (size_t i = 0; i < cameras.count && !cued; i++) {
 			const char *candidate = cameras.names[i];
-			if (same_camera(candidate, current_camera) || same_camera(candidate, preferred_camera))
+			if (same_camera(candidate, event_preferred) || same_camera(candidate, current_camera) ||
+			    same_camera(candidate, preferred_camera))
 				continue;
 			cued = try_camera(bus, event_id, &event, candidate, wanted);
 		}
 	}
 
 	sr_camera_list_free(&cameras);
+	bfree(event_preferred);
 	sr_event_controller_free_event(&event);
 	return cued;
 }
