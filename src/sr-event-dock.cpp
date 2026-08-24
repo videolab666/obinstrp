@@ -1228,8 +1228,8 @@ private:
 				baseDirectory = QDir::homePath();
 			const QString suggested = QDir(baseDirectory)
 							  .filePath(QStringLiteral("Event_%1_%2.mp4")
-								    .arg(eventId, 6, 10, QChar('0'))
-								    .arg(safeFilePart(camera)));
+									    .arg(eventId, 6, 10, QChar('0'))
+									    .arg(safeFilePart(camera)));
 			QString outputPath = QFileDialog::getSaveFileName(this, T("EventDock.ExportFile"), suggested,
 									  T("EventDock.ExportFilter"));
 			if (outputPath.isEmpty()) {
