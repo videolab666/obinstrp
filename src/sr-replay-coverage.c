@@ -100,8 +100,7 @@ static void consider_interval(const struct coverage_interval *interval, uint64_t
 }
 
 static bool coverage_query_internal(const char *camera_name, uint64_t event_in_ns, uint64_t event_out_ns,
-				    bool require_timestamp, uint64_t timestamp_ns,
-				    struct sr_replay_coverage_info *info)
+				    bool require_timestamp, uint64_t timestamp_ns, struct sr_replay_coverage_info *info)
 {
 	if (!info)
 		return false;
@@ -156,8 +155,8 @@ static bool coverage_query_internal(const char *camera_name, uint64_t event_in_n
 			continue;
 		}
 
-		consider_interval(&current, event_in_ns, event_out_ns, require_timestamp, timestamp_ns, info, &have_best,
-				  &best_contains_in, &best_duration);
+		consider_interval(&current, event_in_ns, event_out_ns, require_timestamp, timestamp_ns, info,
+				  &have_best, &best_contains_in, &best_duration);
 		current.start_ns = start_ns;
 		current.end_ns = end_ns;
 		current.active = segment->active;
@@ -165,8 +164,8 @@ static bool coverage_query_internal(const char *camera_name, uint64_t event_in_n
 	}
 
 	if (have_current)
-		consider_interval(&current, event_in_ns, event_out_ns, require_timestamp, timestamp_ns, info, &have_best,
-				  &best_contains_in, &best_duration);
+		consider_interval(&current, event_in_ns, event_out_ns, require_timestamp, timestamp_ns, info,
+				  &have_best, &best_contains_in, &best_duration);
 
 	sr_segment_catalog_free(segments, count);
 	return true;
