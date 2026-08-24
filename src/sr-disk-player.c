@@ -84,7 +84,7 @@ static bool open_segment(struct sr_disk_player *p, const struct sr_segment_descr
 		return false;
 	}
 
-	p->decoder = sr_decoder_create(info.codec_id, info.extradata, info.extradata_size);
+	p->decoder = sr_decoder_create_replay(info.codec_id, info.extradata, info.extradata_size);
 	if (!p->decoder) {
 		close_stream(p);
 		return false;
@@ -432,6 +432,5 @@ bool sr_disk_player_neighbor_timestamp(struct sr_disk_player *p, uint64_t curren
 			if (segment_neighbor_timestamp(&p->segments[i - 1], current_ns, direction, timestamp_ns))
 				return true;
 		}
-	}
 	return false;
 }
