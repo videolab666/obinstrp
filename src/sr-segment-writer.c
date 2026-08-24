@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -268,7 +268,7 @@ static bool storage_reserve_allows(struct sr_segment_writer *w, uint64_t timesta
 	if (free_bytes < w->min_free_bytes) {
 		if (!w->reserve_blocked) {
 			blog(LOG_ERROR,
-			     "Sports Replay: continuous recording paused for '%s': disk free space %.1f GB is below the %.1f GB reserve",
+			     "Pitel Instant Replay: continuous recording paused for '%s': disk free space %.1f GB is below the %.1f GB reserve",
 			     w->camera_name, (double)free_bytes / (1024.0 * 1024.0 * 1024.0),
 			     (double)w->min_free_bytes / (1024.0 * 1024.0 * 1024.0));
 		}
@@ -279,7 +279,7 @@ static bool storage_reserve_allows(struct sr_segment_writer *w, uint64_t timesta
 	}
 
 	if (w->reserve_blocked) {
-		blog(LOG_INFO, "Sports Replay: disk reserve restored for '%s'; continuous recording resumed",
+		blog(LOG_INFO, "Pitel Instant Replay: disk reserve restored for '%s'; continuous recording resumed",
 		     w->camera_name);
 		w->reserve_blocked = false;
 		w->reserve_recheck_after_ns = 0;
@@ -294,7 +294,7 @@ static bool open_segment(struct sr_segment_writer *w, uint64_t start_ns, bool di
 		return false;
 
 	if (w->next_sequence == UINT32_MAX) {
-		blog(LOG_ERROR, "Sports Replay: segment sequence exhausted for camera '%s'", w->camera_name);
+		blog(LOG_ERROR, "Pitel Instant Replay: segment sequence exhausted for camera '%s'", w->camera_name);
 		stats_set_failed(w);
 		return false;
 	}
@@ -309,7 +309,7 @@ static bool open_segment(struct sr_segment_writer *w, uint64_t start_ns, bool di
 	w->segment_file = os_fopen(w->segment_part_path, "wb");
 	w->index_file = os_fopen(w->index_part_path, "wb");
 	if (!w->segment_file || !w->index_file) {
-		blog(LOG_ERROR, "Sports Replay: could not open segment files for camera '%s'", w->camera_name);
+		blog(LOG_ERROR, "Pitel Instant Replay: could not open segment files for camera '%s'", w->camera_name);
 		close_open_files(w);
 		w->current_segment_failed = true;
 		stats_set_failed(w);
@@ -341,7 +341,7 @@ static bool open_segment(struct sr_segment_writer *w, uint64_t start_ns, bool di
 			write_exact(w->segment_file, w->extradata, sh.extradata_size) &&
 			write_exact(w->index_file, &ih, sizeof(ih));
 	if (!ok) {
-		blog(LOG_ERROR, "Sports Replay: failed to write segment header for camera '%s'", w->camera_name);
+		blog(LOG_ERROR, "Pitel Instant Replay: failed to write segment header for camera '%s'", w->camera_name);
 		w->current_segment_failed = true;
 		stats_set_failed(w);
 		close_open_files(w);
@@ -370,7 +370,7 @@ static void close_segment(struct sr_segment_writer *w, bool finalize)
 			w->stats.segments_finalized++;
 			pthread_mutex_unlock(&w->mutex);
 		} else {
-			blog(LOG_ERROR, "Sports Replay: could not finalize segment for camera '%s'", w->camera_name);
+			blog(LOG_ERROR, "Pitel Instant Replay: could not finalize segment for camera '%s'", w->camera_name);
 			stats_set_failed(w);
 		}
 	}
@@ -535,7 +535,7 @@ static void *writer_thread(void *param)
 		}
 
 		if (!write_video_packet(w, node)) {
-			blog(LOG_ERROR, "Sports Replay: disk write failed for camera '%s'; waiting for next keyframe",
+			blog(LOG_ERROR, "Pitel Instant Replay: disk write failed for camera '%s'; waiting for next keyframe",
 			     w->camera_name);
 			close_segment(w, false);
 			w->need_keyframe = true;
@@ -564,7 +564,7 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	w->camera_key = bstrdup(config->camera_key);
 	w->camera_hash = sr_camera_key_hash(config->camera_key);
 	if (!w->camera_name || !w->camera_key || !claim_camera_writer(config->camera_key)) {
-		blog(LOG_ERROR, "Sports Replay: refusing a second continuous disk writer for camera '%s' (UUID %s)",
+		blog(LOG_ERROR, "Pitel Instant Replay: refusing a second continuous disk writer for camera '%s' (UUID %s)",
 		     config->camera_name, config->camera_key);
 		sr_segment_writer_destroy(w);
 		return NULL;
@@ -587,13 +587,13 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 
 	w->camera_dir = sr_camera_directory_for_key(config->session_dir, config->camera_key);
 	if (!w->camera_dir) {
-		blog(LOG_ERROR, "Sports Replay: invalid persistent camera key for '%s'", w->camera_name);
+		blog(LOG_ERROR, "Pitel Instant Replay: invalid persistent camera key for '%s'", w->camera_name);
 		sr_segment_writer_destroy(w);
 		return NULL;
 	}
 
 	if (os_mkdirs(w->camera_dir) == MKDIR_ERROR) {
-		blog(LOG_ERROR, "Sports Replay: could not create camera recording directory '%s'", w->camera_dir);
+		blog(LOG_ERROR, "Pitel Instant Replay: could not create camera recording directory '%s'", w->camera_dir);
 		sr_segment_writer_destroy(w);
 		return NULL;
 	}
@@ -607,14 +607,14 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	bfree(legacy_dir);
 
 	if (pthread_create(&w->thread, NULL, writer_thread, w) != 0) {
-		blog(LOG_ERROR, "Sports Replay: could not start disk writer thread for camera '%s'", w->camera_name);
+		blog(LOG_ERROR, "Pitel Instant Replay: could not start disk writer thread for camera '%s'", w->camera_name);
 		sr_segment_writer_destroy(w);
 		return NULL;
 	}
 	w->thread_started = true;
 
 	blog(LOG_INFO,
-	     "Sports Replay: continuous recorder started for '%s' (%ux%u, %.3f fps, segment %.2f s, queue %zu, reserve %.1f GB)",
+	     "Pitel Instant Replay: continuous recorder started for '%s' (%ux%u, %.3f fps, segment %.2f s, queue %zu, reserve %.1f GB)",
 	     w->camera_name, w->width, w->height, (double)w->fps_num / (double)w->fps_den,
 	     (double)w->target_segment_ns / 1e9, w->max_queue_packets,
 	     (double)w->min_free_bytes / (1024.0 * 1024.0 * 1024.0));

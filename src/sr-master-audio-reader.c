@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -115,14 +115,14 @@ struct sr_master_audio_reader *sr_master_audio_reader_open(const char *audio_pat
 	reader->audio_file = os_fopen(audio_path, "rb");
 	reader->index_file = os_fopen(index_path, "rb");
 	if (!reader->audio_file || !reader->index_file) {
-		blog(LOG_WARNING, "Sports Replay: could not open master audio segment/index '%s' / '%s'", audio_path,
+		blog(LOG_WARNING, "Pitel Instant Replay: could not open master audio segment/index '%s' / '%s'", audio_path,
 		     index_path);
 		sr_master_audio_reader_close(reader);
 		return NULL;
 	}
 
 	if (!read_headers(reader) || !sr_master_audio_reader_refresh_index(reader)) {
-		blog(LOG_WARNING, "Sports Replay: invalid or unsupported master audio segment '%s'", audio_path);
+		blog(LOG_WARNING, "Pitel Instant Replay: invalid or unsupported master audio segment '%s'", audio_path);
 		sr_master_audio_reader_close(reader);
 		return NULL;
 	}

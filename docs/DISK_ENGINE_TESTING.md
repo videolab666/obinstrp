@@ -8,7 +8,7 @@ The existing RAM replay path remains the production path. Continuous disk record
 
 - Build the plugin for Windows x64.
 - Start OBS Studio with a normal 1080p50/60 project.
-- Add a `Sports Replay Capture` filter to one camera source.
+- Add a `Pitel Instant Replay Capture` filter to one camera source.
 - Verify the ordinary RAM replay still works before enabling the disk option.
 
 ## Enable continuous recording
@@ -22,7 +22,7 @@ Continuous replay recording to disk
 The current session root defaults to:
 
 ```text
-<Videos>/Sports Replay/Sessions/
+<Videos>/Pitel Instant Replay/Sessions/
 ```
 
 If the legacy replay folder was changed before the first continuous session is created, the default session root follows that folder and appends `/Sessions`.
@@ -34,7 +34,7 @@ The config schema already carries a minimum-free-space reserve (currently 100 Gi
 After the encoder emits its first packet, the plugin lazily creates a session directory similar to:
 
 ```text
-Sports Replay/
+Pitel Instant Replay/
   Sessions/
     20260823-170000-a1b2c3d4/
       session.json
@@ -92,8 +92,8 @@ validation:    OK
 At startup of the disk writer:
 
 ```text
-Sports Replay: continuous replay session ...
-Sports Replay: continuous recorder started for ...
+Pitel Instant Replay: continuous replay session ...
+Pitel Instant Replay: continuous recorder started for ...
 ```
 
 Every ~60 seconds the capture filter reports RAM + disk statistics, including:

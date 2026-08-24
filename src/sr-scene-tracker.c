@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -303,7 +303,7 @@ static bool begin_transition_override(const char *transition_name)
 
 	obs_source_t *override = find_transition_by_name(transition_name, true);
 	if (!override) {
-		blog(LOG_WARNING, "Sports Replay: native OBS Stinger '%s' was not found; using current transition",
+		blog(LOG_WARNING, "Pitel Instant Replay: native OBS Stinger '%s' was not found; using current transition",
 		     transition_name);
 		return false;
 	}
@@ -325,7 +325,7 @@ static bool begin_transition_override(const char *transition_name)
 
 	if (already_pending) {
 		blog(LOG_WARNING,
-		     "Sports Replay: transition override already in flight; keeping current OBS transition");
+		     "Pitel Instant Replay: transition override already in flight; keeping current OBS transition");
 		obs_source_release(current);
 		obs_source_release(override);
 		return false;
@@ -485,7 +485,7 @@ static void switch_to_source_scene_task(void *param)
 
 	char *scene = sr_find_scene_with_source(source_name);
 	if (!scene) {
-		blog(LOG_WARNING, "[sports-replay] '%s' is not in any scene, returning to the previous one",
+		blog(LOG_WARNING, "[pitel-instant-replay] '%s' is not in any scene, returning to the previous one",
 		     source_name);
 		scene = sr_scene_tracker_previous();
 	}

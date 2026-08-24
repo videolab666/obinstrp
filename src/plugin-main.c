@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -136,7 +136,7 @@ static void take_a_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool p
 	UNUSED_PARAMETER(id);
 	UNUSED_PARAMETER(hotkey);
 	if (pressed && event_controller && !sr_replay_take_bus(event_controller, SR_REPLAY_BUS_A))
-		obs_log(LOG_WARNING, "Sports Replay: TAKE A failed");
+		obs_log(LOG_WARNING, "Pitel Instant Replay: TAKE A failed");
 }
 
 static void take_b_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
@@ -145,7 +145,7 @@ static void take_b_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool p
 	UNUSED_PARAMETER(id);
 	UNUSED_PARAMETER(hotkey);
 	if (pressed && event_controller && !sr_replay_take_bus(event_controller, SR_REPLAY_BUS_B))
-		obs_log(LOG_WARNING, "Sports Replay: TAKE B failed");
+		obs_log(LOG_WARNING, "Pitel Instant Replay: TAKE B failed");
 }
 
 static void take_toggle_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
@@ -154,7 +154,7 @@ static void take_toggle_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, b
 	UNUSED_PARAMETER(id);
 	UNUSED_PARAMETER(hotkey);
 	if (pressed && event_controller && !sr_replay_take_toggle(event_controller))
-		obs_log(LOG_WARNING, "Sports Replay: TAKE A/B toggle failed");
+		obs_log(LOG_WARNING, "Pitel Instant Replay: TAKE A/B toggle failed");
 }
 
 static void return_live_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
@@ -163,7 +163,7 @@ static void return_live_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, b
 	UNUSED_PARAMETER(id);
 	UNUSED_PARAMETER(hotkey);
 	if (pressed && event_controller && !sr_replay_take_return(event_controller))
-		obs_log(LOG_WARNING, "Sports Replay: RETURN LIVE failed");
+		obs_log(LOG_WARNING, "Pitel Instant Replay: RETURN LIVE failed");
 }
 
 static void start_playlist_bus(enum sr_replay_bus bus)
@@ -172,14 +172,14 @@ static void start_playlist_bus(enum sr_replay_bus bus)
 		return;
 	const unsigned list_id = sr_event_controller_get_current_list(event_controller);
 	if (!sr_replay_playlist_start(bus, list_id, NULL)) {
-		obs_log(LOG_WARNING, "Sports Replay: no playable Event in list %u for bus %c", list_id,
+		obs_log(LOG_WARNING, "Pitel Instant Replay: no playable Event in list %u for bus %c", list_id,
 			bus == SR_REPLAY_BUS_A ? 'A' : 'B');
 		return;
 	}
 	if (!sr_replay_take_bus(event_controller, bus)) {
 		sr_replay_playlist_stop(bus);
 		sr_replay_channel_stop(bus);
-		obs_log(LOG_WARNING, "Sports Replay: Event List %u started but TAKE %c failed", list_id,
+		obs_log(LOG_WARNING, "Pitel Instant Replay: Event List %u started but TAKE %c failed", list_id,
 			bus == SR_REPLAY_BUS_A ? 'A' : 'B');
 	}
 }
@@ -211,7 +211,7 @@ static void playlist_next_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey,
 		return;
 	enum sr_replay_bus bus;
 	if (!sr_replay_take_current_bus(&bus) || !sr_replay_playlist_next(bus))
-		obs_log(LOG_WARNING, "Sports Replay: no later playable highlight on the active bus");
+		obs_log(LOG_WARNING, "Pitel Instant Replay: no later playable highlight on the active bus");
 }
 
 static void playlist_stop_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
@@ -239,17 +239,17 @@ static void angle_hotkey_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, 
 
 	enum sr_replay_bus bus;
 	if (!sr_replay_take_current_bus(&bus)) {
-		obs_log(LOG_WARNING, "Sports Replay: angle %zu hotkey ignored: no replay bus is cued", index + 1);
+		obs_log(LOG_WARNING, "Pitel Instant Replay: angle %zu hotkey ignored: no replay bus is cued", index + 1);
 		return;
 	}
 
 	struct sr_camera_list cameras = {0};
 	if (!sr_camera_list_capture(&cameras)) {
-		obs_log(LOG_WARNING, "Sports Replay: angle %zu hotkey could not enumerate replay cameras", index + 1);
+		obs_log(LOG_WARNING, "Pitel Instant Replay: angle %zu hotkey could not enumerate replay cameras", index + 1);
 		return;
 	}
 	if (index >= cameras.count) {
-		obs_log(LOG_WARNING, "Sports Replay: angle %zu hotkey ignored: only %zu replay camera(s) are available",
+		obs_log(LOG_WARNING, "Pitel Instant Replay: angle %zu hotkey ignored: only %zu replay camera(s) are available",
 			index + 1, cameras.count);
 		sr_camera_list_free(&cameras);
 		return;
@@ -258,7 +258,7 @@ static void angle_hotkey_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, 
 	const char *camera = cameras.names[index];
 	if (!sr_replay_channel_switch_camera(bus, camera))
 		obs_log(LOG_WARNING,
-			"Sports Replay: bus %c could not switch to angle %zu ('%s') at the current playhead",
+			"Pitel Instant Replay: bus %c could not switch to angle %zu ('%s') at the current playhead",
 			bus == SR_REPLAY_BUS_A ? 'A' : 'B', index + 1, camera);
 	sr_camera_list_free(&cameras);
 }
@@ -364,14 +364,14 @@ bool obs_module_load(void)
 	if (!sr_master_audio_init()) {
 		sr_session_free();
 		sr_config_free();
-		obs_log(LOG_ERROR, "Sports Replay: could not initialize master replay audio capture");
+		obs_log(LOG_ERROR, "Pitel Instant Replay: could not initialize master replay audio capture");
 		return false;
 	}
 	if (!sr_storage_cleanup_init()) {
 		sr_master_audio_free();
 		sr_session_free();
 		sr_config_free();
-		obs_log(LOG_ERROR, "Sports Replay: could not initialize storage synchronization");
+		obs_log(LOG_ERROR, "Pitel Instant Replay: could not initialize storage synchronization");
 		return false;
 	}
 	event_controller = sr_event_controller_create();
@@ -386,7 +386,7 @@ bool obs_module_load(void)
 		sr_master_audio_free();
 		sr_session_free();
 		sr_config_free();
-		obs_log(LOG_ERROR, "Sports Replay: could not initialize replay Event controller");
+		obs_log(LOG_ERROR, "Pitel Instant Replay: could not initialize replay Event controller");
 		return false;
 	}
 
@@ -394,7 +394,7 @@ bool obs_module_load(void)
 	obs_register_source(&sr_capture_info);
 	obs_register_source(&sr_playback_info);
 	obs_register_source(&sr_event_output_info);
-	obs_log(LOG_INFO, "Sports Replay loaded (version %s)", PLUGIN_VERSION);
+	obs_log(LOG_INFO, "Pitel Instant Replay loaded (version %s)", PLUGIN_VERSION);
 	return true;
 }
 
@@ -418,12 +418,12 @@ void obs_module_unload(void)
 	sr_master_audio_free();
 	sr_session_free();
 	sr_config_free();
-	obs_log(LOG_INFO, "Sports Replay unloaded");
+	obs_log(LOG_INFO, "Pitel Instant Replay unloaded");
 }
 
 const char *obs_module_name(void)
 {
-	return "Sports Replay";
+	return "Pitel Instant Replay";
 }
 
 const char *obs_module_description(void)

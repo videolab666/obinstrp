@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -116,14 +116,14 @@ struct sr_segment_reader *sr_segment_reader_open(const char *segment_path, const
 	r->segment_file = os_fopen(segment_path, "rb");
 	r->index_file = os_fopen(index_path, "rb");
 	if (!r->segment_file || !r->index_file) {
-		blog(LOG_WARNING, "Sports Replay: could not open replay segment/index '%s' / '%s'", segment_path,
+		blog(LOG_WARNING, "Pitel Instant Replay: could not open replay segment/index '%s' / '%s'", segment_path,
 		     index_path);
 		sr_segment_reader_close(r);
 		return NULL;
 	}
 
 	if (!read_headers(r) || !sr_segment_reader_refresh_index(r)) {
-		blog(LOG_WARNING, "Sports Replay: invalid or unsupported replay segment '%s'", segment_path);
+		blog(LOG_WARNING, "Pitel Instant Replay: invalid or unsupported replay segment '%s'", segment_path);
 		sr_segment_reader_close(r);
 		return NULL;
 	}

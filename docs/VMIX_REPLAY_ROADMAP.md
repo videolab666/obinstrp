@@ -1,4 +1,4 @@
-# OBS Sports Replay — vMix-style Instant Replay roadmap
+# OBS Pitel Instant Replay — vMix-style Instant Replay roadmap
 
 **Repository:** `videolab666/obinstrp`  
 **Upstream:** `Voodoo25/obs-sports-replay`  
@@ -722,10 +722,10 @@ Each PR should leave the plugin buildable and testable. Avoid a single large rew
 
 ## 27. First development checkpoint
 
-The first major checkpoint is reached when OBS can run four Sports Replay Capture filters and produce continuous per-camera `.srseg/.sridx` files while the existing RAM replay remains functional:
+The first major checkpoint is reached when OBS can run four Pitel Instant Replay Capture filters and produce continuous per-camera `.srseg/.sridx` files while the existing RAM replay remains functional:
 
 ```text
-Sports Replay
+Pitel Instant Replay
 Session: RUNNING
 Storage: D:\OBS-Replay\...
 

@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -43,9 +43,9 @@ extern "C" {
  * take replay snapshots. */
 struct sr_buffer *sr_capture_get_buffer(void *capture_data);
 
-/* Loads a saved replay file into the given Sports Replay playback source and
+/* Loads a saved replay file into the given Pitel Instant Replay playback source and
  * starts playing it (with the same controls as a live replay). Used by the
- * dock's double-click action. No-op if source is not a Sports Replay source. */
+ * dock's double-click action. No-op if source is not a Pitel Instant Replay source. */
 void sr_playback_play_file(obs_source_t *source, const char *path);
 
 #ifdef __cplusplus

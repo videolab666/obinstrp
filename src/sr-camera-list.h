@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -22,7 +22,7 @@ struct sr_camera_list {
 	size_t count;
 };
 
-/* Enumerates OBS parent sources that currently own a Sports Replay capture
+/* Enumerates OBS parent sources that currently own a Pitel Instant Replay capture
  * filter. The returned names are ordered by persistent OBS source UUID rather
  * than by display name, so renaming a camera does not silently remap the Qt
  * CAM buttons or Angle 1..8 hardware hotkeys. */

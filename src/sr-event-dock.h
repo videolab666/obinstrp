@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -16,7 +16,7 @@ struct sr_event_controller;
 class QWidget;
 
 /* Creates the metadata-based operator surface for embedding in the unified
- * Sports Replay dock. The controller is owned by plugin-main and must outlive
+ * Pitel Instant Replay dock. The controller is owned by plugin-main and must outlive
  * the returned widget. */
 QWidget *sr_event_dock_create(struct sr_event_controller *controller, QWidget *parent = nullptr);
 #endif

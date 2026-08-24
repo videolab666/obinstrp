@@ -46,7 +46,7 @@ jobs:
 
       - name: Build installer 🧱
         shell: cmd
-        run: iscc "/DMyVersion=${{ steps.tag.outputs.value }}" installer\sports-replay.iss
+        run: iscc "/DMyVersion=${{ steps.tag.outputs.value }}" installer\pitel-instant-replay.iss
 
       - name: Upload installer to release 🚀
         shell: bash
@@ -54,5 +54,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${{ steps.tag.outputs.value }}" \
-            "installer/Output/sports-replay-${{ steps.tag.outputs.value }}-windows-installer.exe" \
+            "installer/Output/pitel-instant-replay-${{ steps.tag.outputs.value }}-windows-installer.exe" \
             --repo "${{ github.repository }}" --clobber

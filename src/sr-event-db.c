@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -51,7 +51,7 @@ static bool valid_event(const struct sr_event_write *event)
 
 static void log_sql_error(struct sr_event_db *db, const char *context, int rc)
 {
-	blog(LOG_ERROR, "Sports Replay EventDB: %s failed (%d): %s", context, rc,
+	blog(LOG_ERROR, "Pitel Instant Replay EventDB: %s failed (%d): %s", context, rc,
 	     db && db->sql ? sqlite3_errmsg(db->sql) : "no database");
 }
 
@@ -62,7 +62,7 @@ static bool exec_sql(struct sr_event_db *db, const char *sql, const char *contex
 	if (rc == SQLITE_OK)
 		return true;
 
-	blog(LOG_ERROR, "Sports Replay EventDB: %s failed (%d): %s", context, rc,
+	blog(LOG_ERROR, "Pitel Instant Replay EventDB: %s failed (%d): %s", context, rc,
 	     message ? message : sqlite3_errmsg(db->sql));
 	sqlite3_free(message);
 	return false;
@@ -81,7 +81,7 @@ static bool commit_transaction(struct sr_event_db *db)
 static void rollback_transaction(struct sr_event_db *db)
 {
 	if (!exec_sql(db, "ROLLBACK", "rollback transaction"))
-		blog(LOG_WARNING, "Sports Replay EventDB: rollback also failed");
+		blog(LOG_WARNING, "Pitel Instant Replay EventDB: rollback also failed");
 }
 
 static bool read_user_version(struct sr_event_db *db, int *version)
@@ -215,7 +215,7 @@ static bool migrate_schema(struct sr_event_db *db)
 	if (!read_user_version(db, &version))
 		return false;
 	if (version > SR_EVENT_DB_SCHEMA_VERSION) {
-		blog(LOG_ERROR, "Sports Replay EventDB: database schema %d is newer than supported schema %d", version,
+		blog(LOG_ERROR, "Pitel Instant Replay EventDB: database schema %d is newer than supported schema %d", version,
 		     SR_EVENT_DB_SCHEMA_VERSION);
 		return false;
 	}
@@ -271,7 +271,7 @@ struct sr_event_db *sr_event_db_open(const char *session_dir)
 		return NULL;
 	}
 
-	blog(LOG_INFO, "Sports Replay EventDB: opened schema %d at '%s'", db->schema_version, db->path);
+	blog(LOG_INFO, "Pitel Instant Replay EventDB: opened schema %d at '%s'", db->schema_version, db->path);
 	return db;
 }
 
@@ -283,7 +283,7 @@ void sr_event_db_close(struct sr_event_db *db)
 	if (db->sql) {
 		const int rc = sqlite3_close(db->sql);
 		if (rc != SQLITE_OK)
-			blog(LOG_WARNING, "Sports Replay EventDB: close failed (%d): %s", rc, sqlite3_errmsg(db->sql));
+			blog(LOG_WARNING, "Pitel Instant Replay EventDB: close failed (%d): %s", rc, sqlite3_errmsg(db->sql));
 		db->sql = NULL;
 	}
 	bfree(db->path);

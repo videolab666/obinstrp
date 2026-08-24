@@ -34,7 +34,7 @@ media remains and the next plugin start retries the operation.
 1. Record one camera and master audio until active `.part` files contain data.
 2. Terminate OBS without allowing plugin unload.
 3. Preserve copies of the interrupted files for comparison.
-4. Restart OBS and wait for the `Sports Replay: crash recovery finalized ...`
+4. Restart OBS and wait for the `Pitel Instant Replay: crash recovery finalized ...`
    log line.
 5. Verify the recovered `.srseg/.sridx` and `.sraud/.sraidx` pairs open through
    the disk players and cover the expected tail of the previous session.

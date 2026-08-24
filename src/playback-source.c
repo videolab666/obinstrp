@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -247,7 +247,7 @@ static bool sr_playback_capture_replay_ex(struct sr_playback *p, bool play)
 		if (buf)
 			got = sr_buffer_snapshot(buf, &replay);
 	} else {
-		obs_log(LOG_WARNING, "source '%s' has no Sports Replay Capture filter", p->capture_source_name);
+		obs_log(LOG_WARNING, "source '%s' has no Pitel Instant Replay Capture filter", p->capture_source_name);
 	}
 	obs_source_release(target);
 

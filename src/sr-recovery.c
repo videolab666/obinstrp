@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -228,7 +228,7 @@ static bool recover_video_file(const char *segment_source, bool source_is_part, 
 
 	result->video_segments_recovered++;
 	result->bytes_discarded += source_size - good_end;
-	blog(LOG_INFO, "Sports Replay: recovered video segment '%s' (%zu packet(s), discarded %llu tail byte(s))",
+	blog(LOG_INFO, "Pitel Instant Replay: recovered video segment '%s' (%zu packet(s), discarded %llu tail byte(s))",
 	     segment_final, packet_count, (unsigned long long)(source_size - good_end));
 	recovered = true;
 
@@ -342,7 +342,7 @@ static bool recover_audio_file(const char *audio_source, bool source_is_part, st
 	result->audio_segments_recovered++;
 	result->bytes_discarded += source_size - good_end;
 	blog(LOG_INFO,
-	     "Sports Replay: recovered master audio segment '%s' (%zu packet(s), discarded %llu tail byte(s))",
+	     "Pitel Instant Replay: recovered master audio segment '%s' (%zu packet(s), discarded %llu tail byte(s))",
 	     audio_final, packet_count, (unsigned long long)(source_size - good_end));
 	recovered = true;
 
@@ -380,7 +380,7 @@ static void recover_glob(const char *dir, const char *pattern_tail, bool audio, 
 		const bool ok = audio ? recover_audio_file(path, true, result) : recover_video_file(path, true, result);
 		if (!ok) {
 			result->errors++;
-			blog(LOG_WARNING, "Sports Replay: could not recover interrupted %s segment '%s'",
+			blog(LOG_WARNING, "Pitel Instant Replay: could not recover interrupted %s segment '%s'",
 			     audio ? "master audio" : "video", path);
 		}
 	}
@@ -411,7 +411,7 @@ static void recover_orphan_indexes(const char *dir, const char *pattern_tail, bo
 					      : recover_video_file(media_final, false, result);
 			if (!ok) {
 				result->errors++;
-				blog(LOG_WARNING, "Sports Replay: could not rebuild orphaned %s index '%s'",
+				blog(LOG_WARNING, "Pitel Instant Replay: could not rebuild orphaned %s index '%s'",
 				     audio ? "master audio" : "video", index_part);
 			}
 		}

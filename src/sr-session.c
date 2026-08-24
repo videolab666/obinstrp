@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -80,7 +80,7 @@ static bool create_session_locked(void)
 	}
 
 	if (os_mkdirs(root) == MKDIR_ERROR) {
-		obs_log(LOG_ERROR, "Sports Replay: could not create session root '%s'", root);
+		obs_log(LOG_ERROR, "Pitel Instant Replay: could not create session root '%s'", root);
 		bfree(root);
 		return false;
 	}
@@ -110,7 +110,7 @@ static bool create_session_locked(void)
 	dstr_cat(&dir, short_id);
 
 	if (os_mkdirs(dir.array) == MKDIR_ERROR) {
-		obs_log(LOG_ERROR, "Sports Replay: could not create session directory '%s'", dir.array);
+		obs_log(LOG_ERROR, "Pitel Instant Replay: could not create session directory '%s'", dir.array);
 		dstr_free(&dir);
 		bfree(uuid);
 		bfree(root);
@@ -121,9 +121,9 @@ static bool create_session_locked(void)
 	g_session_id = uuid ? bstrdup(uuid) : bstrdup(short_id);
 
 	if (!write_session_metadata(g_session_path, g_session_id, now))
-		obs_log(LOG_WARNING, "Sports Replay: could not write session metadata in '%s'", g_session_path);
+		obs_log(LOG_WARNING, "Pitel Instant Replay: could not write session metadata in '%s'", g_session_path);
 
-	obs_log(LOG_INFO, "Sports Replay: continuous replay session '%s' at '%s'", g_session_id, g_session_path);
+	obs_log(LOG_INFO, "Pitel Instant Replay: continuous replay session '%s' at '%s'", g_session_id, g_session_path);
 
 	dstr_free(&dir);
 	bfree(uuid);

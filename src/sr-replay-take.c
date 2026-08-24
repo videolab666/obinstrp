@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -81,7 +81,7 @@ bool sr_replay_take_bus(struct sr_event_controller *events, enum sr_replay_bus b
 	char *scene_name = output_scene_name(bus);
 	if (!scene_name) {
 		blog(LOG_WARNING,
-		     "Sports Replay: TAKE %c failed: no scene contains an Event Output configured for bus %c",
+		     "Pitel Instant Replay: TAKE %c failed: no scene contains an Event Output configured for bus %c",
 		     bus == SR_REPLAY_BUS_A ? 'A' : 'B', bus == SR_REPLAY_BUS_A ? 'A' : 'B');
 		return false;
 	}
@@ -117,7 +117,7 @@ bool sr_replay_take_bus(struct sr_event_controller *events, enum sr_replay_bus b
 	bfree(scene_name);
 
 	if (!sr_event_controller_set_played(events, state.event_id, true))
-		blog(LOG_WARNING, "Sports Replay: TAKE %c succeeded but Event %llu could not be marked played",
+		blog(LOG_WARNING, "Pitel Instant Replay: TAKE %c succeeded but Event %llu could not be marked played",
 		     bus == SR_REPLAY_BUS_A ? 'A' : 'B', (unsigned long long)state.event_id);
 	return true;
 }

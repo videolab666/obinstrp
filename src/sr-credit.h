@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -23,7 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <stdio.h>
 
-/* Builds the "<a href="...">Sports Replay (version) by Systec</a>" credit
+/* Builds the "<a href="...">Pitel Instant Replay (version) by Systec</a>" credit
  * line shown at the bottom of the plugin's windows/dialogs, into buf.
  * Returns buf. Requires obs_module_text() to be usable (i.e. the OBS module
  * is loaded), so only include this from translation units compiled into the

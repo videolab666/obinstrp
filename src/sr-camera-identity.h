@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -32,7 +32,7 @@ bool sr_camera_key_from_name(const char *camera_name, char *key, size_t key_size
  * The returned string uses bstrdup semantics and must be released with bfree. */
 char *sr_camera_name_from_key(const char *key);
 
-/* Reads the persisted Sports Replay Capture filter timing correction.
+/* Reads the persisted Pitel Instant Replay Capture filter timing correction.
  * Positive means camera media timestamps are late and must be addressed as
  * global_timestamp + offset. Ambiguous duplicate capture filters fail closed. */
 bool sr_camera_sync_offset_ns(const char *camera_name, int64_t *offset_ns);

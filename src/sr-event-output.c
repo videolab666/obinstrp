@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -141,7 +141,7 @@ static void output_audio_frame(struct sr_event_output *output, AVFrame *decoded,
 	    decoded->sample_rate <= 0 || decoded->nb_samples <= 0) {
 		if (!output->audio_format_warned) {
 			blog(LOG_WARNING,
-			     "Sports Replay: master replay decoder produced an unsupported audio format; muting audio");
+			     "Pitel Instant Replay: master replay decoder produced an unsupported audio format; muting audio");
 			output->audio_format_warned = true;
 		}
 		return;

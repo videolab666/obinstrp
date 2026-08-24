@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -239,7 +239,7 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	    !sr_disk_player_decode_at(player, first_media_ns, &first_frame, NULL) || !first_frame) {
 		av_frame_free(&first_frame);
 		sr_disk_player_destroy(player);
-		blog(LOG_WARNING, "Sports Replay: could not cue Event %llu on '%s': no decodable start frame",
+		blog(LOG_WARNING, "Pitel Instant Replay: could not cue Event %llu on '%s': no decodable start frame",
 		     (unsigned long long)event_id, camera_name);
 		return false;
 	}
@@ -270,7 +270,7 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	channel->need_frame = true;
 	pthread_mutex_unlock(&channel->mutex);
 
-	blog(LOG_INFO, "Sports Replay: cued Event %llu on bus %c, camera '%s', %.3f s%s", (unsigned long long)event_id,
+	blog(LOG_INFO, "Pitel Instant Replay: cued Event %llu on bus %c, camera '%s', %.3f s%s", (unsigned long long)event_id,
 	     bus == SR_REPLAY_BUS_A ? 'A' : 'B', camera_name, (double)(out_ns - in_ns) / 1e9,
 	     partial ? " (partial media coverage)" : "");
 	return true;
@@ -328,7 +328,7 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 	    !sr_disk_player_decode_at(new_player, probe_media_ns, &probe_frame, NULL) || !probe_frame) {
 		av_frame_free(&probe_frame);
 		sr_disk_player_destroy(new_player);
-		blog(LOG_WARNING, "Sports Replay: rejected bus %c angle '%s': no decodable frame at %.3f s",
+		blog(LOG_WARNING, "Pitel Instant Replay: rejected bus %c angle '%s': no decodable frame at %.3f s",
 		     bus == SR_REPLAY_BUS_A ? 'A' : 'B', camera_name,
 		     (double)(expected_playhead_ns - event_in_ns) / 1e9);
 		return false;
@@ -392,7 +392,7 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 	sr_disk_player_destroy(old_player);
 	bfree(old_camera_name);
 
-	blog(LOG_INFO, "Sports Replay: switched bus %c Event %llu to camera '%s' at %.3f s%s",
+	blog(LOG_INFO, "Pitel Instant Replay: switched bus %c Event %llu to camera '%s' at %.3f s%s",
 	     bus == SR_REPLAY_BUS_A ? 'A' : 'B', (unsigned long long)expected_event_id, camera_name,
 	     (double)(switch_playhead_ns - event_in_ns) / 1e9, partial ? " (partial media coverage)" : "");
 	return true;

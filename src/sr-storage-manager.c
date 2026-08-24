@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -50,7 +50,7 @@ static void run_recovery_once(void)
 	const bool ok = sr_recovery_scan_root(session_root, recovery_should_stop, NULL, &result);
 	if (result.video_segments_recovered || result.audio_segments_recovered || result.errors) {
 		blog(ok ? LOG_INFO : LOG_WARNING,
-		     "Sports Replay: crash recovery finalized %zu video and %zu audio segment(s), discarded %.1f KiB of incomplete tails, errors %zu",
+		     "Pitel Instant Replay: crash recovery finalized %zu video and %zu audio segment(s), discarded %.1f KiB of incomplete tails, errors %zu",
 		     result.video_segments_recovered, result.audio_segments_recovered,
 		     (double)result.bytes_discarded / 1024.0, result.errors);
 	}
@@ -82,7 +82,7 @@ static void run_policy_once(void)
 		const uint64_t target = purge_target >= min_free ? purge_target : min_free;
 		const bool ok = sr_storage_gc_reclaim_unreferenced(session_dir, session_dir, target, &result);
 		blog(ok && !result.errors ? LOG_INFO : LOG_WARNING,
-		     "Sports Replay: storage manager GC deleted %zu segment(s), pinned %zu, errors %zu, free %.1f -> %.1f GB%s",
+		     "Pitel Instant Replay: storage manager GC deleted %zu segment(s), pinned %zu, errors %zu, free %.1f -> %.1f GB%s",
 		     result.segments_deleted, result.segments_pinned, result.errors,
 		     (double)result.free_bytes_before / (1024.0 * 1024.0 * 1024.0),
 		     (double)result.free_bytes_after / (1024.0 * 1024.0 * 1024.0),

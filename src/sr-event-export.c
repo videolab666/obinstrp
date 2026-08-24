@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -565,7 +565,7 @@ bool sr_event_export_fast(const struct sr_event_export_spec *spec, sr_event_expo
 	result->error = SR_EVENT_EXPORT_OK;
 	if (progress)
 		progress(callback_data, 100);
-	blog(LOG_INFO, "Sports Replay: exported Event angle '%s' to '%s' (%zu video, %zu audio packets)",
+	blog(LOG_INFO, "Pitel Instant Replay: exported Event angle '%s' to '%s' (%zu video, %zu audio packets)",
 	     spec->camera_name, spec->output_path, result->video_packets, result->audio_packets);
 	ok = true;
 

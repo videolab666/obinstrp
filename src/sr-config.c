@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -32,7 +32,7 @@ static uint32_t g_segment_duration_ms;
 static char *g_take_in_transition;
 static char *g_take_out_transition;
 
-/* Default location when the user hasn't chosen one: <Videos>/Sports Replay,
+/* Default location when the user hasn't chosen one: <Videos>/Pitel Instant Replay,
  * created if needed. Falls back to the plugin config dir. */
 static char *default_save_dir(void)
 {
@@ -41,7 +41,7 @@ static char *default_save_dir(void)
 	if (home && *home) {
 		dstr_copy(&d, home);
 		dstr_replace(&d, "\\", "/");
-		dstr_cat(&d, "/Videos/Sports Replay");
+		dstr_cat(&d, "/Videos/Pitel Instant Replay");
 	} else {
 		char *cfg = obs_module_config_path("replays");
 		dstr_copy(&d, cfg ? cfg : "replays");

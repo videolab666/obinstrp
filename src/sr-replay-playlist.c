@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -187,7 +187,7 @@ bool sr_replay_playlist_start(enum sr_replay_bus bus, unsigned list_id, const ch
 	const uint64_t first_event_id = playlist->event_id;
 	pthread_mutex_unlock(&g_mutex);
 
-	blog(LOG_INFO, "Sports Replay: started Event List %u highlight reel on bus %c at item %zu/%zu (Event %llu)",
+	blog(LOG_INFO, "Pitel Instant Replay: started Event List %u highlight reel on bus %c at item %zu/%zu (Event %llu)",
 	     list_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', first + 1, count, (unsigned long long)first_event_id);
 	return true;
 }
@@ -212,15 +212,15 @@ static bool advance_locked(enum sr_replay_bus bus, struct sr_playlist_bus *playl
 		playlist->position = next;
 		playlist->event_id = playlist->event_ids[next];
 		if (!sr_event_controller_set_played(g_events, playlist->event_id, true))
-			blog(LOG_WARNING, "Sports Replay: playlist Event %llu could not be marked played",
+			blog(LOG_WARNING, "Pitel Instant Replay: playlist Event %llu could not be marked played",
 			     (unsigned long long)playlist->event_id);
-		blog(LOG_INFO, "Sports Replay: Event List %u advanced bus %c to item %zu/%zu (Event %llu)",
+		blog(LOG_INFO, "Pitel Instant Replay: Event List %u advanced bus %c to item %zu/%zu (Event %llu)",
 		     playlist->list_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', next + 1, playlist->count,
 		     (unsigned long long)playlist->event_id);
 		return true;
 	}
 
-	blog(LOG_INFO, "Sports Replay: Event List %u finished on bus %c", playlist->list_id,
+	blog(LOG_INFO, "Pitel Instant Replay: Event List %u finished on bus %c", playlist->list_id,
 	     bus == SR_REPLAY_BUS_A ? 'A' : 'B');
 	clear_bus_locked(playlist);
 	return false;

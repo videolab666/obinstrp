@@ -1,15 +1,15 @@
-# Sports Replay for OBS Studio
+# Pitel Instant Replay for OBS Studio
 
 **Low-memory instant replay for live sports broadcasts.**
 
-Sports Replay captures the last seconds of any camera into a **compressed**
+Pitel Instant Replay captures the last seconds of any camera into a **compressed**
 in-memory buffer (hardware H.264 all-intra via NVENC / AMF / QSV, with an
 x264 software fallback) instead of holding raw frames in RAM. A 15-second
 1080p60 buffer uses on the order of **tens of megabytes instead of several
 gigabytes**, so multi-camera replay setups run comfortably on ordinary
 streaming PCs.
 
-![Sports Replay running in a live off-road race broadcast](docs/screenshot-obs.png)
+![Pitel Instant Replay running in a live off-road race broadcast](docs/screenshot-obs.png)
 
 ## Why
 
@@ -57,33 +57,33 @@ unpack its inner `sports-replay-*-windows-x64.zip`, and copy the contained
 `obs-plugins` and `data` directories into the OBS installation directory.
 Close OBS before replacing plugin files, then restart it.
 
-Open **Docks → Sports Replay — Instant Replay**. The unified dock starts on
+Open **Docks → Pitel Instant Replay — Instant Replay**. The unified dock starts on
 the **Replay operator** tab; the legacy saved-MP4 bin remains available on the
 second tab. Development artifacts are unsigned and require OBS Studio 31+.
 
 ## How to use
 
 1. **Add the capture filter to each camera.** Right-click a camera source →
-   *Filters* → add **Sports Replay Capture**. Set the buffer duration and
+   *Filters* → add **Pitel Instant Replay Capture**. Set the buffer duration and
    quality there.
-2. **Add the playback source.** In your replay scene, add a **Sports Replay**
+2. **Add the playback source.** In your replay scene, add a **Pitel Instant Replay**
    source and pick which camera to replay from in its properties. Set the
    playback speed and, under *When the replay ends*, choose *Return to the
    previous scene*. Optionally set intro/outro sponsor clips.
 3. **Live replay.** Cut to the replay scene → the last N seconds play
    automatically, then it returns to your main camera.
-4. **Replay bin.** Open the **Replays (Sports Replay)** dock. It lists your
+4. **Replay bin.** Open the **Replays (Pitel Instant Replay)** dock. It lists your
    saved replays with thumbnails; double-click any of them to send it to
    program. The save folder is set with the ⚙ button (defaults to
-   `Videos/Sports Replay`).
+   `Videos/Pitel Instant Replay`).
 
 ### The capture filter (per camera)
 
-![Sports Replay Capture filter](docs/screenshot-capture-filter.png)
+![Pitel Instant Replay Capture filter](docs/screenshot-capture-filter.png)
 
 ### The playback source
 
-![Sports Replay source properties](docs/screenshot-source-properties.png)
+![Pitel Instant Replay source properties](docs/screenshot-source-properties.png)
 
 ### The replay bin dock
 
@@ -120,7 +120,7 @@ cmake --build --preset windows-x64
 ## Support development
 
 Plugins like this take a lot of time, testing and late nights to build and keep
-working across OBS updates. Sports Replay is free and open source, and it will
+working across OBS updates. Pitel Instant Replay is free and open source, and it will
 stay that way. If it has been useful for your broadcasts, a small contribution
 helps me keep maintaining it, adding new features, and building more free tools
 for the community. Every bit is genuinely appreciated — thank you for your

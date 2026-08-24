@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -138,12 +138,12 @@ static bool delete_pair_if_unreferenced(struct sr_event_db *events, const char *
 
 	if (segment_rc == 0 && index_rc == 0) {
 		result->segments_deleted++;
-		blog(LOG_INFO, "Sports Replay: permanently deleted unreferenced replay segment '%s'", segment_path);
+		blog(LOG_INFO, "Pitel Instant Replay: permanently deleted unreferenced replay segment '%s'", segment_path);
 		return true;
 	}
 
 	result->errors++;
-	blog(LOG_WARNING, "Sports Replay: could not completely delete replay segment pair '%s' / '%s'", segment_path,
+	blog(LOG_WARNING, "Pitel Instant Replay: could not completely delete replay segment pair '%s' / '%s'", segment_path,
 	     index_path);
 	return false;
 }

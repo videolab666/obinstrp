@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -203,7 +203,7 @@ static bool storage_reserve_allows(struct sr_master_audio_state *state, uint64_t
 	if (free_bytes < state->min_free_bytes) {
 		if (!state->reserve_blocked) {
 			blog(LOG_ERROR,
-			     "Sports Replay: master replay audio paused: disk free space %.1f GB is below the %.1f GB reserve",
+			     "Pitel Instant Replay: master replay audio paused: disk free space %.1f GB is below the %.1f GB reserve",
 			     (double)free_bytes / (1024.0 * 1024.0 * 1024.0),
 			     (double)state->min_free_bytes / (1024.0 * 1024.0 * 1024.0));
 		}
@@ -215,7 +215,7 @@ static bool storage_reserve_allows(struct sr_master_audio_state *state, uint64_t
 	}
 
 	if (state->reserve_blocked) {
-		blog(LOG_INFO, "Sports Replay: disk reserve restored; master replay audio resumed");
+		blog(LOG_INFO, "Pitel Instant Replay: disk reserve restored; master replay audio resumed");
 		state->reserve_blocked = false;
 		state->reserve_recheck_after_ns = 0;
 		state->next_segment_discontinuity = true;
@@ -264,7 +264,7 @@ static void close_segment(struct sr_master_audio_state *state, bool finalize)
 			state->stats.segments_finalized++;
 			pthread_mutex_unlock(&state->mutex);
 		} else {
-			blog(LOG_ERROR, "Sports Replay: could not finalize master audio segment");
+			blog(LOG_ERROR, "Pitel Instant Replay: could not finalize master audio segment");
 			stats_set_write_failed(state);
 		}
 	}
@@ -289,7 +289,7 @@ static bool open_segment(struct sr_master_audio_state *state, uint64_t start_ns)
 	state->audio_file = os_fopen(state->audio_part_path, "wb");
 	state->index_file = os_fopen(state->index_part_path, "wb");
 	if (!state->audio_file || !state->index_file) {
-		blog(LOG_ERROR, "Sports Replay: could not open master audio segment files");
+		blog(LOG_ERROR, "Pitel Instant Replay: could not open master audio segment files");
 		close_files(state);
 		stats_set_write_failed(state);
 		return false;
@@ -318,7 +318,7 @@ static bool open_segment(struct sr_master_audio_state *state, uint64_t start_ns)
 			write_exact(state->index_file, &index, sizeof(index)) && fflush(state->audio_file) == 0 &&
 			fflush(state->index_file) == 0;
 	if (!ok) {
-		blog(LOG_ERROR, "Sports Replay: could not write master audio segment header");
+		blog(LOG_ERROR, "Pitel Instant Replay: could not write master audio segment header");
 		close_segment(state, false);
 		stats_set_write_failed(state);
 		return false;
@@ -408,7 +408,7 @@ static bool open_encoder(struct sr_master_audio_state *state)
 
 	const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
 	if (!codec) {
-		blog(LOG_ERROR, "Sports Replay: FFmpeg AAC encoder is unavailable; master replay audio disabled");
+		blog(LOG_ERROR, "Pitel Instant Replay: FFmpeg AAC encoder is unavailable; master replay audio disabled");
 		state->encoder_failed_session = true;
 		stats_set_encoder_failed(state);
 		return false;
@@ -425,7 +425,7 @@ static bool open_encoder(struct sr_master_audio_state *state)
 	av_channel_layout_default(&encoder->ch_layout, MASTER_AUDIO_CHANNELS);
 
 	if (avcodec_open2(encoder, codec, NULL) < 0) {
-		blog(LOG_ERROR, "Sports Replay: could not open FFmpeg AAC encoder; master replay audio disabled");
+		blog(LOG_ERROR, "Pitel Instant Replay: could not open FFmpeg AAC encoder; master replay audio disabled");
 		avcodec_free_context(&encoder);
 		state->encoder_failed_session = true;
 		stats_set_encoder_failed(state);
@@ -451,7 +451,7 @@ static bool open_encoder(struct sr_master_audio_state *state)
 	state->pending_frames = 0;
 	state->pending_start_ns = 0;
 	state->next_pts = 0;
-	blog(LOG_INFO, "Sports Replay: master replay audio encoder opened (AAC-LC, 48 kHz stereo, 192 kbit/s)");
+	blog(LOG_INFO, "Pitel Instant Replay: master replay audio encoder opened (AAC-LC, 48 kHz stereo, 192 kbit/s)");
 	return true;
 }
 
@@ -626,7 +626,7 @@ static void *audio_worker(void *param)
 
 		if (!state->encoder_failed_session && !encode_chunk(state, chunk)) {
 			blog(LOG_ERROR,
-			     "Sports Replay: master replay audio encode/write failure; dropping audio until recorder restarts");
+			     "Pitel Instant Replay: master replay audio encode/write failure; dropping audio until recorder restarts");
 			state->encoder_failed_session = true;
 			stats_set_write_failed(state);
 		}

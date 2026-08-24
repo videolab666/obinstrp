@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -67,7 +67,7 @@ static QString T(const char *key)
 	return QString::fromUtf8(obs_module_text(key));
 }
 
-/* A small "Sports Replay (version) by Systec" clickable credit label, shown
+/* A small "Pitel Instant Replay (version) by Systec" clickable credit label, shown
  * at the bottom of the dock and its dialogs, matching the footer convention
  * used by other OBS plugins (e.g. Exeldro's). */
 static QLabel *makeCreditLabel(QWidget *parent)
@@ -123,7 +123,7 @@ bool enum_replay_sources(void *param, obs_source_t *source)
 	return true;
 }
 
-/* Name of the first Sports Replay source in the current scene collection. */
+/* Name of the first Pitel Instant Replay source in the current scene collection. */
 QByteArray firstReplaySource()
 {
 	QStringList names;
@@ -131,7 +131,7 @@ QByteArray firstReplaySource()
 	return names.isEmpty() ? QByteArray() : names.first().toUtf8();
 }
 
-/* Name of the Sports Replay source whose "capture_source" setting matches
+/* Name of the Pitel Instant Replay source whose "capture_source" setting matches
  * cameraName, or empty if none do. */
 QByteArray replaySourceForCamera(const QString &cameraName)
 {
