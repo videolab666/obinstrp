@@ -55,6 +55,23 @@ template<typename T> static void com_release(T *&value)
 	}
 }
 
+static void ffmpeg_d3d11_lock(void *unused)
+{
+	(void)unused;
+	/* FFmpeg may decode during Cue/coverage validation on a non-render
+	 * thread. Use libobs's graphics-context lock around immediate/video
+	 * context calls. gs_enter_context is recursive for a thread that already
+	 * owns the same graphics context, which also makes this safe when decode
+	 * happens from video_tick. */
+	obs_enter_graphics();
+}
+
+static void ffmpeg_d3d11_unlock(void *unused)
+{
+	(void)unused;
+	obs_leave_graphics();
+}
+
 static void release_d3d11_pipeline(sr_gpu_renderer *renderer)
 {
 	if (!renderer)
@@ -100,6 +117,9 @@ extern "C" AVBufferRef *sr_gpu_create_replay_decode_device(void)
 				AVD3D11VADeviceContext *d3d = static_cast<AVD3D11VADeviceContext *>(hw->hwctx);
 				device->AddRef();
 				d3d->device = device;
+				d3d->lock = ffmpeg_d3d11_lock;
+				d3d->unlock = ffmpeg_d3d11_unlock;
+				d3d->lock_ctx = nullptr;
 				/* Decoder surfaces are consumed by the D3D11 video processor on
 				 * the same device. D3D11_BIND_DECODER is the only binding the
 				 * decoder requires; avoiding an unnecessary SRV binding keeps
