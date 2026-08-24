@@ -165,3 +165,14 @@ char *sr_session_get_id(void)
 	pthread_mutex_unlock(&g_session_mutex);
 	return result;
 }
+
+bool sr_session_path_is_active(const char *path)
+{
+	if (!path || !*path)
+		return false;
+
+	pthread_mutex_lock(&g_session_mutex);
+	const bool active = g_session_path && strcmp(g_session_path, path) == 0;
+	pthread_mutex_unlock(&g_session_mutex);
+	return active;
+}

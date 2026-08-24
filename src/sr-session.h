@@ -10,6 +10,8 @@ the Free Software Foundation; either version 2 of the License, or
 
 #pragma once
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,6 +24,10 @@ void sr_session_free(void);
 
 char *sr_session_get_or_create_path(void);
 char *sr_session_get_id(void);
+
+/* Non-creating identity check used by background maintenance. It prevents a
+ * recovery/retention scan from touching the session currently being written. */
+bool sr_session_path_is_active(const char *path);
 
 #ifdef __cplusplus
 }

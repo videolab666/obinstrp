@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-storage-manager.h"
 
 #include "sr-config.h"
+#include "sr-recovery.h"
 #include "sr-session.h"
 #include "sr-storage-cleanup.h"
 
@@ -31,6 +32,29 @@ static bool manager_should_stop(void)
 	const bool stopping = g_manager_stopping;
 	pthread_mutex_unlock(&g_manager_mutex);
 	return stopping;
+}
+
+static bool recovery_should_stop(void *unused)
+{
+	UNUSED_PARAMETER(unused);
+	return manager_should_stop();
+}
+
+static void run_recovery_once(void)
+{
+	char *session_root = sr_config_get_session_root();
+	if (!session_root)
+		return;
+
+	struct sr_recovery_result result = {0};
+	const bool ok = sr_recovery_scan_root(session_root, recovery_should_stop, NULL, &result);
+	if (result.video_segments_recovered || result.audio_segments_recovered || result.errors) {
+		blog(ok ? LOG_INFO : LOG_WARNING,
+		     "Sports Replay: crash recovery finalized %zu video and %zu audio segment(s), discarded %.1f KiB of incomplete tails, errors %zu",
+		     result.video_segments_recovered, result.audio_segments_recovered,
+		     (double)result.bytes_discarded / 1024.0, result.errors);
+	}
+	bfree(session_root);
 }
 
 static void run_policy_once(void)
@@ -71,6 +95,7 @@ static void *manager_thread(void *unused)
 {
 	UNUSED_PARAMETER(unused);
 	os_set_thread_name("sports-replay-storage");
+	run_recovery_once();
 
 	while (!manager_should_stop()) {
 		run_policy_once();
