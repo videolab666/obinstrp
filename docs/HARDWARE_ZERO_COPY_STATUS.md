@@ -21,7 +21,7 @@ That gives this path:
     -> FFmpeg H.264 parser/decoder
     -> D3D11VA hardware decode
     -> AV_PIX_FMT_D3D11 decoder surface
-    -> replay frame cache (surface references only)
+    -> optional GPU->GPU copy into replay LRU texture
 ```
 
 The compressed stream still passes through CPU memory, which is tiny compared
@@ -39,7 +39,7 @@ submitted CPU YUV planes with `obs_source_output_video()` to a synchronous
 For a D3D11 hardware frame:
 
 ```text
-D3D11VA NV12 decoder surface
+D3D11VA NV12 decoder/cache surface
     -> D3D11 VideoProcessor (BT.709 limited -> BGRA full)
     -> OBS-owned D3D11 BGRA render texture
     -> OBS compositor
@@ -63,11 +63,18 @@ it, so the same mechanism is safe when decode happens from the normal video tick
 
 ## Hardware-frame cache
 
-The existing 192 MiB decoded-frame LRU remains in use. `AVFrame` clones of
-D3D11VA output retain references to decoder-pool surfaces instead of copying the
-image. Hardware entries are budgeted using the logical NV12 footprint
-(1.5 bytes/pixel) so reverse, jog and random seeks cannot pin an unbounded number
-of decode surfaces.
+The existing 192 MiB decoded-frame LRU remains in use, but it does **not** retain
+large numbers of FFmpeg decoder-pool surfaces. Holding decoder output references
+in a long-lived cache can exhaust the finite D3D11VA surface pool and eventually
+stall decoding.
+
+Before a D3D11 frame is inserted into the LRU, Pitel Instant Replay performs a
+GPU-to-GPU `CopySubresourceRegion` into an independent one-slice NV12 texture on
+the same OBS device. The cached `AVFrame` owns that texture, while the original
+decoder surface is immediately free to return to FFmpeg's pool. No image data is
+read back to CPU memory. Hardware cache entries are budgeted using their logical
+NV12 footprint (1.5 bytes/pixel), so the existing byte limit also bounds replay
+VRAM use.
 
 ## Recording-side optimization
 
