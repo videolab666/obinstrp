@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-frame-cache.h"
 
 #include <libavutil/imgutils.h>
+#include <libavutil/pixfmt.h>
 #include <util/bmem.h>
 
 #include <limits.h>
@@ -20,6 +21,17 @@ static size_t frame_bytes(const AVFrame *frame)
 {
 	if (!frame || frame->width <= 0 || frame->height <= 0)
 		return 0;
+
+	/* Hardware AVFrames reference decoder-pool surfaces instead of owning a
+	 * CPU image buffer. av_image_get_buffer_size() intentionally cannot size
+	 * AV_PIX_FMT_D3D11, so budget them by the decoded NV12 footprint. The
+	 * cache still stores only AVFrame references; this value limits how many
+	 * GPU surfaces the replay LRU is allowed to pin. */
+	if (frame->format == AV_PIX_FMT_D3D11) {
+		const uint64_t pixels = (uint64_t)frame->width * (uint64_t)frame->height;
+		const uint64_t bytes = pixels + pixels / 2ULL;
+		return bytes > (uint64_t)SIZE_MAX ? SIZE_MAX : (size_t)bytes;
+	}
 
 	const int size = av_image_get_buffer_size((enum AVPixelFormat)frame->format, frame->width, frame->height, 1);
 	if (size > 0)
