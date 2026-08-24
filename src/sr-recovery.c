@@ -315,7 +315,8 @@ static bool recover_audio_file(const char *audio_source, bool source_is_part, st
 		entry.timestamp_ns = packet.timestamp_ns;
 		entry.file_offset = record_offset;
 		entry.packet_size = packet.payload_size;
-		entry.samples = packet.duration > 0 && (uint64_t)packet.duration <= UINT32_MAX ? (uint32_t)packet.duration : 0;
+		entry.samples =
+			packet.duration > 0 && (uint64_t)packet.duration <= UINT32_MAX ? (uint32_t)packet.duration : 0;
 		if (!write_exact(index, &entry, sizeof(entry)))
 			goto cleanup;
 
@@ -340,7 +341,8 @@ static bool recover_audio_file(const char *audio_source, bool source_is_part, st
 
 	result->audio_segments_recovered++;
 	result->bytes_discarded += source_size - good_end;
-	blog(LOG_INFO, "Sports Replay: recovered master audio segment '%s' (%zu packet(s), discarded %llu tail byte(s))",
+	blog(LOG_INFO,
+	     "Sports Replay: recovered master audio segment '%s' (%zu packet(s), discarded %llu tail byte(s))",
 	     audio_final, packet_count, (unsigned long long)(source_size - good_end));
 	recovered = true;
 
@@ -387,8 +389,7 @@ static void recover_glob(const char *dir, const char *pattern_tail, bool audio, 
 }
 
 static void recover_orphan_indexes(const char *dir, const char *pattern_tail, bool audio,
-				   sr_recovery_stop_cb should_stop, void *stop_data,
-				   struct sr_recovery_result *result)
+				   sr_recovery_stop_cb should_stop, void *stop_data, struct sr_recovery_result *result)
 {
 	char *pattern = join_path(dir, pattern_tail);
 	os_glob_t *glob = NULL;
@@ -402,9 +403,9 @@ static void recover_orphan_indexes(const char *dir, const char *pattern_tail, bo
 			continue;
 		const char *index_part = glob->gl_pathv[i].path;
 		char *media_part = replace_suffix(index_part, audio ? ".sraidx.part" : ".sridx.part",
-					  audio ? ".sraud.part" : ".srseg.part");
-		char *media_final = replace_suffix(index_part, audio ? ".sraidx.part" : ".sridx.part",
-					   audio ? ".sraud" : ".srseg");
+						  audio ? ".sraud.part" : ".srseg.part");
+		char *media_final =
+			replace_suffix(index_part, audio ? ".sraidx.part" : ".sridx.part", audio ? ".sraud" : ".srseg");
 		if (media_part && !os_file_exists(media_part) && media_final && os_file_exists(media_final)) {
 			const bool ok = audio ? recover_audio_file(media_final, false, result)
 					      : recover_video_file(media_final, false, result);
