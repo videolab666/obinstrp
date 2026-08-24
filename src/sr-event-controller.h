@@ -54,6 +54,15 @@ bool sr_event_controller_update_event(struct sr_event_controller *controller, ui
 bool sr_event_controller_delete_event(struct sr_event_controller *controller, uint64_t event_id);
 void sr_event_controller_free_event(struct sr_event_record *event);
 
+/* Persists a per-Event preferred angle using the camera's OBS source UUID, so
+ * a later display-name rename does not lose the preference. Passing NULL or an
+ * empty camera name clears automatic preference. Returned names use bmalloc/
+ * bstrdup semantics and must be released with bfree(). */
+bool sr_event_controller_set_preferred_camera(struct sr_event_controller *controller, uint64_t event_id,
+					      const char *camera_name);
+bool sr_event_controller_get_camera_name(struct sr_event_controller *controller, uint64_t camera_id,
+					 char **camera_name);
+
 /* Storage safety query. On database failure this returns false; callers must
  * treat that as pinned/unknown and keep media. */
 bool sr_event_controller_has_event_overlap(struct sr_event_controller *controller, uint64_t start_ns, uint64_t end_ns,
