@@ -82,6 +82,7 @@ target_sources(
   PRIVATE
     src/plugin-main.c
     src/sr-camera-list.c
+    src/sr-camera-identity.c
     src/sr-buffer.c
     src/sr-codec.c
     src/sr-frame-cache.c

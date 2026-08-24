@@ -9,6 +9,7 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "sr-segment-writer.h"
+#include "sr-camera-identity.h"
 #include "sr-segment-format.h"
 
 #include <obs-module.h>
@@ -48,6 +49,7 @@ struct sr_segment_writer {
 	bool have_write_epoch;
 
 	char *camera_name;
+	char *camera_key;
 	char *camera_dir;
 	uint32_t camera_hash;
 
@@ -79,18 +81,6 @@ struct sr_segment_writer {
 
 	struct sr_segment_writer_stats stats;
 };
-
-static uint32_t fnv1a_32(const char *s)
-{
-	uint32_t h = 2166136261u;
-	if (!s)
-		return h;
-	while (*s) {
-		h ^= (uint8_t)*s++;
-		h *= 16777619u;
-	}
-	return h;
-}
 
 static void free_packet_node(struct sr_writer_packet *node)
 {
@@ -507,7 +497,8 @@ static void *writer_thread(void *param)
 struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_writer_config *config)
 {
 	if (!config || !config->session_dir || !*config->session_dir || !config->camera_name || !*config->camera_name ||
-	    !config->width || !config->height || !config->fps_num || !config->fps_den)
+	    !config->camera_key || !*config->camera_key || !config->width || !config->height || !config->fps_num ||
+	    !config->fps_den)
 		return NULL;
 
 	struct sr_segment_writer *w = bzalloc(sizeof(*w));
@@ -515,7 +506,8 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	pthread_cond_init(&w->cond, NULL);
 
 	w->camera_name = bstrdup(config->camera_name);
-	w->camera_hash = fnv1a_32(config->camera_name);
+	w->camera_key = bstrdup(config->camera_key);
+	w->camera_hash = sr_camera_key_hash(config->camera_key);
 	w->codec_id = config->codec_id;
 	w->width = config->width;
 	w->height = config->height;
@@ -531,16 +523,12 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	 * the first valid segment is not incorrectly marked as a discontinuity. */
 	w->need_keyframe = false;
 
-	char camera_folder[32];
-	snprintf(camera_folder, sizeof(camera_folder), "cam-%08x", w->camera_hash);
-	struct dstr dir = {0};
-	dstr_copy(&dir, config->session_dir);
-	dstr_replace(&dir, "\\", "/");
-	if (dir.len && dstr_end(&dir) != '/')
-		dstr_cat_ch(&dir, '/');
-	dstr_cat(&dir, camera_folder);
-	w->camera_dir = bstrdup(dir.array);
-	dstr_free(&dir);
+	w->camera_dir = sr_camera_directory_for_key(config->session_dir, config->camera_key);
+	if (!w->camera_dir) {
+		blog(LOG_ERROR, "Sports Replay: invalid persistent camera key for '%s'", w->camera_name);
+		sr_segment_writer_destroy(w);
+		return NULL;
+	}
 
 	if (os_mkdirs(w->camera_dir) == MKDIR_ERROR) {
 		blog(LOG_ERROR, "Sports Replay: could not create camera recording directory '%s'", w->camera_dir);
@@ -548,6 +536,13 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 		return NULL;
 	}
 	w->next_sequence = find_next_sequence(w->camera_dir);
+	char *legacy_dir = sr_camera_legacy_directory(config->session_dir, config->camera_name);
+	if (legacy_dir && strcmp(legacy_dir, w->camera_dir) != 0) {
+		const uint32_t legacy_next = find_next_sequence(legacy_dir);
+		if (legacy_next > w->next_sequence)
+			w->next_sequence = legacy_next;
+	}
+	bfree(legacy_dir);
 
 	if (pthread_create(&w->thread, NULL, writer_thread, w) != 0) {
 		blog(LOG_ERROR, "Sports Replay: could not start disk writer thread for camera '%s'", w->camera_name);
@@ -587,6 +582,7 @@ void sr_segment_writer_destroy(struct sr_segment_writer *w)
 	clear_current_paths(w);
 	bfree(w->extradata);
 	bfree(w->camera_name);
+	bfree(w->camera_key);
 	bfree(w->camera_dir);
 	pthread_cond_destroy(&w->cond);
 	pthread_mutex_destroy(&w->mutex);

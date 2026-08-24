@@ -9,44 +9,15 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "sr-segment-catalog.h"
+#include "sr-camera-identity.h"
 #include "sr-segment-reader.h"
 
 #include <obs-module.h>
 #include <util/dstr.h>
 #include <util/platform.h>
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-static uint32_t fnv1a_32(const char *s)
-{
-	uint32_t h = 2166136261u;
-	if (!s)
-		return h;
-	while (*s) {
-		h ^= (uint8_t)*s++;
-		h *= 16777619u;
-	}
-	return h;
-}
-
-static char *camera_directory(const char *session_dir, const char *camera_name)
-{
-	char folder[32];
-	snprintf(folder, sizeof(folder), "cam-%08x", fnv1a_32(camera_name));
-
-	struct dstr path = {0};
-	dstr_copy(&path, session_dir);
-	dstr_replace(&path, "\\", "/");
-	if (path.len && dstr_end(&path) != '/')
-		dstr_cat_ch(&path, '/');
-	dstr_cat(&path, folder);
-
-	char *result = bstrdup(path.array);
-	dstr_free(&path);
-	return result;
-}
 
 static bool ends_with(const char *value, const char *suffix)
 {
@@ -137,33 +108,18 @@ static bool append_descriptor(struct sr_segment_descriptor **items, size_t *coun
 	return true;
 }
 
-bool sr_segment_catalog_scan(const char *session_dir, const char *camera_name, struct sr_segment_descriptor **segments,
-			     size_t *count)
+static void scan_directory(const char *camera_dir, struct sr_segment_descriptor **items, size_t *count,
+			   size_t *capacity)
 {
-	if (!segments || !count)
-		return false;
-	*segments = NULL;
-	*count = 0;
+	if (!camera_dir || !*camera_dir)
+		return;
 
-	if (!session_dir || !*session_dir || !camera_name || !*camera_name)
-		return false;
-
-	char *camera_dir = camera_directory(session_dir, camera_name);
-	if (!camera_dir)
-		return false;
-
-	/* A missing camera directory is a valid empty catalog. os_glob() simply
-	 * returns no matches, avoiding a file-vs-directory existence assumption. */
 	struct dstr pattern = {0};
 	dstr_copy(&pattern, camera_dir);
 	dstr_replace(&pattern, "\\", "/");
 	if (pattern.len && dstr_end(&pattern) != '/')
 		dstr_cat_ch(&pattern, '/');
 	dstr_cat(&pattern, "*.srseg*");
-
-	struct sr_segment_descriptor *items = NULL;
-	size_t item_count = 0;
-	size_t capacity = 0;
 
 	os_glob_t *glob = NULL;
 	if (os_glob(pattern.array, 0, &glob) == 0) {
@@ -183,14 +139,44 @@ bool sr_segment_catalog_scan(const char *session_dir, const char *camera_name, s
 				continue;
 
 			if (os_file_exists(index_path))
-				append_descriptor(&items, &item_count, &capacity, segment_path, index_path, active);
+				append_descriptor(items, count, capacity, segment_path, index_path, active);
 			bfree(index_path);
 		}
 		os_globfree(glob);
 	}
-
 	dstr_free(&pattern);
-	bfree(camera_dir);
+}
+
+bool sr_segment_catalog_scan(const char *session_dir, const char *camera_name, struct sr_segment_descriptor **segments,
+			     size_t *count)
+{
+	if (!segments || !count)
+		return false;
+	*segments = NULL;
+	*count = 0;
+
+	if (!session_dir || !*session_dir || !camera_name || !*camera_name)
+		return false;
+
+	struct sr_segment_descriptor *items = NULL;
+	size_t item_count = 0;
+	size_t capacity = 0;
+
+	char key[SR_CAMERA_STABLE_KEY_MAX] = {0};
+	char *stable_dir = NULL;
+	if (sr_camera_key_from_name(camera_name, key, sizeof(key)))
+		stable_dir = sr_camera_directory_for_key(session_dir, key);
+	char *legacy_dir = sr_camera_legacy_directory(session_dir, camera_name);
+
+	/* New recordings are keyed by the persistent OBS source UUID. Also scan
+     * the old display-name hash directory so a session started with an older
+     * plugin remains replayable after upgrading. */
+	scan_directory(stable_dir, &items, &item_count, &capacity);
+	if (!stable_dir || !legacy_dir || strcmp(stable_dir, legacy_dir) != 0)
+		scan_directory(legacy_dir, &items, &item_count, &capacity);
+
+	bfree(stable_dir);
+	bfree(legacy_dir);
 
 	if (item_count > 1)
 		qsort(items, item_count, sizeof(*items), descriptor_compare);
@@ -218,8 +204,8 @@ const struct sr_segment_descriptor *sr_segment_catalog_find(const struct sr_segm
 		return NULL;
 
 	/* Sorted by start time. Binary-search the newest segment whose start is
-	 * at/before the requested timestamp, then walk backward across rare
-	 * overlapping ranges until a containing segment is found. */
+     * at/before the requested timestamp, then walk backward across rare
+     * overlapping ranges until a containing segment is found. */
 	size_t lo = 0;
 	size_t hi = count;
 	while (lo < hi) {

@@ -25,6 +25,7 @@ struct sr_segment_writer;
 struct sr_segment_writer_config {
 	const char *session_dir;
 	const char *camera_name;
+	const char *camera_key; /* persistent OBS source UUID */
 	enum AVCodecID codec_id;
 	uint32_t width;
 	uint32_t height;

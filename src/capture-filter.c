@@ -12,6 +12,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <plugin-support.h>
 
 #include "sr-buffer.h"
+#include "sr-camera-identity.h"
 #include "sr-codec.h"
 #include "sr-capture.h"
 #include "sr-credit.h"
@@ -124,9 +125,14 @@ static void sr_capture_destroy(void *data)
 	bfree(c);
 }
 
+static obs_source_t *capture_camera_source(struct sr_capture *c)
+{
+	return c ? obs_filter_get_parent(c->self) : NULL;
+}
+
 static const char *capture_camera_name(struct sr_capture *c)
 {
-	obs_source_t *parent = obs_filter_get_parent(c->self);
+	obs_source_t *parent = capture_camera_source(c);
 	return parent ? obs_source_get_name(parent) : obs_source_get_name(c->self);
 }
 
@@ -145,9 +151,20 @@ static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi
 	int extradata_size = 0;
 	sr_encoder_get_extradata(c->encoder, &extradata, &extradata_size);
 
+	obs_source_t *camera_source = capture_camera_source(c);
+	char camera_key[SR_CAMERA_STABLE_KEY_MAX] = {0};
+	if (!camera_source || !sr_camera_key_from_source(camera_source, camera_key, sizeof(camera_key))) {
+		obs_log(LOG_ERROR, "'%s': could not resolve persistent OBS UUID for replay camera '%s'",
+			obs_source_get_name(c->self), capture_camera_name(c));
+		bfree(session_dir);
+		c->writer_failed = true;
+		return false;
+	}
+
 	struct sr_segment_writer_config cfg = {
 		.session_dir = session_dir,
 		.camera_name = capture_camera_name(c),
+		.camera_key = camera_key,
 		.codec_id = sr_encoder_codec_id(c->encoder),
 		.width = c->enc_width,
 		.height = c->enc_height,
