@@ -1206,14 +1206,16 @@ private:
 		std::vector<ExportTask> tasks;
 		const bool allAngles = exportModeCombo && exportModeCombo->currentData().toInt() == 1;
 		if (allAngles) {
-			const QString directoryPath = QFileDialog::getExistingDirectory(this, T("EventDock.ExportFolder"));
+			const QString directoryPath =
+				QFileDialog::getExistingDirectory(this, T("EventDock.ExportFolder"));
 			if (directoryPath.isEmpty()) {
 				sr_event_controller_free_event(&event);
 				return;
 			}
 			const QDir directory(directoryPath);
 			for (const QString &camera : fullAngles)
-				addExportTask(tasks, sessionDir, camera, unusedAnglePath(directory, eventId, camera), event);
+				addExportTask(tasks, sessionDir, camera, unusedAnglePath(directory, eventId, camera),
+					      event);
 		} else {
 			QString camera = preferred;
 			if (!fullAngles.contains(camera))
@@ -1224,10 +1226,12 @@ private:
 			QString baseDirectory = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
 			if (baseDirectory.isEmpty())
 				baseDirectory = QDir::homePath();
-			const QString suggested = QDir(baseDirectory).filePath(
-				QStringLiteral("Event_%1_%2.mp4").arg(eventId, 6, 10, QChar('0')).arg(safeFilePart(camera)));
+			const QString suggested = QDir(baseDirectory)
+							  .filePath(QStringLiteral("Event_%1_%2.mp4")
+								    .arg(eventId, 6, 10, QChar('0'))
+								    .arg(safeFilePart(camera)));
 			QString outputPath = QFileDialog::getSaveFileName(this, T("EventDock.ExportFile"), suggested,
-								     T("EventDock.ExportFilter"));
+									  T("EventDock.ExportFilter"));
 			if (outputPath.isEmpty()) {
 				sr_event_controller_free_event(&event);
 				return;
@@ -1283,9 +1287,10 @@ private:
 		} else if (exportJob->result.error == SR_EVENT_EXPORT_CANCELLED) {
 			setStatus("EventDock.ExportCancelled");
 		} else {
-			status->setText(T("EventDock.ExportError")
-						.arg(QString::fromUtf8(exportJob->failedCamera.c_str()),
-						     QString::fromUtf8(sr_event_export_error_text(exportJob->result.error))));
+			status->setText(
+				T("EventDock.ExportError")
+					.arg(QString::fromUtf8(exportJob->failedCamera.c_str()),
+					     QString::fromUtf8(sr_event_export_error_text(exportJob->result.error))));
 		}
 		exportCancelButton->setEnabled(false);
 		exportModeCombo->setEnabled(true);

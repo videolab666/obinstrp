@@ -133,8 +133,7 @@ static bool video_stream_matches(const struct video_cursor *cursor, const struct
 			  info->extradata_size);
 }
 
-static bool audio_stream_matches(const struct audio_cursor *cursor,
-				 const struct sr_master_audio_segment_info *info)
+static bool audio_stream_matches(const struct audio_cursor *cursor, const struct sr_master_audio_segment_info *info)
 {
 	return cursor->reference.codec_id == info->codec_id && cursor->reference.sample_rate == info->sample_rate &&
 	       cursor->reference.channels == info->channels && cursor->reference.bit_rate == info->bit_rate &&
@@ -147,7 +146,8 @@ static bool video_open_segment(struct video_cursor *cursor, size_t index, bool r
 	if (!cursor || index >= cursor->segment_count)
 		return false;
 	sr_segment_reader_close(cursor->reader);
-	cursor->reader = sr_segment_reader_open(cursor->segments[index].segment_path, cursor->segments[index].index_path);
+	cursor->reader =
+		sr_segment_reader_open(cursor->segments[index].segment_path, cursor->segments[index].index_path);
 	if (!cursor->reader)
 		return false;
 	struct sr_segment_stream_info info;
@@ -156,8 +156,8 @@ static bool video_open_segment(struct video_cursor *cursor, size_t index, bool r
 
 	if (reference) {
 		cursor->reference = info;
-		cursor->reference_extradata = info.extradata_size > 0 ? bmemdup(info.extradata, (size_t)info.extradata_size)
-								 : NULL;
+		cursor->reference_extradata =
+			info.extradata_size > 0 ? bmemdup(info.extradata, (size_t)info.extradata_size) : NULL;
 		if (info.extradata_size > 0 && !cursor->reference_extradata)
 			return false;
 		cursor->reference.extradata = cursor->reference_extradata;
@@ -175,8 +175,7 @@ static bool video_cursor_init(struct video_cursor *cursor, const struct sr_event
 {
 	memset(cursor, 0, sizeof(*cursor));
 	cursor->stop_ns = media_out_ns;
-	if (!sr_segment_catalog_scan(spec->session_dir, spec->camera_name, &cursor->segments,
-				     &cursor->segment_count) ||
+	if (!sr_segment_catalog_scan(spec->session_dir, spec->camera_name, &cursor->segments, &cursor->segment_count) ||
 	    !cursor->segment_count)
 		return false;
 
@@ -237,8 +236,8 @@ static bool audio_open_segment(struct audio_cursor *cursor, size_t index, bool r
 	if (!cursor || index >= cursor->segment_count)
 		return false;
 	sr_master_audio_reader_close(cursor->reader);
-	cursor->reader = sr_master_audio_reader_open(cursor->segments[index].audio_path,
-						     cursor->segments[index].index_path);
+	cursor->reader =
+		sr_master_audio_reader_open(cursor->segments[index].audio_path, cursor->segments[index].index_path);
 	if (!cursor->reader)
 		return false;
 	struct sr_master_audio_segment_info info;
@@ -247,8 +246,8 @@ static bool audio_open_segment(struct audio_cursor *cursor, size_t index, bool r
 
 	if (reference) {
 		cursor->reference = info;
-		cursor->reference_extradata = info.extradata_size > 0 ? bmemdup(info.extradata, (size_t)info.extradata_size)
-								 : NULL;
+		cursor->reference_extradata =
+			info.extradata_size > 0 ? bmemdup(info.extradata, (size_t)info.extradata_size) : NULL;
 		if (info.extradata_size > 0 && !cursor->reference_extradata)
 			return false;
 		cursor->reference.extradata = cursor->reference_extradata;
@@ -520,8 +519,8 @@ bool sr_event_export_fast(const struct sr_event_export_spec *spec, sr_event_expo
 			if (video_timestamp_ns >= media_in_ns && video_timestamp_ns < media_out_ns &&
 			    (uint64_t)duration_ns > media_out_ns - video_timestamp_ns)
 				duration_ns = (int64_t)(media_out_ns - video_timestamp_ns);
-			if (!write_packet(output, video_stream, video_packet, relative_ns(video_timestamp_ns, media_in_ns),
-					  duration_ns)) {
+			if (!write_packet(output, video_stream, video_packet,
+					  relative_ns(video_timestamp_ns, media_in_ns), duration_ns)) {
 				result->error = SR_EVENT_EXPORT_WRITE_FAILED;
 				goto cleanup;
 			}
