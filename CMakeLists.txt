@@ -85,6 +85,7 @@ target_sources(
     src/sr-camera-identity.c
     src/sr-buffer.c
     src/sr-codec.c
+    src/sr-gpu-video.cpp
     src/sr-frame-cache.c
     src/sr-replay-decode.c
     src/capture-filter.c
