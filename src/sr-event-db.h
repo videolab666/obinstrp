@@ -29,6 +29,13 @@ enum sr_event_audio_mode {
 
 struct sr_event_db;
 
+struct sr_camera_record {
+	uint64_t id;
+	char *stable_key;
+	char *display_name;
+	int64_t sync_offset_ns;
+};
+
 struct sr_event_write {
 	uint64_t in_ns;
 	uint64_t out_ns;
@@ -64,6 +71,14 @@ struct sr_event_db *sr_event_db_open(const char *session_dir);
 void sr_event_db_close(struct sr_event_db *db);
 
 int sr_event_db_schema_version(struct sr_event_db *db);
+
+/* Upserts the session-local camera row by persistent OBS source UUID. The row
+ * keeps the latest display label and calibration offset while its integer id
+ * remains stable for Event preferred_camera_id foreign keys. */
+bool sr_event_db_upsert_camera(struct sr_event_db *db, const char *stable_key, const char *display_name,
+			       int64_t sync_offset_ns, uint64_t *camera_id);
+bool sr_event_db_get_camera(struct sr_event_db *db, uint64_t camera_id, struct sr_camera_record *camera);
+void sr_camera_record_free(struct sr_camera_record *camera);
 
 bool sr_event_db_create_event(struct sr_event_db *db, const struct sr_event_write *event, uint64_t *event_id);
 bool sr_event_db_get_event(struct sr_event_db *db, uint64_t event_id, struct sr_event_record *event);
