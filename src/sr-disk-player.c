@@ -432,5 +432,6 @@ bool sr_disk_player_neighbor_timestamp(struct sr_disk_player *p, uint64_t curren
 			if (segment_neighbor_timestamp(&p->segments[i - 1], current_ns, direction, timestamp_ns))
 				return true;
 		}
+	}
 	return false;
 }
