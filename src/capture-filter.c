@@ -352,6 +352,15 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 
 	AVPacket *pkt = sr_encoder_encode(c->encoder, frame);
 	if (pkt) {
+		/* Async input frames retain the source/device timestamp. OBS maps
+		 * those frames onto its own video clock when selecting them for the
+		 * current render tick, but that private timing adjustment is not
+		 * reflected in frame->timestamp. Event IN/OUT markers use the OBS
+		 * video clock, so persist disk packets in that same global timebase.
+		 * Keeping the source timestamp here makes valid camera media appear
+		 * unrelated to every Event on devices with a local capture clock. */
+		const uint64_t replay_timestamp = obs_get_video_frame_time();
+
 		/* Delay session/writer creation until the encoder has actually emitted
 		 * a packet. Some codec implementations only finalize stream headers
 		 * after encoding begins. */
@@ -361,7 +370,8 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 		 * the legacy RAM ring buffer, so current replay behavior stays intact
 		 * while the new continuous storage engine is developed. */
 		if (c->writer)
-			sr_segment_writer_push_video(c->writer, pkt, frame->timestamp);
+			sr_segment_writer_push_video(c->writer, pkt,
+					     replay_timestamp ? replay_timestamp : frame->timestamp);
 		sr_buffer_push_video(&c->buffer, pkt, frame->timestamp);
 	}
 
