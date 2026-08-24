@@ -56,5 +56,9 @@ runs:
 
         print ::group::Run clang-format-19
         local -a changes=(${(s:,:)CHANGED_FILES//[\[\]\'\"]/})
+        if [[ -f src/sr-gpu-video.cpp ]]; then
+          clang-format-19 -style=file -fallback-style=none src/sr-gpu-video.cpp > /tmp/sr-gpu-video.formatted.cpp
+          diff -u src/sr-gpu-video.cpp /tmp/sr-gpu-video.formatted.cpp || true
+        fi
         ./build-aux/run-clang-format --fail-${{ inputs.failCondition }} --check ${changes}
         print ::endgroup::
