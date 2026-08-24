@@ -29,6 +29,17 @@ jobs:
             echo "Highlight reel core already exists; nothing to apply."
             exit 0
           fi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/scripts/apply_highlight_playlist.py')
+          text = path.read_text(encoding='utf-8')
+          old = "replace_once(dock, '\\tvoid takeBus(enum sr_replay_bus bus)\\n{', playlist_methods + '\\tvoid takeBus(enum sr_replay_bus bus)\\n{')"
+          new = "replace_once(dock, '\\tvoid takeBus(enum sr_replay_bus bus)\\n\\t{', playlist_methods + '\\tvoid takeBus(enum sr_replay_bus bus)\\n\\t{')"
+          if old not in text:
+              raise SystemExit('playlist method insertion anchor not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
           python3 .github/scripts/apply_highlight_playlist.py
           python3 - <<'PY'
           from pathlib import Path
