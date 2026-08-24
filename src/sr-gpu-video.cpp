@@ -72,6 +72,14 @@ static void ffmpeg_d3d11_unlock(void *unused)
 	obs_leave_graphics();
 }
 
+static void release_cached_d3d11_texture(void *unused, uint8_t *data)
+{
+	(void)unused;
+	ID3D11Texture2D *texture = reinterpret_cast<ID3D11Texture2D *>(data);
+	if (texture)
+		texture->Release();
+}
+
 static void release_d3d11_pipeline(sr_gpu_renderer *renderer)
 {
 	if (!renderer)
@@ -158,6 +166,86 @@ extern "C" bool sr_gpu_frame_is_native(const AVFrame *frame)
 	(void)frame;
 	return false;
 #endif
+}
+
+extern "C" AVFrame *sr_gpu_frame_clone_for_cache(const AVFrame *frame)
+{
+	if (!frame)
+		return nullptr;
+
+#ifdef _WIN32
+	if (sr_gpu_frame_is_native(frame)) {
+		ID3D11Texture2D *input = reinterpret_cast<ID3D11Texture2D *>(frame->data[0]);
+		const UINT array_slice = static_cast<UINT>(reinterpret_cast<uintptr_t>(frame->data[1]));
+		ID3D11Texture2D *cached_texture = nullptr;
+
+		obs_enter_graphics();
+		ID3D11Device *obs_device = gs_get_device_type() == GS_DEVICE_DIRECT3D_11
+					   ? static_cast<ID3D11Device *>(gs_get_device_obj())
+					   : nullptr;
+		ID3D11Device *input_device = nullptr;
+		input->GetDevice(&input_device);
+
+		if (obs_device && input_device == obs_device) {
+			D3D11_TEXTURE2D_DESC desc = {};
+			input->GetDesc(&desc);
+			const UINT source_mip_levels = desc.MipLevels;
+			desc.MipLevels = 1;
+			desc.ArraySize = 1;
+			desc.Usage = D3D11_USAGE_DEFAULT;
+			desc.CPUAccessFlags = 0;
+			desc.MiscFlags = 0;
+
+			if (SUCCEEDED(obs_device->CreateTexture2D(&desc, nullptr, &cached_texture))) {
+				ID3D11DeviceContext *context = nullptr;
+				obs_device->GetImmediateContext(&context);
+				if (context) {
+					const UINT source_subresource = D3D11CalcSubresource(0, array_slice, source_mip_levels);
+					context->CopySubresourceRegion(cached_texture, 0, 0, 0, 0, input, source_subresource,
+								       nullptr);
+					context->Release();
+				} else {
+					cached_texture->Release();
+					cached_texture = nullptr;
+				}
+			}
+		}
+
+		if (input_device)
+			input_device->Release();
+		obs_leave_graphics();
+
+		if (!cached_texture)
+			return nullptr;
+
+		AVFrame *copy = av_frame_alloc();
+		if (!copy) {
+			cached_texture->Release();
+			return nullptr;
+		}
+
+		AVBufferRef *texture_ref = av_buffer_create(reinterpret_cast<uint8_t *>(cached_texture), 1,
+							 release_cached_d3d11_texture, nullptr, 0);
+		if (!texture_ref) {
+			cached_texture->Release();
+			av_frame_free(&copy);
+			return nullptr;
+		}
+
+		copy->format = AV_PIX_FMT_D3D11;
+		copy->width = frame->width;
+		copy->height = frame->height;
+		copy->data[0] = reinterpret_cast<uint8_t *>(cached_texture);
+		copy->data[1] = nullptr; /* standalone texture, array slice zero */
+		copy->buf[0] = texture_ref;
+		if (frame->hw_frames_ctx)
+			copy->hw_frames_ctx = av_buffer_ref(frame->hw_frames_ctx);
+		av_frame_copy_props(copy, frame);
+		return copy;
+	}
+#endif
+
+	return av_frame_clone(frame);
 }
 
 extern "C" sr_gpu_renderer *sr_gpu_renderer_create(void)
