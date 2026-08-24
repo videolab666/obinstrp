@@ -71,7 +71,6 @@ invoke_formatter() {
         for file (${source_files}) {
           if ! ${command} "${file}" | diff -q "${file}" - &> /dev/null; then
             log_error "${file} requires formatting changes."
-            ${command} "${file}" | diff -u "${file}" - || true
             if (( fail_on_error == 2 )) return 2;
             num_failures=$(( num_failures + 1 ))
           fi

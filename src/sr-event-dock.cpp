@@ -635,8 +635,7 @@ private:
 			refreshRecordingStatus();
 			return;
 		}
-		status->setText(T(enabled ? "EventDock.RecordStartRequested" : "EventDock.RecordStopped")
-					.arg(cameras));
+		status->setText(T(enabled ? "EventDock.RecordStartRequested" : "EventDock.RecordStopped").arg(cameras));
 		refreshRecordingStatus();
 	}
 
@@ -661,16 +660,16 @@ private:
 				T("EventDock.RecordError").arg(summary.failed_count).arg(summary.camera_count));
 			recordStatus->setStyleSheet(QStringLiteral("color: #ff5b5b; font-weight: bold;"));
 		} else if (summary.active_count && summary.active_count == summary.requested_count) {
-			recordStatus->setText(T("EventDock.RecordActive")
-						      .arg(summary.active_count)
-						      .arg(summary.camera_count)
-						      .arg(summary.packets_written)
-						      .arg((double)summary.bytes_written / (1024.0 * 1024.0), 0, 'f', 1));
+			recordStatus->setText(
+				T("EventDock.RecordActive")
+					.arg(summary.active_count)
+					.arg(summary.camera_count)
+					.arg(summary.packets_written)
+					.arg((double)summary.bytes_written / (1024.0 * 1024.0), 0, 'f', 1));
 			recordStatus->setStyleSheet(QStringLiteral("color: #30c85a; font-weight: bold;"));
 		} else if (summary.requested_count) {
-			recordStatus->setText(T("EventDock.RecordStarting")
-						      .arg(summary.active_count)
-						      .arg(summary.requested_count));
+			recordStatus->setText(
+				T("EventDock.RecordStarting").arg(summary.active_count).arg(summary.requested_count));
 			recordStatus->setStyleSheet(QStringLiteral("color: #d8a000;"));
 		} else {
 			recordStatus->setText(T("EventDock.RecordIdle").arg(summary.camera_count));
