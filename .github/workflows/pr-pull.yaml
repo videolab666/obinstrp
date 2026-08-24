@@ -8,48 +8,11 @@ on:
     branches: [master, main]
     types: [ opened, synchronize, reopened ]
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
   cancel-in-progress: true
 jobs:
-  apply-preferred-camera-ui:
-    name: Apply preferred camera UI
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/disk-replay-core
-          fetch-depth: 0
-      - name: Apply preferred camera UI
-        run: python3 .github/scripts/apply_preferred_camera_ui.py
-      - name: Install clang-format 19
-        shell: bash
-        run: |
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          brew install --quiet zsh
-          brew tap obsproject/tools
-          brew install --quiet obsproject/tools/clang-format@19
-          echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> "$GITHUB_PATH"
-          echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> "$GITHUB_PATH"
-      - name: Format and commit
-        shell: bash
-        run: |
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          ./build-aux/run-clang-format src/sr-event-db.c src/sr-event-db.h src/sr-event-controller.c src/sr-event-controller.h src/sr-replay-playlist.c src/sr-camera-identity.c src/sr-camera-identity.h src/sr-camera-list.c src/sr-camera-list.h src/sr-event-dock.cpp
-          if git diff --quiet; then
-            echo "No preferred camera changes required."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/sr-event-db.c src/sr-event-db.h src/sr-event-controller.c src/sr-event-controller.h src/sr-replay-playlist.c src/sr-camera-identity.c src/sr-camera-identity.h src/sr-camera-list.c src/sr-camera-list.h src/sr-event-dock.cpp data/locale/en-US.ini
-          git diff --cached --check
-          git commit -m "feat: add preferred Event camera controls"
-          git push origin HEAD:feature/disk-replay-core
-
   check-format:
     name: Check Formatting 🔍
     uses: ./.github/workflows/check-format.yaml
