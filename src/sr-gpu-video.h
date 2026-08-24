@@ -36,6 +36,12 @@ bool sr_gpu_replay_zero_copy_available(void);
  * first transferring it into system memory. */
 bool sr_gpu_frame_is_native(const AVFrame *frame);
 
+/* Clone a decoded frame for the long-lived replay LRU. Software frames use a
+ * normal AVFrame reference. A D3D11 decoder frame is copied GPU->GPU into an
+ * independent one-slice NV12 texture, so the cache does not pin the finite
+ * FFmpeg decoder-surface pool. The returned frame owns that texture. */
+AVFrame *sr_gpu_frame_clone_for_cache(const AVFrame *frame);
+
 struct sr_gpu_renderer;
 
 /* Renderer creation does not touch the graphics device; GPU resources are
