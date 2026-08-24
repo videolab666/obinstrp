@@ -10,6 +10,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-camera-list.h"
 
+#include "sr-camera-identity.h"
 #include "sr-capture.h"
 
 #include <obs-module.h>
@@ -18,44 +19,66 @@ the Free Software Foundation; either version 2 of the License, or
 #include <stdlib.h>
 #include <string.h>
 
+struct camera_entry {
+	char *name;
+	char key[SR_CAMERA_STABLE_KEY_MAX];
+};
+
 struct camera_list_builder {
-	char **names;
+	struct camera_entry *items;
 	size_t count;
 	size_t capacity;
 	bool failed;
 };
 
-static bool contains_name(const struct camera_list_builder *builder, const char *name)
+static bool contains_key(const struct camera_list_builder *builder, const char *key)
 {
 	for (size_t i = 0; i < builder->count; i++) {
-		if (strcmp(builder->names[i], name) == 0)
+		if (strcmp(builder->items[i].key, key) == 0)
 			return true;
 	}
 	return false;
 }
 
-static void append_name(struct camera_list_builder *builder, const char *name)
+static void append_camera(struct camera_list_builder *builder, obs_source_t *source)
 {
-	if (builder->failed || !name || !*name || contains_name(builder, name))
+	if (builder->failed || !source)
 		return;
+
+	char key[SR_CAMERA_STABLE_KEY_MAX] = {0};
+	if (!sr_camera_key_from_source(source, key, sizeof(key))) {
+		builder->failed = true;
+		return;
+	}
+	if (contains_key(builder, key))
+		return;
+
+	const char *name = obs_source_get_name(source);
+	if (!name || !*name) {
+		builder->failed = true;
+		return;
+	}
 
 	if (builder->count == builder->capacity) {
 		const size_t next_capacity = builder->capacity ? builder->capacity * 2 : 8;
-		char **next = brealloc(builder->names, next_capacity * sizeof(*next));
+		struct camera_entry *next = brealloc(builder->items, next_capacity * sizeof(*next));
 		if (!next) {
 			builder->failed = true;
 			return;
 		}
-		builder->names = next;
+		builder->items = next;
 		builder->capacity = next_capacity;
 	}
 
-	char *copy = bstrdup(name);
-	if (!copy) {
+	struct camera_entry *entry = &builder->items[builder->count];
+	memset(entry, 0, sizeof(*entry));
+	entry->name = bstrdup(name);
+	if (!entry->name) {
 		builder->failed = true;
 		return;
 	}
-	builder->names[builder->count++] = copy;
+	memcpy(entry->key, key, strlen(key) + 1);
+	builder->count++;
 }
 
 static void enum_capture_filter(obs_source_t *parent, obs_source_t *child, void *param)
@@ -63,7 +86,7 @@ static void enum_capture_filter(obs_source_t *parent, obs_source_t *child, void 
 	struct camera_list_builder *builder = param;
 	if (!builder || builder->failed || strcmp(obs_source_get_unversioned_id(child), SR_CAPTURE_ID) != 0)
 		return;
-	append_name(builder, obs_source_get_name(parent));
+	append_camera(builder, parent);
 }
 
 static bool enum_source(void *param, obs_source_t *source)
@@ -75,11 +98,22 @@ static bool enum_source(void *param, obs_source_t *source)
 	return !builder->failed;
 }
 
-static int compare_names(const void *a, const void *b)
+static int compare_entries(const void *a, const void *b)
 {
-	const char *const *lhs = a;
-	const char *const *rhs = b;
-	return strcmp(*lhs, *rhs);
+	const struct camera_entry *lhs = a;
+	const struct camera_entry *rhs = b;
+	const int key_order = strcmp(lhs->key, rhs->key);
+	return key_order ? key_order : strcmp(lhs->name, rhs->name);
+}
+
+static void free_builder(struct camera_list_builder *builder)
+{
+	if (!builder)
+		return;
+	for (size_t i = 0; i < builder->count; i++)
+		bfree(builder->items[i].name);
+	bfree(builder->items);
+	memset(builder, 0, sizeof(*builder));
 }
 
 bool sr_camera_list_capture(struct sr_camera_list *list)
@@ -91,16 +125,26 @@ bool sr_camera_list_capture(struct sr_camera_list *list)
 	struct camera_list_builder builder = {0};
 	obs_enum_sources(enum_source, &builder);
 	if (builder.failed) {
-		for (size_t i = 0; i < builder.count; i++)
-			bfree(builder.names[i]);
-		bfree(builder.names);
+		free_builder(&builder);
 		return false;
 	}
 
 	if (builder.count > 1)
-		qsort(builder.names, builder.count, sizeof(*builder.names), compare_names);
-	list->names = builder.names;
+		qsort(builder.items, builder.count, sizeof(*builder.items), compare_entries);
+
+	if (builder.count) {
+		list->names = bmalloc(builder.count * sizeof(*list->names));
+		if (!list->names) {
+			free_builder(&builder);
+			return false;
+		}
+		for (size_t i = 0; i < builder.count; i++) {
+			list->names[i] = builder.items[i].name;
+			builder.items[i].name = NULL;
+		}
+	}
 	list->count = builder.count;
+	free_builder(&builder);
 	return true;
 }
 
