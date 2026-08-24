@@ -10,6 +10,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-event-controller.h"
 
+#include "sr-camera-identity.h"
 #include "sr-event-db.h"
 #include "sr-media-guard.h"
 #include "sr-session.h"
@@ -244,6 +245,75 @@ bool sr_event_controller_update_event(struct sr_event_controller *controller, ui
 	sr_media_guard_unlock();
 	pthread_mutex_unlock(&controller->mutex);
 	return ok;
+}
+
+bool sr_event_controller_set_preferred_camera(struct sr_event_controller *controller, uint64_t event_id,
+					      const char *camera_name)
+{
+	if (!controller || !event_id)
+		return false;
+
+	const bool clear = !camera_name || !*camera_name;
+	char camera_key[SR_CAMERA_STABLE_KEY_MAX] = {0};
+	int64_t sync_offset_ns = 0;
+	if (!clear && (!sr_camera_key_from_name(camera_name, camera_key, sizeof(camera_key)) ||
+		       !sr_camera_sync_offset_ns(camera_name, &sync_offset_ns)))
+		return false;
+
+	pthread_mutex_lock(&controller->mutex);
+	if (!ensure_db_locked(controller)) {
+		pthread_mutex_unlock(&controller->mutex);
+		return false;
+	}
+
+	uint64_t camera_id = 0;
+	bool ok = clear || sr_event_db_upsert_camera(controller->db, camera_key, camera_name, sync_offset_ns, &camera_id);
+	struct sr_event_record record = {0};
+	if (ok)
+		ok = sr_event_db_get_event(controller->db, event_id, &record);
+	if (ok) {
+		const struct sr_event_write write = {
+			.in_ns = record.in_ns,
+			.out_ns = record.out_ns,
+			.preferred_camera_id = camera_id,
+			.speed_percent = record.speed_percent,
+			.audio_mode = record.audio_mode,
+			.protected_event = record.protected_event,
+			.played = record.played,
+			.pending = record.pending,
+			.name = record.name,
+			.tag = record.tag,
+		};
+		ok = sr_event_db_update_event(controller->db, event_id, &write);
+	}
+	sr_event_record_free(&record);
+	pthread_mutex_unlock(&controller->mutex);
+	return ok;
+}
+
+bool sr_event_controller_get_camera_name(struct sr_event_controller *controller, uint64_t camera_id,
+					 char **camera_name)
+{
+	if (!controller || !camera_id || !camera_name)
+		return false;
+	*camera_name = NULL;
+
+	struct sr_camera_record camera = {0};
+	pthread_mutex_lock(&controller->mutex);
+	const bool ok = ensure_db_locked(controller) && sr_event_db_get_camera(controller->db, camera_id, &camera);
+	pthread_mutex_unlock(&controller->mutex);
+	if (!ok)
+		return false;
+
+	char *name = sr_camera_name_from_key(camera.stable_key);
+	if (!name)
+		name = bstrdup(camera.display_name);
+	sr_camera_record_free(&camera);
+	if (!name)
+		return false;
+
+	*camera_name = name;
+	return true;
 }
 
 bool sr_event_controller_delete_event(struct sr_event_controller *controller, uint64_t event_id)
