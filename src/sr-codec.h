@@ -53,8 +53,9 @@ struct sr_encoder *sr_encoder_create(uint32_t width, uint32_t height, uint32_t f
 void sr_encoder_destroy(struct sr_encoder *enc);
 
 /* Encodes one OBS frame (any common format; converted internally).
- * Returns an encoded packet owned by the caller, or NULL if the encoder
- * buffered the frame or the format is unsupported. */
+ * NV12 input at encoder size takes a direct plane-copy fast path and avoids
+ * swscale. Returns an encoded packet owned by the caller, or NULL if the
+ * encoder buffered the frame or the format is unsupported. */
 AVPacket *sr_encoder_encode(struct sr_encoder *enc, const struct obs_source_frame *frame);
 
 enum AVCodecID sr_encoder_codec_id(const struct sr_encoder *enc);
@@ -64,15 +65,29 @@ const char *sr_encoder_name(const struct sr_encoder *enc);
  * stored packets and to mux them to a file. Valid while the encoder lives. */
 void sr_encoder_get_extradata(const struct sr_encoder *enc, const uint8_t **data, int *size);
 
-/* Software decoder for the stored H.264 replay stream. extradata may be NULL. */
+/* Portable software decoder. This constructor is retained for legacy RAM
+ * replay and tools that explicitly require CPU-addressable AVFrames. */
 struct sr_decoder *sr_decoder_create(enum AVCodecID codec_id, const uint8_t *extradata, int extradata_size);
+
+/* Disk/Event replay decoder. On Windows with the OBS D3D11 renderer it first
+ * tries FFmpeg D3D11VA against OBS's own ID3D11Device. Successful hardware
+ * decode returns AV_PIX_FMT_D3D11 frames, allowing the Event Output to keep
+ * the image on the GPU. Any setup/open failure falls back to the software
+ * decoder automatically. */
+struct sr_decoder *sr_decoder_create_replay(enum AVCodecID codec_id, const uint8_t *extradata, int extradata_size);
 void sr_decoder_destroy(struct sr_decoder *dec);
+
+/* Reports the currently active decoder path. Hardware becomes true after a
+ * native hardware frame has actually been received, rather than merely after
+ * a hardware device was requested. */
+bool sr_decoder_is_hardware(const struct sr_decoder *dec);
 
 /* Call when jumping to a non-sequential packet. */
 void sr_decoder_flush(struct sr_decoder *dec);
 
 /* Decodes one packet. On success *out points to a frame owned by the
- * decoder, valid until the next call. */
+ * decoder, valid until the next call. The replay constructor may return a
+ * hardware AVFrame; callers that cannot consume it must transfer it first. */
 bool sr_decoder_decode(struct sr_decoder *dec, const AVPacket *pkt, AVFrame **out);
 
 #ifdef __cplusplus
