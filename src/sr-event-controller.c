@@ -267,7 +267,8 @@ bool sr_event_controller_set_preferred_camera(struct sr_event_controller *contro
 	}
 
 	uint64_t camera_id = 0;
-	bool ok = clear || sr_event_db_upsert_camera(controller->db, camera_key, camera_name, sync_offset_ns, &camera_id);
+	bool ok = clear ||
+		  sr_event_db_upsert_camera(controller->db, camera_key, camera_name, sync_offset_ns, &camera_id);
 	struct sr_event_record record = {0};
 	if (ok)
 		ok = sr_event_db_get_event(controller->db, event_id, &record);
@@ -291,8 +292,7 @@ bool sr_event_controller_set_preferred_camera(struct sr_event_controller *contro
 	return ok;
 }
 
-bool sr_event_controller_get_camera_name(struct sr_event_controller *controller, uint64_t camera_id,
-					 char **camera_name)
+bool sr_event_controller_get_camera_name(struct sr_event_controller *controller, uint64_t camera_id, char **camera_name)
 {
 	if (!controller || !camera_id || !camera_name)
 		return false;

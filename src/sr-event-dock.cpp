@@ -214,8 +214,12 @@ public:
 		cameraCombo = new QComboBox(this);
 		cameraCombo->setMinimumContentsLength(18);
 		cueBar->addWidget(cameraCombo, 1);
+		auto *setPreferred = new QPushButton(T("EventDock.SetPreferred"), this);
+		auto *clearPreferred = new QPushButton(T("EventDock.ClearPreferred"), this);
 		auto *cueA = new QPushButton(T("EventDock.CueA"), this);
 		auto *cueB = new QPushButton(T("EventDock.CueB"), this);
+		cueBar->addWidget(setPreferred);
+		cueBar->addWidget(clearPreferred);
 		cueBar->addWidget(cueA);
 		cueBar->addWidget(cueB);
 		cueBar->addSpacing(12);
@@ -354,6 +358,8 @@ public:
 		connect(copy, &QPushButton::clicked, this, [this]() { copySelected(); });
 		connect(move, &QPushButton::clicked, this, [this]() { moveSelected(); });
 		connect(duplicate, &QPushButton::clicked, this, [this]() { duplicateSelected(); });
+		connect(setPreferred, &QPushButton::clicked, this, [this]() { setPreferredCamera(false); });
+		connect(clearPreferred, &QPushButton::clicked, this, [this]() { setPreferredCamera(true); });
 		connect(cueA, &QPushButton::clicked, this, [this]() { cueSelected(SR_REPLAY_BUS_A); });
 		connect(cueB, &QPushButton::clicked, this, [this]() { cueSelected(SR_REPLAY_BUS_B); });
 		connect(busCombo, &QComboBox::currentIndexChanged, this, [this](int) { syncTransportControls(); });
@@ -534,6 +540,16 @@ private:
 		const bool haveEvent = controller && eventId &&
 				       sr_event_controller_get_event(controller, eventId, &event);
 
+		QString preferredCamera;
+		if (haveEvent && event.preferred_camera_id) {
+			char *preferredName = nullptr;
+			if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id,
+								&preferredName) &&
+			    preferredName)
+				preferredCamera = QString::fromUtf8(preferredName);
+			bfree(preferredName);
+		}
+
 		for (QPushButton *button : angleButtons) {
 			const QString camera = button->property("cameraName").toString();
 			sr_replay_coverage_info coverage = {};
@@ -567,7 +583,10 @@ private:
 						  .arg(playableSeconds, 0, 'f', 2)
 						  .arg(eventSeconds, 0, 'f', 2);
 			}
-			button->setText(QStringLiteral("%1 %2").arg(marker, camera));
+			const QString preferredMarker = camera == preferredCamera ? QStringLiteral("★ ") : QString();
+			button->setText(QStringLiteral("%1%2 %3").arg(preferredMarker, marker, camera));
+			if (camera == preferredCamera)
+				tooltip += QStringLiteral(" — ") + T("EventDock.Preferred");
 			button->setProperty("coverageTooltip", tooltip);
 			button->setToolTip(tooltip);
 		}
@@ -630,6 +649,30 @@ private:
 					.arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"))
 					.arg(camera));
 		syncTransportControls();
+		refreshAngleCoverage();
+	}
+
+	void setPreferredCamera(bool clear)
+	{
+		const uint64_t eventId = selectedEventId();
+		if (!controller || !eventId) {
+			setStatus("EventDock.NoEventSelected");
+			return;
+		}
+
+		const QString camera = selectedCamera();
+		if (!clear && camera.isEmpty()) {
+			setStatus("EventDock.NoCameraSelected");
+			return;
+		}
+		const QByteArray cameraUtf8 = camera.toUtf8();
+		const char *name = clear ? nullptr : cameraUtf8.constData();
+		if (!sr_event_controller_set_preferred_camera(controller, eventId, name)) {
+			setStatus("EventDock.PreferredFailed");
+			return;
+		}
+
+		setStatus(clear ? "EventDock.PreferredCleared" : "EventDock.PreferredSet");
 		refreshAngleCoverage();
 	}
 
