@@ -343,6 +343,11 @@ static obs_properties_t *sr_capture_properties(void *unused)
 	p = obs_properties_add_bool(props, S_DISK_RECORDING, obs_module_text("DiskRecording"));
 	obs_property_set_long_description(p, obs_module_text("DiskRecording.Description"));
 
+	p = obs_properties_add_int(props, S_SYNC_OFFSET_MS, obs_module_text("SyncOffset"), -SR_CAMERA_SYNC_MAX_MS,
+				   SR_CAMERA_SYNC_MAX_MS, 1);
+	obs_property_int_set_suffix(p, " ms");
+	obs_property_set_long_description(p, obs_module_text("SyncOffset.Description"));
+
 	char credit[256];
 	obs_properties_add_text(props, "sr_credit", sr_plugin_credit_html(credit, sizeof(credit)), OBS_TEXT_INFO);
 
@@ -355,6 +360,7 @@ static void sr_capture_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_ENCODER, SR_ENC_AUTO);
 	obs_data_set_default_int(settings, S_QUALITY, 23);
 	obs_data_set_default_int(settings, S_GOP, SR_GOP_500MS);
+	obs_data_set_default_int(settings, S_SYNC_OFFSET_MS, 0);
 	/* Keep new continuous recording opt-in while the disk engine is still
 	 * running in parallel with the proven legacy replay buffer. */
 	obs_data_set_default_bool(settings, S_DISK_RECORDING, false);

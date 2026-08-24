@@ -35,6 +35,7 @@ struct sr_replay_channel {
 	uint64_t out_ns;
 	uint64_t playhead_ns;
 	uint64_t last_clock_ns;
+	int64_t sync_offset_ns;
 
 	double speed_percent;
 	enum sr_replay_audio_mode audio_mode;
@@ -68,6 +69,44 @@ static struct sr_replay_channel *get_bus(enum sr_replay_bus bus)
 	return &g_channels->buses[bus];
 }
 
+static bool global_to_camera_media(uint64_t global_ns, int64_t offset_ns, uint64_t *media_ns)
+{
+	if (!media_ns)
+		return false;
+	if (offset_ns >= 0) {
+		const uint64_t magnitude = (uint64_t)offset_ns;
+		if (global_ns > UINT64_MAX - magnitude)
+			return false;
+		*media_ns = global_ns + magnitude;
+		return true;
+	}
+
+	const uint64_t magnitude = (uint64_t)(-(offset_ns + 1)) + 1ULL;
+	if (global_ns < magnitude)
+		return false;
+	*media_ns = global_ns - magnitude;
+	return true;
+}
+
+static bool camera_media_to_global(uint64_t media_ns, int64_t offset_ns, uint64_t *global_ns)
+{
+	if (!global_ns)
+		return false;
+	if (offset_ns >= 0) {
+		const uint64_t magnitude = (uint64_t)offset_ns;
+		if (media_ns < magnitude)
+			return false;
+		*global_ns = media_ns - magnitude;
+		return true;
+	}
+
+	const uint64_t magnitude = (uint64_t)(-(offset_ns + 1)) + 1ULL;
+	if (media_ns > UINT64_MAX - magnitude)
+		return false;
+	*global_ns = media_ns + magnitude;
+	return true;
+}
+
 static void clear_locked(struct sr_replay_channel *channel)
 {
 	sr_disk_player_destroy(channel->player);
@@ -81,6 +120,7 @@ static void clear_locked(struct sr_replay_channel *channel)
 	channel->out_ns = 0;
 	channel->playhead_ns = 0;
 	channel->last_clock_ns = 0;
+	channel->sync_offset_ns = 0;
 	channel->speed_percent = 100.0;
 	channel->audio_mode = SR_REPLAY_AUDIO_MASTER;
 	channel->width = 0;
@@ -193,8 +233,10 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	 * from avoiding a black first frame, this lets Event List playback safely
 	 * fall through to another camera when catalog metadata and the decoder do
 	 * not agree about the first usable frame. */
+	uint64_t first_media_ns = 0;
 	AVFrame *first_frame = NULL;
-	if (!sr_disk_player_decode_at(player, in_ns, &first_frame, NULL) || !first_frame) {
+	if (!global_to_camera_media(in_ns, coverage.sync_offset_ns, &first_media_ns) ||
+	    !sr_disk_player_decode_at(player, first_media_ns, &first_frame, NULL) || !first_frame) {
 		av_frame_free(&first_frame);
 		sr_disk_player_destroy(player);
 		blog(LOG_WARNING, "Sports Replay: could not cue Event %llu on '%s': no decodable start frame",
@@ -221,6 +263,7 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	channel->in_ns = in_ns;
 	channel->out_ns = out_ns;
 	channel->playhead_ns = in_ns;
+	channel->sync_offset_ns = coverage.sync_offset_ns;
 	channel->speed_percent = speed;
 	channel->cued = true;
 	channel->partial_coverage = partial;
@@ -266,6 +309,7 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 
 	const uint64_t new_in_ns = coverage.playable_in_ns;
 	const uint64_t new_out_ns = coverage.playable_out_ns;
+	const int64_t new_sync_offset_ns = coverage.sync_offset_ns;
 	const bool new_partial = coverage.coverage != SR_REPLAY_COVERAGE_FULL;
 
 	uint64_t first_ns = 0;
@@ -278,8 +322,10 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 	 * captured playhead. Decode that target before swapping the player so an
 	 * on-air angle button can never replace a good frame with a camera that
 	 * cannot actually produce it. This also warms the GOP/frame cache. */
+	uint64_t probe_media_ns = 0;
 	AVFrame *probe_frame = NULL;
-	if (!sr_disk_player_decode_at(new_player, expected_playhead_ns, &probe_frame, NULL) || !probe_frame) {
+	if (!global_to_camera_media(expected_playhead_ns, new_sync_offset_ns, &probe_media_ns) ||
+	    !sr_disk_player_decode_at(new_player, probe_media_ns, &probe_frame, NULL) || !probe_frame) {
 		av_frame_free(&probe_frame);
 		sr_disk_player_destroy(new_player);
 		blog(LOG_WARNING, "Sports Replay: rejected bus %c angle '%s': no decodable frame at %.3f s",
@@ -311,9 +357,11 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 		 * on-air angle swap never commits a camera with an internal media gap at
 		 * the frame that will actually be rendered next. The first probe above
 		 * normally makes this second decode a cache hit or a tiny forward step. */
+		uint64_t commit_media_ns = 0;
 		AVFrame *commit_probe = NULL;
 		const bool commit_ready =
-			sr_disk_player_decode_at(new_player, channel->playhead_ns, &commit_probe, NULL) && commit_probe;
+			global_to_camera_media(channel->playhead_ns, new_sync_offset_ns, &commit_media_ns) &&
+			sr_disk_player_decode_at(new_player, commit_media_ns, &commit_probe, NULL) && commit_probe;
 		av_frame_free(&commit_probe);
 		if (commit_ready) {
 			switch_playhead_ns = channel->playhead_ns;
@@ -323,6 +371,7 @@ bool sr_replay_channel_switch_camera(enum sr_replay_bus bus, const char *camera_
 			channel->camera_name = new_camera_name;
 			channel->in_ns = new_in_ns;
 			channel->out_ns = new_out_ns;
+			channel->sync_offset_ns = new_sync_offset_ns;
 			channel->width = 0;
 			channel->height = 0;
 			channel->partial_coverage = new_partial;
@@ -546,12 +595,17 @@ bool sr_replay_channel_step_frames(enum sr_replay_bus bus, int frames)
 	}
 
 	while (remaining--) {
-		uint64_t adjacent = 0;
-		if (!sr_disk_player_neighbor_timestamp(channel->player, channel->playhead_ns, direction, &adjacent))
+		uint64_t media_playhead_ns = 0;
+		uint64_t adjacent_media_ns = 0;
+		uint64_t adjacent_global_ns = 0;
+		if (!global_to_camera_media(channel->playhead_ns, channel->sync_offset_ns, &media_playhead_ns) ||
+		    !sr_disk_player_neighbor_timestamp(channel->player, media_playhead_ns, direction,
+						       &adjacent_media_ns) ||
+		    !camera_media_to_global(adjacent_media_ns, channel->sync_offset_ns, &adjacent_global_ns))
 			break;
-		if (adjacent < channel->in_ns || adjacent > channel->out_ns)
+		if (adjacent_global_ns < channel->in_ns || adjacent_global_ns > channel->out_ns)
 			break;
-		channel->playhead_ns = adjacent;
+		channel->playhead_ns = adjacent_global_ns;
 		moved = true;
 	}
 
@@ -577,6 +631,7 @@ bool sr_replay_channel_get_state(enum sr_replay_bus bus, struct sr_replay_channe
 	state->in_ns = channel->in_ns;
 	state->out_ns = channel->out_ns;
 	state->playhead_ns = channel->playhead_ns;
+	state->sync_offset_ns = channel->sync_offset_ns;
 	state->speed_percent = channel->speed_percent;
 	state->audio_mode = channel->audio_mode;
 	state->width = channel->width;
@@ -679,20 +734,31 @@ bool sr_replay_channel_render(enum sr_replay_bus bus, uint64_t clock_ns, AVFrame
 		return false;
 	}
 
+	uint64_t target_media_ns = 0;
+	if (!global_to_camera_media(channel->playhead_ns, channel->sync_offset_ns, &target_media_ns)) {
+		pthread_mutex_unlock(&channel->mutex);
+		return false;
+	}
+
 	AVFrame *decoded = NULL;
-	uint64_t actual_ns = 0;
-	bool ok = sr_disk_player_decode_at(channel->player, channel->playhead_ns, &decoded, &actual_ns);
+	uint64_t actual_media_ns = 0;
+	bool ok = sr_disk_player_decode_at(channel->player, target_media_ns, &decoded, &actual_media_ns);
 	if (!ok) {
 		sr_disk_player_refresh(channel->player);
-		ok = sr_disk_player_decode_at(channel->player, channel->playhead_ns, &decoded, &actual_ns);
+		ok = sr_disk_player_decode_at(channel->player, target_media_ns, &decoded, &actual_media_ns);
 	}
 	if (ok && decoded) {
 		channel->width = (uint32_t)decoded->width;
 		channel->height = (uint32_t)decoded->height;
 		channel->need_frame = false;
 		*frame = decoded;
-		if (media_timestamp_ns)
-			*media_timestamp_ns = actual_ns;
+		if (media_timestamp_ns) {
+			uint64_t actual_global_ns = channel->playhead_ns;
+			if (camera_media_to_global(actual_media_ns, channel->sync_offset_ns, &actual_global_ns))
+				*media_timestamp_ns = actual_global_ns;
+			else
+				*media_timestamp_ns = channel->playhead_ns;
+		}
 	}
 	if (ended)
 		*ended = reached_end;

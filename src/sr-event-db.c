@@ -186,6 +186,29 @@ static bool migrate_v1(struct sr_event_db *db)
 	return true;
 }
 
+static bool migrate_v2(struct sr_event_db *db)
+{
+	static const char *migration_sql =
+		"DROP VIEW IF EXISTS event_camera_coverage;"
+		"CREATE VIEW IF NOT EXISTS event_segment_overlap AS "
+		"SELECT e.id AS event_id, s.camera_id AS camera_id "
+		"FROM events AS e JOIN segments AS s ON s.start_ns <= e.out_ns AND s.end_ns >= e.in_ns "
+		"GROUP BY e.id, s.camera_id;";
+
+	if (!begin_transaction(db))
+		return false;
+	if (!exec_sql(db, migration_sql, "migrate schema v2") ||
+	    !exec_sql(db, "PRAGMA user_version=2", "set schema v2")) {
+		rollback_transaction(db);
+		return false;
+	}
+	if (!commit_transaction(db)) {
+		rollback_transaction(db);
+		return false;
+	}
+	return true;
+}
+
 static bool migrate_schema(struct sr_event_db *db)
 {
 	int version = 0;
@@ -201,6 +224,12 @@ static bool migrate_schema(struct sr_event_db *db)
 		if (!migrate_v1(db))
 			return false;
 		version = 1;
+	}
+
+	if (version == 1) {
+		if (!migrate_v2(db))
+			return false;
+		version = 2;
 	}
 
 	db->schema_version = version;

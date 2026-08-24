@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 #define SR_EVENT_LIST_COUNT 20
-#define SR_EVENT_DB_SCHEMA_VERSION 1
+#define SR_EVENT_DB_SCHEMA_VERSION 2
 
 enum sr_event_audio_mode {
 	SR_EVENT_AUDIO_OFF = 0,

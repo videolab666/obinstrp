@@ -37,6 +37,7 @@ struct sr_replay_channel_state {
 	uint64_t in_ns;
 	uint64_t out_ns;
 	uint64_t playhead_ns;
+	int64_t sync_offset_ns;
 	double speed_percent;
 	enum sr_replay_audio_mode audio_mode;
 	uint32_t width;

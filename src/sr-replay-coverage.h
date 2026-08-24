@@ -27,6 +27,7 @@ struct sr_replay_coverage_info {
 	enum sr_replay_coverage coverage;
 	uint64_t playable_in_ns;
 	uint64_t playable_out_ns;
+	int64_t sync_offset_ns;
 	bool active;
 };
 
@@ -35,8 +36,10 @@ struct sr_replay_coverage_info {
  * handoff. A segment explicitly marked discontinuous always starts a new
  * playable interval, so a camera with an internal recording hole is never
  * advertised as FULL merely because its first and last timestamps span the
- * whole Event. For PARTIAL coverage, the interval containing Event IN is
- * preferred; otherwise the longest available interval is returned. */
+ * whole Event. Camera media timestamps are translated through the capture
+ * filter's persisted sync offset while returned playable bounds remain on the
+ * global/master timeline. For PARTIAL coverage, the interval containing Event
+ * IN is preferred; otherwise the longest available interval is returned. */
 bool sr_replay_coverage_query(const char *camera_name, uint64_t event_in_ns, uint64_t event_out_ns,
 			      struct sr_replay_coverage_info *info);
 

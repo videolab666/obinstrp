@@ -9,6 +9,7 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "sr-camera-identity.h"
+#include "sr-capture.h"
 
 #include <util/bmem.h>
 #include <util/dstr.h>
@@ -57,6 +58,53 @@ bool sr_camera_key_from_name(const char *camera_name, char *key, size_t key_size
 	const bool ok = sr_camera_key_from_source(source, key, key_size);
 	obs_source_release(source);
 	return ok;
+}
+
+struct sync_offset_query {
+	bool found;
+	bool ambiguous;
+	int64_t offset_ms;
+};
+
+static void read_sync_offset(obs_source_t *parent, obs_source_t *child, void *param)
+{
+	UNUSED_PARAMETER(parent);
+	struct sync_offset_query *query = param;
+	if (!query || query->ambiguous || strcmp(obs_source_get_unversioned_id(child), SR_CAPTURE_ID) != 0)
+		return;
+
+	if (query->found) {
+		query->ambiguous = true;
+		return;
+	}
+
+	obs_data_t *settings = obs_source_get_settings(child);
+	if (!settings)
+		return;
+	query->offset_ms = obs_data_get_int(settings, S_SYNC_OFFSET_MS);
+	query->found = true;
+	obs_data_release(settings);
+}
+
+bool sr_camera_sync_offset_ns(const char *camera_name, int64_t *offset_ns)
+{
+	if (!camera_name || !*camera_name || !offset_ns)
+		return false;
+	*offset_ns = 0;
+
+	obs_source_t *source = obs_get_source_by_name(camera_name);
+	if (!source)
+		return false;
+
+	struct sync_offset_query query = {0};
+	obs_source_enum_filters(source, read_sync_offset, &query);
+	obs_source_release(source);
+	if (!query.found || query.ambiguous || query.offset_ms < -SR_CAMERA_SYNC_MAX_MS ||
+	    query.offset_ms > SR_CAMERA_SYNC_MAX_MS)
+		return false;
+
+	*offset_ns = query.offset_ms * 1000000LL;
+	return true;
 }
 
 uint32_t sr_camera_key_hash(const char *key)

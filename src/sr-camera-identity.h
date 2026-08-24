@@ -28,6 +28,11 @@ extern "C" {
 bool sr_camera_key_from_source(const obs_source_t *source, char *key, size_t key_size);
 bool sr_camera_key_from_name(const char *camera_name, char *key, size_t key_size);
 
+/* Reads the persisted Sports Replay Capture filter timing correction.
+ * Positive means camera media timestamps are late and must be addressed as
+ * global_timestamp + offset. Ambiguous duplicate capture filters fail closed. */
+bool sr_camera_sync_offset_ns(const char *camera_name, int64_t *offset_ns);
+
 uint32_t sr_camera_key_hash(const char *key);
 
 /* Returned paths use bmalloc/bstrdup semantics and must be released with

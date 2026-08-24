@@ -32,6 +32,12 @@ extern "C" {
  * back to the playback source/scene for the camera it came from. */
 #define S_CAPTURE_SOURCE "capture_source"
 
+/* Per-camera replay timing correction. Positive means the camera signal
+ * arrives late relative to the global/master timeline, so replay selects a
+ * later camera-media timestamp (global + offset). */
+#define S_SYNC_OFFSET_MS "sync_offset_ms"
+#define SR_CAMERA_SYNC_MAX_MS 5000
+
 /* Returns the ring buffer of a capture filter instance (obs_obj_get_data
  * of a source whose id is SR_CAPTURE_ID). Used by the playback source to
  * take replay snapshots. */
