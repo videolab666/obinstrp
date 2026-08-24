@@ -370,7 +370,8 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 		 * the legacy RAM ring buffer, so current replay behavior stays intact
 		 * while the new continuous storage engine is developed. */
 		if (c->writer)
-			sr_segment_writer_push_video(c->writer, pkt, replay_timestamp ? replay_timestamp : frame->timestamp);
+			sr_segment_writer_push_video(c->writer, pkt,
+						     replay_timestamp ? replay_timestamp : frame->timestamp);
 		sr_buffer_push_video(&c->buffer, pkt, frame->timestamp);
 	}
 
