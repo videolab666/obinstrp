@@ -60,6 +60,21 @@ bool sr_camera_key_from_name(const char *camera_name, char *key, size_t key_size
 	return ok;
 }
 
+char *sr_camera_name_from_key(const char *key)
+{
+	char checked[SR_CAMERA_STABLE_KEY_MAX] = {0};
+	if (!copy_key(key, checked, sizeof(checked)))
+		return NULL;
+
+	obs_source_t *source = obs_get_source_by_uuid(checked);
+	if (!source)
+		return NULL;
+	const char *name = obs_source_get_name(source);
+	char *result = name && *name ? bstrdup(name) : NULL;
+	obs_source_release(source);
+	return result;
+}
+
 struct sync_offset_query {
 	bool found;
 	bool ambiguous;
