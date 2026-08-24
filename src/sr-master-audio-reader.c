@@ -115,8 +115,8 @@ struct sr_master_audio_reader *sr_master_audio_reader_open(const char *audio_pat
 	reader->audio_file = os_fopen(audio_path, "rb");
 	reader->index_file = os_fopen(index_path, "rb");
 	if (!reader->audio_file || !reader->index_file) {
-		blog(LOG_WARNING, "Pitel Instant Replay: could not open master audio segment/index '%s' / '%s'", audio_path,
-		     index_path);
+		blog(LOG_WARNING, "Pitel Instant Replay: could not open master audio segment/index '%s' / '%s'",
+		     audio_path, index_path);
 		sr_master_audio_reader_close(reader);
 		return NULL;
 	}

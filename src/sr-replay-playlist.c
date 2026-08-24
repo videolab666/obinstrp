@@ -187,7 +187,8 @@ bool sr_replay_playlist_start(enum sr_replay_bus bus, unsigned list_id, const ch
 	const uint64_t first_event_id = playlist->event_id;
 	pthread_mutex_unlock(&g_mutex);
 
-	blog(LOG_INFO, "Pitel Instant Replay: started Event List %u highlight reel on bus %c at item %zu/%zu (Event %llu)",
+	blog(LOG_INFO,
+	     "Pitel Instant Replay: started Event List %u highlight reel on bus %c at item %zu/%zu (Event %llu)",
 	     list_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', first + 1, count, (unsigned long long)first_event_id);
 	return true;
 }

@@ -228,7 +228,8 @@ static bool recover_video_file(const char *segment_source, bool source_is_part, 
 
 	result->video_segments_recovered++;
 	result->bytes_discarded += source_size - good_end;
-	blog(LOG_INFO, "Pitel Instant Replay: recovered video segment '%s' (%zu packet(s), discarded %llu tail byte(s))",
+	blog(LOG_INFO,
+	     "Pitel Instant Replay: recovered video segment '%s' (%zu packet(s), discarded %llu tail byte(s))",
 	     segment_final, packet_count, (unsigned long long)(source_size - good_end));
 	recovered = true;
 

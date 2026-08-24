@@ -239,17 +239,20 @@ static void angle_hotkey_cb(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, 
 
 	enum sr_replay_bus bus;
 	if (!sr_replay_take_current_bus(&bus)) {
-		obs_log(LOG_WARNING, "Pitel Instant Replay: angle %zu hotkey ignored: no replay bus is cued", index + 1);
+		obs_log(LOG_WARNING, "Pitel Instant Replay: angle %zu hotkey ignored: no replay bus is cued",
+			index + 1);
 		return;
 	}
 
 	struct sr_camera_list cameras = {0};
 	if (!sr_camera_list_capture(&cameras)) {
-		obs_log(LOG_WARNING, "Pitel Instant Replay: angle %zu hotkey could not enumerate replay cameras", index + 1);
+		obs_log(LOG_WARNING, "Pitel Instant Replay: angle %zu hotkey could not enumerate replay cameras",
+			index + 1);
 		return;
 	}
 	if (index >= cameras.count) {
-		obs_log(LOG_WARNING, "Pitel Instant Replay: angle %zu hotkey ignored: only %zu replay camera(s) are available",
+		obs_log(LOG_WARNING,
+			"Pitel Instant Replay: angle %zu hotkey ignored: only %zu replay camera(s) are available",
 			index + 1, cameras.count);
 		sr_camera_list_free(&cameras);
 		return;

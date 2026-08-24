@@ -270,9 +270,9 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	channel->need_frame = true;
 	pthread_mutex_unlock(&channel->mutex);
 
-	blog(LOG_INFO, "Pitel Instant Replay: cued Event %llu on bus %c, camera '%s', %.3f s%s", (unsigned long long)event_id,
-	     bus == SR_REPLAY_BUS_A ? 'A' : 'B', camera_name, (double)(out_ns - in_ns) / 1e9,
-	     partial ? " (partial media coverage)" : "");
+	blog(LOG_INFO, "Pitel Instant Replay: cued Event %llu on bus %c, camera '%s', %.3f s%s",
+	     (unsigned long long)event_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', camera_name,
+	     (double)(out_ns - in_ns) / 1e9, partial ? " (partial media coverage)" : "");
 	return true;
 }
 

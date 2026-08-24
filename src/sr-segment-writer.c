@@ -370,7 +370,8 @@ static void close_segment(struct sr_segment_writer *w, bool finalize)
 			w->stats.segments_finalized++;
 			pthread_mutex_unlock(&w->mutex);
 		} else {
-			blog(LOG_ERROR, "Pitel Instant Replay: could not finalize segment for camera '%s'", w->camera_name);
+			blog(LOG_ERROR, "Pitel Instant Replay: could not finalize segment for camera '%s'",
+			     w->camera_name);
 			stats_set_failed(w);
 		}
 	}
@@ -535,7 +536,8 @@ static void *writer_thread(void *param)
 		}
 
 		if (!write_video_packet(w, node)) {
-			blog(LOG_ERROR, "Pitel Instant Replay: disk write failed for camera '%s'; waiting for next keyframe",
+			blog(LOG_ERROR,
+			     "Pitel Instant Replay: disk write failed for camera '%s'; waiting for next keyframe",
 			     w->camera_name);
 			close_segment(w, false);
 			w->need_keyframe = true;
@@ -564,7 +566,8 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	w->camera_key = bstrdup(config->camera_key);
 	w->camera_hash = sr_camera_key_hash(config->camera_key);
 	if (!w->camera_name || !w->camera_key || !claim_camera_writer(config->camera_key)) {
-		blog(LOG_ERROR, "Pitel Instant Replay: refusing a second continuous disk writer for camera '%s' (UUID %s)",
+		blog(LOG_ERROR,
+		     "Pitel Instant Replay: refusing a second continuous disk writer for camera '%s' (UUID %s)",
 		     config->camera_name, config->camera_key);
 		sr_segment_writer_destroy(w);
 		return NULL;
@@ -593,7 +596,8 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	}
 
 	if (os_mkdirs(w->camera_dir) == MKDIR_ERROR) {
-		blog(LOG_ERROR, "Pitel Instant Replay: could not create camera recording directory '%s'", w->camera_dir);
+		blog(LOG_ERROR, "Pitel Instant Replay: could not create camera recording directory '%s'",
+		     w->camera_dir);
 		sr_segment_writer_destroy(w);
 		return NULL;
 	}
@@ -607,7 +611,8 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	bfree(legacy_dir);
 
 	if (pthread_create(&w->thread, NULL, writer_thread, w) != 0) {
-		blog(LOG_ERROR, "Pitel Instant Replay: could not start disk writer thread for camera '%s'", w->camera_name);
+		blog(LOG_ERROR, "Pitel Instant Replay: could not start disk writer thread for camera '%s'",
+		     w->camera_name);
 		sr_segment_writer_destroy(w);
 		return NULL;
 	}

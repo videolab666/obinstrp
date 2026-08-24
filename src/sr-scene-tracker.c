@@ -303,7 +303,8 @@ static bool begin_transition_override(const char *transition_name)
 
 	obs_source_t *override = find_transition_by_name(transition_name, true);
 	if (!override) {
-		blog(LOG_WARNING, "Pitel Instant Replay: native OBS Stinger '%s' was not found; using current transition",
+		blog(LOG_WARNING,
+		     "Pitel Instant Replay: native OBS Stinger '%s' was not found; using current transition",
 		     transition_name);
 		return false;
 	}

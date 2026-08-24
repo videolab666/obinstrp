@@ -215,8 +215,8 @@ static bool migrate_schema(struct sr_event_db *db)
 	if (!read_user_version(db, &version))
 		return false;
 	if (version > SR_EVENT_DB_SCHEMA_VERSION) {
-		blog(LOG_ERROR, "Pitel Instant Replay EventDB: database schema %d is newer than supported schema %d", version,
-		     SR_EVENT_DB_SCHEMA_VERSION);
+		blog(LOG_ERROR, "Pitel Instant Replay EventDB: database schema %d is newer than supported schema %d",
+		     version, SR_EVENT_DB_SCHEMA_VERSION);
 		return false;
 	}
 
@@ -283,7 +283,8 @@ void sr_event_db_close(struct sr_event_db *db)
 	if (db->sql) {
 		const int rc = sqlite3_close(db->sql);
 		if (rc != SQLITE_OK)
-			blog(LOG_WARNING, "Pitel Instant Replay EventDB: close failed (%d): %s", rc, sqlite3_errmsg(db->sql));
+			blog(LOG_WARNING, "Pitel Instant Replay EventDB: close failed (%d): %s", rc,
+			     sqlite3_errmsg(db->sql));
 		db->sql = NULL;
 	}
 	bfree(db->path);

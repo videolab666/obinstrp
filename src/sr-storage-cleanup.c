@@ -138,13 +138,14 @@ static bool delete_pair_if_unreferenced(struct sr_event_db *events, const char *
 
 	if (segment_rc == 0 && index_rc == 0) {
 		result->segments_deleted++;
-		blog(LOG_INFO, "Pitel Instant Replay: permanently deleted unreferenced replay segment '%s'", segment_path);
+		blog(LOG_INFO, "Pitel Instant Replay: permanently deleted unreferenced replay segment '%s'",
+		     segment_path);
 		return true;
 	}
 
 	result->errors++;
-	blog(LOG_WARNING, "Pitel Instant Replay: could not completely delete replay segment pair '%s' / '%s'", segment_path,
-	     index_path);
+	blog(LOG_WARNING, "Pitel Instant Replay: could not completely delete replay segment pair '%s' / '%s'",
+	     segment_path, index_path);
 	return false;
 }
 

@@ -408,7 +408,8 @@ static bool open_encoder(struct sr_master_audio_state *state)
 
 	const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
 	if (!codec) {
-		blog(LOG_ERROR, "Pitel Instant Replay: FFmpeg AAC encoder is unavailable; master replay audio disabled");
+		blog(LOG_ERROR,
+		     "Pitel Instant Replay: FFmpeg AAC encoder is unavailable; master replay audio disabled");
 		state->encoder_failed_session = true;
 		stats_set_encoder_failed(state);
 		return false;
@@ -425,7 +426,8 @@ static bool open_encoder(struct sr_master_audio_state *state)
 	av_channel_layout_default(&encoder->ch_layout, MASTER_AUDIO_CHANNELS);
 
 	if (avcodec_open2(encoder, codec, NULL) < 0) {
-		blog(LOG_ERROR, "Pitel Instant Replay: could not open FFmpeg AAC encoder; master replay audio disabled");
+		blog(LOG_ERROR,
+		     "Pitel Instant Replay: could not open FFmpeg AAC encoder; master replay audio disabled");
 		avcodec_free_context(&encoder);
 		state->encoder_failed_session = true;
 		stats_set_encoder_failed(state);
