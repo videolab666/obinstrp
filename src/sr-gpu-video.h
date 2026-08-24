@@ -22,8 +22,10 @@ extern "C" {
 
 /* On Windows/D3D11 this creates an FFmpeg D3D11VA device backed by OBS's own
  * ID3D11Device. Decoded surfaces therefore stay on the same GPU/device as the
- * OBS compositor and can be presented without a GPU->CPU readback. Returns
- * NULL when the active OBS renderer cannot provide a compatible device. */
+ * OBS compositor and can be presented without a GPU->CPU readback. FFmpeg
+ * device access is serialized through OBS's graphics-context lock so Cue and
+ * render-thread decoding can safely share the immediate D3D11 context.
+ * Returns NULL when the active renderer cannot provide a compatible device. */
 AVBufferRef *sr_gpu_create_replay_decode_device(void);
 
 /* True when the current platform/renderer has a native zero-CPU-copy replay
