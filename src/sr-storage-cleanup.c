@@ -12,10 +12,12 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-event-db.h"
 #include "sr-media-guard.h"
+#include "sr-master-audio-reader.h"
 #include "sr-segment-reader.h"
 #include "sr-session.h"
 
 #include <obs-module.h>
+#include <media-io/audio-io.h>
 #include <util/bmem.h>
 #include <util/dstr.h>
 #include <util/platform.h>
@@ -75,13 +77,19 @@ static char *index_path_for_segment(const char *segment_path)
 	if (!segment_path)
 		return NULL;
 	const size_t len = strlen(segment_path);
-	static const char suffix[] = ".srseg";
-	if (len < sizeof(suffix) - 1 || strcmp(segment_path + len - (sizeof(suffix) - 1), suffix) != 0)
+	const char *media_suffix = ".srseg";
+	const char *index_suffix = ".sridx";
+	if (len >= 6 && strcmp(segment_path + len - 6, ".sraud") == 0) {
+		media_suffix = ".sraud";
+		index_suffix = ".sraidx";
+	}
+	const size_t suffix_len = strlen(media_suffix);
+	if (len < suffix_len || strcmp(segment_path + len - suffix_len, media_suffix) != 0)
 		return NULL;
 
 	struct dstr path = {0};
-	dstr_ncopy(&path, segment_path, len - (sizeof(suffix) - 1));
-	dstr_cat(&path, ".sridx");
+	dstr_ncopy(&path, segment_path, len - suffix_len);
+	dstr_cat(&path, index_suffix);
 	char *result = bstrdup(path.array);
 	dstr_free(&path);
 	return result;
@@ -89,6 +97,30 @@ static char *index_path_for_segment(const char *segment_path)
 
 static bool segment_range(const char *segment_path, const char *index_path, uint64_t *start_ns, uint64_t *end_ns)
 {
+	const size_t path_len = segment_path ? strlen(segment_path) : 0;
+	if (path_len >= 6 && strcmp(segment_path + path_len - 6, ".sraud") == 0) {
+		struct sr_master_audio_reader *audio = sr_master_audio_reader_open(segment_path, index_path);
+		if (!audio)
+			return false;
+		struct sr_master_audio_segment_info info;
+		bool ok = sr_master_audio_reader_get_info(audio, &info);
+		uint64_t end = info.segment_start_ns;
+		if (ok && info.indexed_packets) {
+			struct sr_audio_index_entry last;
+			ok = sr_master_audio_reader_entry_at(audio, info.indexed_packets - 1, &last);
+			if (ok)
+				end = last.timestamp_ns + audio_frames_to_ns(info.sample_rate, last.samples);
+		}
+		if (ok) {
+			if (start_ns)
+				*start_ns = info.segment_start_ns;
+			if (end_ns)
+				*end_ns = end;
+		}
+		sr_master_audio_reader_close(audio);
+		return ok;
+	}
+
 	struct sr_segment_reader *reader = sr_segment_reader_open(segment_path, index_path);
 	if (!reader)
 		return false;
@@ -152,50 +184,45 @@ static bool delete_pair_if_unreferenced(struct sr_event_db *events, const char *
 static void cleanup_camera_dir(struct sr_event_db *events, const char *camera_dir, uint64_t range_in_ns,
 			       uint64_t range_out_ns, struct sr_storage_cleanup_result *result)
 {
-	char *pattern = join_path(camera_dir, "*.srseg");
-	if (!pattern) {
-		result->errors++;
-		return;
-	}
-
-	os_glob_t *glob = NULL;
-	if (os_glob(pattern, 0, &glob) != 0) {
+	const char *patterns[] = {"*.srseg", "*.sraud"};
+	for (size_t pattern_index = 0; pattern_index < 2; pattern_index++) {
+		char *pattern = join_path(camera_dir, patterns[pattern_index]);
+		if (!pattern) {
+			result->errors++;
+			continue;
+		}
+		os_glob_t *glob = NULL;
+		if (os_glob(pattern, 0, &glob) != 0) {
+			bfree(pattern);
+			continue;
+		}
 		bfree(pattern);
-		return;
+
+		for (size_t i = 0; i < glob->gl_pathc; i++) {
+			if (glob->gl_pathv[i].directory)
+				continue;
+			const char *segment_path = glob->gl_pathv[i].path;
+			char *index_path = index_path_for_segment(segment_path);
+			if (!index_path || !os_file_exists(index_path)) {
+				bfree(index_path);
+				result->errors++;
+				continue;
+			}
+
+			result->segments_examined++;
+			uint64_t start_ns = 0;
+			uint64_t end_ns = 0;
+			if (!segment_range(segment_path, index_path, &start_ns, &end_ns)) {
+				bfree(index_path);
+				result->errors++;
+				continue;
+			}
+			if (start_ns >= range_in_ns && end_ns <= range_out_ns)
+				delete_pair_if_unreferenced(events, segment_path, index_path, start_ns, end_ns, result);
+			bfree(index_path);
+		}
+		os_globfree(glob);
 	}
-	bfree(pattern);
-
-	for (size_t i = 0; i < glob->gl_pathc; i++) {
-		if (glob->gl_pathv[i].directory)
-			continue;
-
-		const char *segment_path = glob->gl_pathv[i].path;
-		char *index_path = index_path_for_segment(segment_path);
-		if (!index_path || !os_file_exists(index_path)) {
-			bfree(index_path);
-			result->errors++;
-			continue;
-		}
-
-		result->segments_examined++;
-		uint64_t start_ns = 0;
-		uint64_t end_ns = 0;
-		if (!segment_range(segment_path, index_path, &start_ns, &end_ns)) {
-			bfree(index_path);
-			result->errors++;
-			continue;
-		}
-
-		if (start_ns < range_in_ns || end_ns > range_out_ns) {
-			bfree(index_path);
-			continue;
-		}
-
-		delete_pair_if_unreferenced(events, segment_path, index_path, start_ns, end_ns, result);
-		bfree(index_path);
-	}
-
-	os_globfree(glob);
 }
 
 bool sr_storage_delete_unreferenced_range(struct sr_event_db *events, uint64_t range_in_ns, uint64_t range_out_ns,
@@ -225,6 +252,10 @@ bool sr_storage_delete_unreferenced_range(struct sr_event_db *events, uint64_t r
 		}
 		os_globfree(glob);
 	}
+	char *master_audio_dir = join_path(session_dir, "audio-master");
+	if (master_audio_dir && os_file_exists(master_audio_dir))
+		cleanup_camera_dir(events, master_audio_dir, range_in_ns, range_out_ns, &local);
+	bfree(master_audio_dir);
 
 	bfree(pattern);
 	bfree(session_dir);
@@ -320,31 +351,54 @@ static bool collect_gc_candidates(const char *session_dir, struct sr_gc_candidat
 		if (!cameras->gl_pathv[c].directory)
 			continue;
 		result->camera_dirs_scanned++;
-		char *segment_pattern = join_path(cameras->gl_pathv[c].path, "*.srseg");
-		if (!segment_pattern) {
-			result->errors++;
-			continue;
-		}
-		os_glob_t *segments = NULL;
-		if (os_glob(segment_pattern, 0, &segments) == 0) {
-			for (size_t i = 0; i < segments->gl_pathc; i++) {
-				if (segments->gl_pathv[i].directory)
-					continue;
-				char *index_path = index_path_for_segment(segments->gl_pathv[i].path);
-				if (!index_path || !os_file_exists(index_path)) {
-					bfree(index_path);
-					result->errors++;
-					continue;
-				}
-				append_gc_candidate(items, count, &capacity, segments->gl_pathv[i].path, index_path,
-						    result);
-				bfree(index_path);
+		const char *patterns[] = {"*.srseg", "*.sraud"};
+		for (size_t pattern_index = 0; pattern_index < 2; pattern_index++) {
+			char *segment_pattern = join_path(cameras->gl_pathv[c].path, patterns[pattern_index]);
+			if (!segment_pattern) {
+				result->errors++;
+				continue;
 			}
-			os_globfree(segments);
+			os_glob_t *segments = NULL;
+			if (os_glob(segment_pattern, 0, &segments) == 0) {
+				for (size_t i = 0; i < segments->gl_pathc; i++) {
+					if (segments->gl_pathv[i].directory)
+						continue;
+					char *index_path = index_path_for_segment(segments->gl_pathv[i].path);
+					if (!index_path || !os_file_exists(index_path)) {
+						bfree(index_path);
+						result->errors++;
+						continue;
+					}
+					append_gc_candidate(items, count, &capacity, segments->gl_pathv[i].path,
+							    index_path, result);
+					bfree(index_path);
+				}
+				os_globfree(segments);
+			}
+			bfree(segment_pattern);
 		}
-		bfree(segment_pattern);
 	}
 	os_globfree(cameras);
+
+	char *master_audio_pattern = join_path(session_dir, "audio-master/*.sraud");
+	os_glob_t *master_segments = NULL;
+	if (master_audio_pattern && os_glob(master_audio_pattern, 0, &master_segments) == 0) {
+		for (size_t i = 0; i < master_segments->gl_pathc; i++) {
+			if (master_segments->gl_pathv[i].directory)
+				continue;
+			char *index_path = index_path_for_segment(master_segments->gl_pathv[i].path);
+			if (!index_path || !os_file_exists(index_path)) {
+				bfree(index_path);
+				result->errors++;
+				continue;
+			}
+			append_gc_candidate(items, count, &capacity, master_segments->gl_pathv[i].path, index_path,
+					    result);
+			bfree(index_path);
+		}
+		os_globfree(master_segments);
+	}
+	bfree(master_audio_pattern);
 
 	if (*count > 1)
 		qsort(*items, *count, sizeof(**items), gc_candidate_compare);

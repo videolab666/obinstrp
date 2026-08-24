@@ -435,6 +435,8 @@ static void recover_session(const char *session_dir, sr_recovery_stop_cb should_
 			const char *dir = cameras->gl_pathv[i].path;
 			recover_glob(dir, "*.srseg.part", false, should_stop, stop_data, result);
 			recover_orphan_indexes(dir, "*.sridx.part", false, should_stop, stop_data, result);
+			recover_glob(dir, "*.sraud.part", true, should_stop, stop_data, result);
+			recover_orphan_indexes(dir, "*.sraidx.part", true, should_stop, stop_data, result);
 		}
 		os_globfree(cameras);
 	}

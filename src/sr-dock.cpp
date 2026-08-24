@@ -41,6 +41,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMessageBox>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QToolButton>
@@ -721,7 +722,14 @@ private:
 		const QString root = QString::fromUtf8(rootRaw ? rootRaw : "");
 		bfree(rootRaw);
 		QDir directory(root);
-		const QFileInfoList sessions = directory.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time);
+		const QFileInfoList candidates = directory.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time);
+		QFileInfoList sessions;
+		for (const QFileInfo &candidate : candidates) {
+			const QString metadata =
+				QDir(candidate.absoluteFilePath()).filePath(QStringLiteral("session.json"));
+			if (QFileInfo(metadata).isFile())
+				sessions.append(candidate);
+		}
 		table->setRowCount(sessions.size());
 		for (int row = 0; row < sessions.size(); row++) {
 			const QFileInfo &session = sessions.at(row);

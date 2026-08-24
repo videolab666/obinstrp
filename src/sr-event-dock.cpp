@@ -20,6 +20,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-replay-take.h"
 #include "sr-storage-cleanup.h"
 #include "sr-session.h"
+#include "sr-thumb.h"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -1681,18 +1682,17 @@ private:
 			return;
 		}
 
-		const sr_event_write update = {
-			.in_ns = event.in_ns,
-			.out_ns = event.out_ns,
-			.preferred_camera_id = event.preferred_camera_id,
-			.speed_percent = speed,
-			.audio_mode = event.audio_mode,
-			.protected_event = event.protected_event,
-			.played = event.played,
-			.pending = event.pending,
-			.name = name.constData(),
-			.tag = tag.constData(),
-		};
+		sr_event_write update = {};
+		update.in_ns = event.in_ns;
+		update.out_ns = event.out_ns;
+		update.preferred_camera_id = event.preferred_camera_id;
+		update.speed_percent = speed;
+		update.audio_mode = event.audio_mode;
+		update.protected_event = event.protected_event;
+		update.played = event.played;
+		update.pending = event.pending;
+		update.name = name.constData();
+		update.tag = tag.constData();
 		const bool ok = sr_event_controller_update_event(controller, eventId, &update);
 		sr_event_controller_free_event(&event);
 		if (!ok)

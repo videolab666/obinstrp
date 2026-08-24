@@ -123,6 +123,7 @@ static bool ensure_audio_player(struct sr_event_output *output, const struct sr_
 		bfree(camera_dir);
 		if (output->audio_player)
 			strncpy(output->audio_camera, state->camera_name, sizeof(output->audio_camera) - 1);
+		output->audio_camera[sizeof(output->audio_camera) - 1] = '\0';
 	} else {
 		output->audio_player = sr_master_audio_player_create(session_dir);
 	}
