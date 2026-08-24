@@ -1088,6 +1088,11 @@ private:
 			setStatus("EventDock.NoCameraSelected");
 			return false;
 		}
+		QPushButton *angle = angleButton(camera);
+		if (angle && angle->property("coverage").toInt() == SR_REPLAY_COVERAGE_NONE) {
+			status->setText(T("EventDock.CueNoCoverage").arg(camera));
+			return false;
+		}
 		const QByteArray cameraUtf8 = camera.toUtf8();
 		sr_replay_playlist_stop(bus);
 		if (!sr_replay_channel_cue(bus, eventId, cameraUtf8.constData())) {

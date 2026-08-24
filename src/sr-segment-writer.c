@@ -425,11 +425,21 @@ static bool write_video_packet(struct sr_segment_writer *w, struct sr_writer_pac
 	stats_add_write(w, sizeof(ph) + (uint64_t)node->pkt->size + sizeof(ie));
 
 	/* Make the active .part reasonably current for the live reader without
-	 * flushing every frame. Flush at most twice per second and only on a
-	 * keyframe, so the visible index always advances at a safe decode point. */
-	if (node->keyframe && node->timestamp_ns - w->last_flush_ns >= 500000000ULL) {
-		fflush(w->segment_file);
-		fflush(w->index_file);
+	 * flushing every frame. Do not wait for another keyframe here: some
+	 * hardware encoders only expose the opening IDR as AV_PKT_FLAG_KEY. In
+	 * that case the packet/byte counters kept advancing while the buffered
+	 * index stayed invisible to coverage scans for the entire recording.
+	 *
+	 * Publish segment data first and the matching index second so a live
+	 * reader can never observe an index entry before its packet bytes. The
+	 * opening packet is already required to be a keyframe by writer_thread(),
+	 * so every published active segment remains independently decodable. */
+	if (node->timestamp_ns - w->last_flush_ns >= 500000000ULL) {
+		if (fflush(w->segment_file) != 0 || fflush(w->index_file) != 0) {
+			w->current_segment_failed = true;
+			stats_set_failed(w);
+			return false;
+		}
 		w->last_flush_ns = node->timestamp_ns;
 	}
 	return true;

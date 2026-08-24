@@ -209,6 +209,10 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	struct sr_replay_coverage_info coverage = {0};
 	if (!sr_replay_coverage_query(camera_name, event.in_ns, event.out_ns, &coverage) ||
 	    coverage.coverage == SR_REPLAY_COVERAGE_NONE) {
+		blog(LOG_WARNING,
+		     "Pitel Instant Replay: could not cue Event %llu on '%s': no readable media coverage for %llu..%llu ns",
+		     (unsigned long long)event_id, camera_name, (unsigned long long)event.in_ns,
+		     (unsigned long long)event.out_ns);
 		sr_event_controller_free_event(&event);
 		return false;
 	}
