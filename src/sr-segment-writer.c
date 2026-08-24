@@ -52,6 +52,7 @@ struct sr_segment_writer {
 	char *camera_key;
 	char *camera_dir;
 	uint32_t camera_hash;
+	bool camera_claimed;
 
 	enum AVCodecID codec_id;
 	uint32_t width;
@@ -81,6 +82,60 @@ struct sr_segment_writer {
 
 	struct sr_segment_writer_stats stats;
 };
+
+struct sr_camera_writer_claim {
+	char *key;
+	struct sr_camera_writer_claim *next;
+};
+
+static pthread_mutex_t g_camera_claim_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct sr_camera_writer_claim *g_camera_claims;
+
+static bool claim_camera_writer(const char *key)
+{
+	if (!key || !*key)
+		return false;
+
+	pthread_mutex_lock(&g_camera_claim_mutex);
+	for (struct sr_camera_writer_claim *claim = g_camera_claims; claim; claim = claim->next) {
+		if (strcmp(claim->key, key) == 0) {
+			pthread_mutex_unlock(&g_camera_claim_mutex);
+			return false;
+		}
+	}
+
+	struct sr_camera_writer_claim *claim = bzalloc(sizeof(*claim));
+	claim->key = bstrdup(key);
+	if (!claim->key) {
+		bfree(claim);
+		pthread_mutex_unlock(&g_camera_claim_mutex);
+		return false;
+	}
+	claim->next = g_camera_claims;
+	g_camera_claims = claim;
+	pthread_mutex_unlock(&g_camera_claim_mutex);
+	return true;
+}
+
+static void release_camera_writer(const char *key)
+{
+	if (!key || !*key)
+		return;
+
+	pthread_mutex_lock(&g_camera_claim_mutex);
+	struct sr_camera_writer_claim **link = &g_camera_claims;
+	while (*link) {
+		struct sr_camera_writer_claim *claim = *link;
+		if (strcmp(claim->key, key) == 0) {
+			*link = claim->next;
+			bfree(claim->key);
+			bfree(claim);
+			break;
+		}
+		link = &claim->next;
+	}
+	pthread_mutex_unlock(&g_camera_claim_mutex);
+}
 
 static void free_packet_node(struct sr_writer_packet *node)
 {
@@ -508,6 +563,13 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	w->camera_name = bstrdup(config->camera_name);
 	w->camera_key = bstrdup(config->camera_key);
 	w->camera_hash = sr_camera_key_hash(config->camera_key);
+	if (!w->camera_name || !w->camera_key || !claim_camera_writer(config->camera_key)) {
+		blog(LOG_ERROR, "Sports Replay: refusing a second continuous disk writer for camera '%s' (UUID %s)",
+		     config->camera_name, config->camera_key);
+		sr_segment_writer_destroy(w);
+		return NULL;
+	}
+	w->camera_claimed = true;
 	w->codec_id = config->codec_id;
 	w->width = config->width;
 	w->height = config->height;
@@ -581,6 +643,8 @@ void sr_segment_writer_destroy(struct sr_segment_writer *w)
 	close_segment(w, false);
 	clear_current_paths(w);
 	bfree(w->extradata);
+	if (w->camera_claimed)
+		release_camera_writer(w->camera_key);
 	bfree(w->camera_name);
 	bfree(w->camera_key);
 	bfree(w->camera_dir);
