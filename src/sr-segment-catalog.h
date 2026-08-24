@@ -22,6 +22,8 @@ struct sr_segment_descriptor {
 	uint32_t sequence;
 	uint64_t start_ns;
 	uint64_t end_ns;
+	uint32_t fps_num;
+	uint32_t fps_den;
 	uint32_t flags;
 	bool active;
 	char *segment_path;
@@ -31,7 +33,9 @@ struct sr_segment_descriptor {
 /* Scans one camera directory in a replay session. The returned array and all
  * descriptor paths are owned by the caller and released with
  * sr_segment_catalog_free(). Finalized and readable active .part pairs are
- * included and sorted by start timestamp. */
+ * included and sorted by start timestamp. FPS is retained so metadata-only
+ * coverage checks can distinguish a normal one-frame segment handoff from a
+ * real recording gap. */
 bool sr_segment_catalog_scan(const char *session_dir, const char *camera_name, struct sr_segment_descriptor **segments,
 			     size_t *count);
 

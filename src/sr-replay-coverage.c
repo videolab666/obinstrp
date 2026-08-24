@@ -11,12 +11,91 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-replay-coverage.h"
 
 #include "sr-segment-catalog.h"
+#include "sr-segment-format.h"
 #include "sr-session.h"
 
 #include <util/bmem.h>
 
-#include <limits.h>
 #include <string.h>
+
+#define NS_PER_SECOND 1000000000ULL
+#define FALLBACK_HANDOFF_NS 50000000ULL
+#define MAX_HANDOFF_NS 250000000ULL
+
+struct coverage_interval {
+	uint64_t start_ns;
+	uint64_t end_ns;
+	bool active;
+};
+
+static uint64_t frame_interval_ns(const struct sr_segment_descriptor *segment)
+{
+	if (!segment || !segment->fps_num || !segment->fps_den)
+		return FALLBACK_HANDOFF_NS / 2;
+
+	const uint64_t numerator = NS_PER_SECOND * (uint64_t)segment->fps_den;
+	return (numerator + segment->fps_num - 1) / segment->fps_num;
+}
+
+static uint64_t handoff_tolerance_ns(const struct sr_segment_descriptor *previous,
+				     const struct sr_segment_descriptor *next)
+{
+	uint64_t frame_ns = frame_interval_ns(previous);
+	const uint64_t next_frame_ns = frame_interval_ns(next);
+	if (next_frame_ns > frame_ns)
+		frame_ns = next_frame_ns;
+	if (frame_ns > MAX_HANDOFF_NS / 2)
+		return MAX_HANDOFF_NS;
+	const uint64_t tolerance = frame_ns * 2;
+	return tolerance ? tolerance : FALLBACK_HANDOFF_NS;
+}
+
+static bool normal_handoff(const struct sr_segment_descriptor *previous, const struct sr_segment_descriptor *next,
+			   uint64_t current_end_ns)
+{
+	if (!previous || !next || (next->flags & SR_SEGMENT_FLAG_DISCONTINUITY))
+		return false;
+	if (next->start_ns <= current_end_ns)
+		return true;
+	return next->start_ns - current_end_ns <= handoff_tolerance_ns(previous, next);
+}
+
+static void consider_interval(const struct coverage_interval *interval, uint64_t event_in_ns, uint64_t event_out_ns,
+			      struct sr_replay_coverage_info *info, bool *have_best, bool *best_contains_in,
+			      uint64_t *best_duration)
+{
+	if (!interval || interval->end_ns < interval->start_ns)
+		return;
+
+	if (interval->start_ns == event_in_ns && interval->end_ns == event_out_ns) {
+		info->coverage = SR_REPLAY_COVERAGE_FULL;
+		info->playable_in_ns = event_in_ns;
+		info->playable_out_ns = event_out_ns;
+		info->active = interval->active;
+		*have_best = true;
+		*best_contains_in = true;
+		*best_duration = event_out_ns - event_in_ns;
+		return;
+	}
+
+	if (info->coverage == SR_REPLAY_COVERAGE_FULL)
+		return;
+
+	const bool contains_in = interval->start_ns <= event_in_ns && interval->end_ns >= event_in_ns;
+	const uint64_t duration = interval->end_ns - interval->start_ns;
+	const bool better = !*have_best || (contains_in && !*best_contains_in) ||
+			    (contains_in == *best_contains_in && duration > *best_duration);
+	if (!better)
+		return;
+
+	info->coverage = SR_REPLAY_COVERAGE_PARTIAL;
+	info->playable_in_ns = interval->start_ns;
+	info->playable_out_ns = interval->end_ns;
+	info->active = interval->active;
+	*have_best = true;
+	*best_contains_in = contains_in;
+	*best_duration = duration;
+}
 
 bool sr_replay_coverage_query(const char *camera_name, uint64_t event_in_ns, uint64_t event_out_ns,
 			      struct sr_replay_coverage_info *info)
@@ -41,26 +120,48 @@ bool sr_replay_coverage_query(const char *camera_name, uint64_t event_in_ns, uin
 	if (!scanned)
 		return false;
 
-	uint64_t first_ns = UINT64_MAX;
-	uint64_t last_ns = 0;
-	bool active_overlap = false;
+	struct coverage_interval current = {0};
+	const struct sr_segment_descriptor *previous = NULL;
+	bool have_current = false;
+	bool have_best = false;
+	bool best_contains_in = false;
+	uint64_t best_duration = 0;
+
 	for (size_t i = 0; i < count; i++) {
-		if (segments[i].start_ns < first_ns)
-			first_ns = segments[i].start_ns;
-		if (segments[i].end_ns > last_ns)
-			last_ns = segments[i].end_ns;
-		if (segments[i].active && segments[i].end_ns >= event_in_ns && segments[i].start_ns <= event_out_ns)
-			active_overlap = true;
+		const struct sr_segment_descriptor *segment = &segments[i];
+		if (segment->end_ns < event_in_ns || segment->start_ns > event_out_ns)
+			continue;
+
+		const uint64_t start_ns = segment->start_ns < event_in_ns ? event_in_ns : segment->start_ns;
+		const uint64_t end_ns = segment->end_ns > event_out_ns ? event_out_ns : segment->end_ns;
+		if (!have_current) {
+			current.start_ns = start_ns;
+			current.end_ns = end_ns;
+			current.active = segment->active;
+			have_current = true;
+			previous = segment;
+			continue;
+		}
+
+		if (normal_handoff(previous, segment, current.end_ns)) {
+			if (end_ns > current.end_ns)
+				current.end_ns = end_ns;
+			current.active = current.active || segment->active;
+			previous = segment;
+			continue;
+		}
+
+		consider_interval(&current, event_in_ns, event_out_ns, info, &have_best, &best_contains_in,
+				  &best_duration);
+		current.start_ns = start_ns;
+		current.end_ns = end_ns;
+		current.active = segment->active;
+		previous = segment;
 	}
 
-	if (first_ns != UINT64_MAX && event_out_ns >= first_ns && event_in_ns <= last_ns) {
-		info->playable_in_ns = event_in_ns < first_ns ? first_ns : event_in_ns;
-		info->playable_out_ns = event_out_ns > last_ns ? last_ns : event_out_ns;
-		info->active = active_overlap;
-		info->coverage = info->playable_in_ns == event_in_ns && info->playable_out_ns == event_out_ns
-					 ? SR_REPLAY_COVERAGE_FULL
-					 : SR_REPLAY_COVERAGE_PARTIAL;
-	}
+	if (have_current)
+		consider_interval(&current, event_in_ns, event_out_ns, info, &have_best, &best_contains_in,
+				  &best_duration);
 
 	sr_segment_catalog_free(segments, count);
 	return true;

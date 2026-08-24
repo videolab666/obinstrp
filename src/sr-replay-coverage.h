@@ -30,10 +30,13 @@ struct sr_replay_coverage_info {
 	bool active;
 };
 
-/* Cheap metadata-only camera probe used by the operator UI. It scans the
- * camera segment catalog but does not open a decoder. Coverage deliberately
- * follows the same first/last indexed bounds used by sr_replay_channel_cue(),
- * so an angle advertised as FULL/PARTIAL behaves the same when selected. */
+/* Metadata-only camera probe used by the operator UI and playlist selector.
+ * Consecutive segment ranges are merged only across a normal frame-to-frame
+ * handoff. A segment explicitly marked discontinuous always starts a new
+ * playable interval, so a camera with an internal recording hole is never
+ * advertised as FULL merely because its first and last timestamps span the
+ * whole Event. For PARTIAL coverage, the interval containing Event IN is
+ * preferred; otherwise the longest available interval is returned. */
 bool sr_replay_coverage_query(const char *camera_name, uint64_t event_in_ns, uint64_t event_out_ns,
 			      struct sr_replay_coverage_info *info);
 

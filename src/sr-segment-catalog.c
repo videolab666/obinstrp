@@ -126,6 +126,8 @@ static bool append_descriptor(struct sr_segment_descriptor **items, size_t *coun
 	dst->sequence = info.sequence;
 	dst->start_ns = info.segment_start_ns;
 	dst->end_ns = end_ns;
+	dst->fps_num = info.fps_num;
+	dst->fps_den = info.fps_den;
 	dst->flags = info.segment_flags;
 	dst->active = active;
 	dst->segment_path = bstrdup(segment_path);
