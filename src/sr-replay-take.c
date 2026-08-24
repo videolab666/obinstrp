@@ -122,9 +122,9 @@ bool sr_replay_take_bus(struct sr_event_controller *events, enum sr_replay_bus b
 	return true;
 }
 
-bool sr_replay_take_return(struct sr_event_controller *events)
+static bool return_live(void)
 {
-	if (!events || !g_return_scene || !*g_return_scene)
+	if (!g_return_scene || !*g_return_scene)
 		return false;
 
 	char *scene_a = output_scene_name(SR_REPLAY_BUS_A);
@@ -162,6 +162,57 @@ bool sr_replay_take_return(struct sr_event_controller *events)
 	bfree(take_out);
 	bfree(target);
 	return true;
+}
+
+bool sr_replay_take_return(struct sr_event_controller *events)
+{
+	return events && return_live();
+}
+
+struct sr_auto_return_request {
+	enum sr_replay_bus bus;
+	uint64_t event_id;
+};
+
+static void auto_return_task(void *param)
+{
+	struct sr_auto_return_request *request = param;
+	if (!request)
+		return;
+
+	struct sr_replay_channel_state state = {0};
+	const bool same_finished_event = sr_replay_channel_get_state(request->bus, &state) && state.cued &&
+					 state.event_id == request->event_id && !state.playing;
+
+	char *replay_scene = same_finished_event ? output_scene_name(request->bus) : NULL;
+	obs_source_t *current = replay_scene ? obs_frontend_get_current_scene() : NULL;
+	const char *current_name = current ? obs_source_get_name(current) : NULL;
+	const bool same_bus_on_program = current_name && strcmp(current_name, replay_scene) == 0;
+
+	if (same_finished_event && same_bus_on_program) {
+		if (!return_live())
+			blog(LOG_WARNING,
+			     "Pitel Instant Replay: Event %llu ended on bus %c, but automatic RETURN LIVE failed",
+			     (unsigned long long)request->event_id, request->bus == SR_REPLAY_BUS_A ? 'A' : 'B');
+	} else {
+		blog(LOG_INFO, "Pitel Instant Replay: ignored stale automatic return for Event %llu on bus %c",
+		     (unsigned long long)request->event_id, request->bus == SR_REPLAY_BUS_A ? 'A' : 'B');
+	}
+
+	obs_source_release(current);
+	bfree(replay_scene);
+	bfree(request);
+}
+
+void sr_replay_take_return_on_end(enum sr_replay_bus bus, uint64_t event_id)
+{
+	if ((bus != SR_REPLAY_BUS_A && bus != SR_REPLAY_BUS_B) || !event_id)
+		return;
+
+	struct sr_auto_return_request *request = bzalloc(sizeof(*request));
+	request->bus = bus;
+	request->event_id = event_id;
+	obs_queue_task(OBS_TASK_UI, auto_return_task, request, false);
 }
 
 void sr_replay_take_reset(void)

@@ -38,6 +38,12 @@ bool sr_replay_take_toggle(struct sr_event_controller *events);
  * was live before replay. Uses the configured OUT native Stinger when set. */
 bool sr_replay_take_return(struct sr_event_controller *events);
 
+/* Queues an automatic return on the OBS UI thread after an Event reaches
+ * OUT. The request is ignored if another Event/bus has taken over before the
+ * task runs. Event List playback calls this only after its final playable
+ * item, so intermediate highlights remain on the replay scene. */
+void sr_replay_take_return_on_end(enum sr_replay_bus bus, uint64_t event_id);
+
 /* Releases process-local TAKE state during module shutdown. */
 void sr_replay_take_reset(void);
 

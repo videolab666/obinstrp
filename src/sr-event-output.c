@@ -13,6 +13,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-master-audio-player.h"
 #include "sr-replay-channel.h"
 #include "sr-replay-playlist.h"
+#include "sr-replay-take.h"
 #include "sr-scene-tracker.h"
 #include "sr-session.h"
 
@@ -282,8 +283,12 @@ static void sr_event_output_tick(void *data, float seconds)
 	else
 		reset_audio_transport(output);
 
-	if (ended)
+	if (ended) {
+		struct sr_replay_channel_state ended_state = {0};
+		if (sr_replay_channel_get_state(output->bus, &ended_state))
+			sr_replay_take_return_on_end(output->bus, ended_state.event_id);
 		obs_source_media_ended(output->self);
+	}
 }
 
 static void sr_event_output_deactivate(void *data)
