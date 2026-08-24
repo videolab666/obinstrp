@@ -47,9 +47,19 @@ while cutting memory use by roughly **50–100×**.
 
 ## Installation
 
-1. Download the installer from the [latest release](../../releases/latest).
-2. Run it (it installs into your OBS plugins folder).
-3. Restart OBS.
+For the stable RAM-replay version, download and run the installer from the
+[latest release](../../releases/latest).
+
+The vMix-style disk/Event operator is currently developed on
+`feature/disk-replay-core`. Open the latest successful workflow run for
+[pull request #1](../../pull/1/checks), download the Windows x64 artifact,
+unpack its inner `sports-replay-*-windows-x64.zip`, and copy the contained
+`obs-plugins` and `data` directories into the OBS installation directory.
+Close OBS before replacing plugin files, then restart it.
+
+Open **Docks → Sports Replay — Instant Replay**. The unified dock starts on
+the **Replay operator** tab; the legacy saved-MP4 bin remains available on the
+second tab. Development artifacts are unsigned and require OBS Studio 31+.
 
 ## How to use
 

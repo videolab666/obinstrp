@@ -240,6 +240,13 @@ public:
 		root->setContentsMargins(4, 4, 4, 4);
 		root->setSpacing(4);
 
+		auto *operatorHint = new QLabel(T("EventDock.OperatorHint"), this);
+		operatorHint->setWordWrap(true);
+		operatorHint->setStyleSheet(
+			QStringLiteral("QLabel { color: palette(text); background: palette(alternate-base); "
+				       "border: 1px solid palette(mid); border-radius: 3px; padding: 5px; }"));
+		root->addWidget(operatorHint);
+
 		auto *markBar = new QHBoxLayout();
 		markBar->addWidget(new QLabel(T("EventDock.List"), this));
 		listCombo = new QComboBox(this);
@@ -1554,10 +1561,7 @@ private:
 
 } // namespace
 
-void sr_event_dock_register(struct sr_event_controller *controller)
+QWidget *sr_event_dock_create(struct sr_event_controller *controller, QWidget *parent)
 {
-	auto *dock = new SrEventDock(controller);
-	dock->setObjectName(QStringLiteral("SportsReplayEventDock"));
-	if (!obs_frontend_add_dock_by_id("sports_replay_event_dock", obs_module_text("EventDock.Title"), dock))
-		delete dock;
+	return new SrEventDock(controller, parent);
 }

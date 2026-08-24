@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "sr-dock.h"
 #include "sr-config.h"
+#include "sr-event-dock.h"
 #include "sr-thumb.h"
 #include "sr-capture.h"
 #include "sr-credit.h"
@@ -54,6 +55,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QSet>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QScrollArea>
+#include <QTabWidget>
 
 #define THUMB_W 112
 #define THUMB_H 63
@@ -615,15 +618,28 @@ void mark_played_task(void *param)
 
 } // namespace
 
-void sr_dock_register(void)
+void sr_dock_register(struct sr_event_controller *controller)
 {
-	auto *dock = new SrDock();
-	dock->setObjectName("SportsReplayDock");
-	if (!obs_frontend_add_dock_by_id("sports_replay_dock", obs_module_text("Dock.Title"), dock)) {
-		delete dock;
+	auto *tabs = new QTabWidget();
+	tabs->setObjectName(QStringLiteral("SportsReplayDock"));
+	tabs->setDocumentMode(true);
+
+	auto *operatorScroll = new QScrollArea(tabs);
+	operatorScroll->setObjectName(QStringLiteral("SportsReplayOperatorScroll"));
+	operatorScroll->setWidgetResizable(true);
+	operatorScroll->setFrameShape(QFrame::NoFrame);
+	operatorScroll->setWidget(sr_event_dock_create(controller, operatorScroll));
+
+	auto *clips = new SrDock(tabs);
+	tabs->addTab(operatorScroll, T("Dock.TabOperator"));
+	tabs->addTab(clips, T("Dock.TabClips"));
+	tabs->setCurrentIndex(0);
+
+	if (!obs_frontend_add_dock_by_id("sports_replay_dock", obs_module_text("Dock.Title"), tabs)) {
+		delete tabs;
 		return;
 	}
-	g_dock = dock;
+	g_dock = clips;
 }
 
 void sr_dock_mark_played(const char *path)
