@@ -23,8 +23,9 @@ struct sr_camera_list {
 };
 
 /* Enumerates OBS parent sources that currently own a Sports Replay capture
- * filter. The returned list has deterministic strcmp ordering so Qt angle
- * buttons and hardware hotkeys use exactly the same CAM1..CAM8 mapping. */
+ * filter. The returned names are ordered by persistent OBS source UUID rather
+ * than by display name, so renaming a camera does not silently remap the Qt
+ * CAM buttons or Angle 1..8 hardware hotkeys. */
 bool sr_camera_list_capture(struct sr_camera_list *list);
 void sr_camera_list_free(struct sr_camera_list *list);
 
