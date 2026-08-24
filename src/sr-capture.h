@@ -20,6 +20,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "sr-buffer.h"
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -42,6 +46,28 @@ extern "C" {
  * of a source whose id is SR_CAPTURE_ID). Used by the playback source to
  * take replay snapshots. */
 struct sr_buffer *sr_capture_get_buffer(void *capture_data);
+
+/* Aggregate health of all capture filters. This is intentionally a snapshot:
+ * the dock uses it for the vMix-style global recording controls without
+ * touching writer objects owned by the video callbacks. */
+struct sr_capture_recording_summary {
+	size_t camera_count;
+	size_t requested_count;
+	size_t active_count;
+	size_t failed_count;
+	size_t reserve_blocked_count;
+	uint64_t packets_written;
+	uint64_t bytes_written;
+};
+
+/* Enables/disables continuous disk recording on every Pitel capture filter by
+ * updating the persistent OBS filter setting. Returns false only if source
+ * enumeration failed; a successful call may still report zero cameras. */
+bool sr_capture_set_all_disk_recording(bool enabled, size_t *camera_count);
+
+/* Reads the last video-thread-published recorder state for every capture
+ * filter. Safe to call from the Qt frontend thread. */
+bool sr_capture_get_recording_summary(struct sr_capture_recording_summary *summary);
 
 /* Loads a saved replay file into the given Pitel Instant Replay playback source and
  * starts playing it (with the same controls as a live replay). Used by the

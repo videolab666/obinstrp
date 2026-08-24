@@ -17,8 +17,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <util/dstr.h>
 #include <util/threading.h>
 
-#define DEFAULT_MIN_FREE_BYTES (100ULL * 1024ULL * 1024ULL * 1024ULL)
-#define DEFAULT_PURGE_TARGET_BYTES (110ULL * 1024ULL * 1024ULL * 1024ULL)
+#define DEFAULT_MIN_FREE_BYTES (20ULL * 1024ULL * 1024ULL * 1024ULL)
+#define DEFAULT_PURGE_TARGET_BYTES (25ULL * 1024ULL * 1024ULL * 1024ULL)
 #define DEFAULT_SEGMENT_DURATION_MS 4000u
 
 static pthread_mutex_t g_mutex;

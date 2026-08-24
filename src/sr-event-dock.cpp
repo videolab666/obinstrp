@@ -247,6 +247,18 @@ public:
 				       "border: 1px solid palette(mid); border-radius: 3px; padding: 5px; }"));
 		root->addWidget(operatorHint);
 
+		auto *recordBar = new QHBoxLayout();
+		auto *startRecord = new QPushButton(T("EventDock.RecordStart"), this);
+		auto *stopRecord = new QPushButton(T("EventDock.RecordStop"), this);
+		startRecord->setStyleSheet(QStringLiteral("font-weight: bold;"));
+		stopRecord->setStyleSheet(QStringLiteral("font-weight: bold;"));
+		recordStatus = new QLabel(this);
+		recordStatus->setWordWrap(true);
+		recordBar->addWidget(startRecord);
+		recordBar->addWidget(stopRecord);
+		recordBar->addWidget(recordStatus, 1);
+		root->addLayout(recordBar);
+
 		auto *markBar = new QHBoxLayout();
 		markBar->addWidget(new QLabel(T("EventDock.List"), this));
 		listCombo = new QComboBox(this);
@@ -445,11 +457,14 @@ public:
 		auto *playlistB = new QPushButton(T("EventDock.PlaylistB"), this);
 		auto *playlistNext = new QPushButton(T("EventDock.PlaylistNext"), this);
 		auto *playlistStop = new QPushButton(T("EventDock.PlaylistStop"), this);
+		auto *playSelected = new QPushButton(T("EventDock.PlaySelected"), this);
+		playSelected->setStyleSheet(QStringLiteral("font-weight: bold;"));
 		takeBar->addWidget(playlistA);
 		takeBar->addWidget(playlistB);
 		takeBar->addWidget(playlistNext);
 		takeBar->addWidget(playlistStop);
 		takeBar->addSpacing(10);
+		takeBar->addWidget(playSelected);
 		takeBar->addWidget(takeA);
 		takeBar->addWidget(takeB);
 		takeBar->addWidget(takeToggle);
@@ -476,6 +491,8 @@ public:
 		connect(mark5, &QPushButton::clicked, this, [this]() { quickMark(5); });
 		connect(mark10, &QPushButton::clicked, this, [this]() { quickMark(10); });
 		connect(mark20, &QPushButton::clicked, this, [this]() { quickMark(20); });
+		connect(startRecord, &QPushButton::clicked, this, [this]() { setAllRecording(true); });
+		connect(stopRecord, &QPushButton::clicked, this, [this]() { setAllRecording(false); });
 		connect(up, &QPushButton::clicked, this, [this]() { moveRow(-1); });
 		connect(down, &QPushButton::clicked, this, [this]() { moveRow(1); });
 		connect(played, &QPushButton::clicked, this, [this]() { togglePlayed(); });
@@ -534,17 +551,21 @@ public:
 		connect(playlistB, &QPushButton::clicked, this, [this]() { startPlaylist(SR_REPLAY_BUS_B); });
 		connect(playlistNext, &QPushButton::clicked, this, [this]() { nextPlaylist(); });
 		connect(playlistStop, &QPushButton::clicked, this, [this]() { stopPlaylist(); });
+		connect(playSelected, &QPushButton::clicked, this, [this]() { playSelectedEvent(); });
 		connect(takeA, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_A); });
 		connect(takeB, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_B); });
 		connect(takeToggle, &QPushButton::clicked, this, [this]() { takeToggleBus(); });
 		connect(returnLive, &QPushButton::clicked, this, [this]() { returnLiveBus(); });
 		connect(table, &QTableWidget::itemSelectionChanged, this, [this]() { refreshAngleCoverage(); });
+		connect(table, &QTableWidget::itemDoubleClicked, this,
+			[this](QTableWidgetItem *) { playSelectedEvent(); });
 
 		refreshTimer = new QTimer(this);
 		refreshTimer->setInterval(750);
 		connect(refreshTimer, &QTimer::timeout, this, [this]() {
 			refresh();
 			refreshTransportStatus();
+			refreshRecordingStatus();
 			if (++cameraRefreshTicks >= 4) {
 				cameraRefreshTicks = 0;
 				refreshCameras();
@@ -567,6 +588,7 @@ public:
 		refreshCameras();
 		refresh();
 		refreshTransportStatus();
+		refreshRecordingStatus();
 		syncTransportControls();
 	}
 
@@ -604,6 +626,64 @@ private:
 	void setStatus(const char *key) { status->setText(T(key)); }
 
 	void setCreatedStatus(uint64_t eventId) { status->setText(T("EventDock.Created").arg(eventId)); }
+
+	void setAllRecording(bool enabled)
+	{
+		size_t cameras = 0;
+		if (!sr_capture_set_all_disk_recording(enabled, &cameras) || !cameras) {
+			setStatus("EventDock.RecordNoCameras");
+			refreshRecordingStatus();
+			return;
+		}
+		status->setText(T(enabled ? "EventDock.RecordStartRequested" : "EventDock.RecordStopped")
+					.arg(cameras));
+		refreshRecordingStatus();
+	}
+
+	void refreshRecordingStatus()
+	{
+		if (!recordStatus)
+			return;
+		sr_capture_recording_summary summary = {};
+		if (!sr_capture_get_recording_summary(&summary) || !summary.camera_count) {
+			recordStatus->setText(T("EventDock.RecordNoCameras"));
+			recordStatus->setStyleSheet(QStringLiteral("color: #d8a000;"));
+			return;
+		}
+
+		if (summary.reserve_blocked_count) {
+			recordStatus->setText(T("EventDock.RecordReserve")
+						      .arg(summary.reserve_blocked_count)
+						      .arg(summary.camera_count));
+			recordStatus->setStyleSheet(QStringLiteral("color: #ff5b5b; font-weight: bold;"));
+		} else if (summary.failed_count) {
+			recordStatus->setText(
+				T("EventDock.RecordError").arg(summary.failed_count).arg(summary.camera_count));
+			recordStatus->setStyleSheet(QStringLiteral("color: #ff5b5b; font-weight: bold;"));
+		} else if (summary.active_count && summary.active_count == summary.requested_count) {
+			recordStatus->setText(T("EventDock.RecordActive")
+						      .arg(summary.active_count)
+						      .arg(summary.camera_count)
+						      .arg(summary.packets_written)
+						      .arg((double)summary.bytes_written / (1024.0 * 1024.0), 0, 'f', 1));
+			recordStatus->setStyleSheet(QStringLiteral("color: #30c85a; font-weight: bold;"));
+		} else if (summary.requested_count) {
+			recordStatus->setText(T("EventDock.RecordStarting")
+						      .arg(summary.active_count)
+						      .arg(summary.requested_count));
+			recordStatus->setStyleSheet(QStringLiteral("color: #d8a000;"));
+		} else {
+			recordStatus->setText(T("EventDock.RecordIdle").arg(summary.camera_count));
+			recordStatus->setStyleSheet(QStringLiteral("color: gray;"));
+		}
+	}
+
+	bool recordingHasMedia()
+	{
+		sr_capture_recording_summary summary = {};
+		return sr_capture_get_recording_summary(&summary) && summary.active_count && summary.packets_written &&
+		       summary.reserve_blocked_count < summary.active_count;
+	}
 
 	void rebuildAngleButtons(const QStringList &names)
 	{
@@ -997,23 +1077,23 @@ private:
 		refreshTransportStatus();
 	}
 
-	void cueSelected(enum sr_replay_bus bus)
+	bool cueSelected(enum sr_replay_bus bus)
 	{
 		const uint64_t eventId = selectedEventId();
 		const QString camera = selectedCamera();
 		if (!eventId) {
 			setStatus("EventDock.NoEventSelected");
-			return;
+			return false;
 		}
 		if (camera.isEmpty()) {
 			setStatus("EventDock.NoCameraSelected");
-			return;
+			return false;
 		}
 		const QByteArray cameraUtf8 = camera.toUtf8();
 		sr_replay_playlist_stop(bus);
 		if (!sr_replay_channel_cue(bus, eventId, cameraUtf8.constData())) {
 			setStatus("EventDock.CueFailed");
-			return;
+			return false;
 		}
 		status->setText(T("EventDock.Cued")
 					.arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"))
@@ -1021,6 +1101,15 @@ private:
 		if (transportBus() == bus)
 			syncTransportControls();
 		refreshTransportStatus();
+		return true;
+	}
+
+	void playSelectedEvent()
+	{
+		const enum sr_replay_bus bus = transportBus();
+		if (!cueSelected(bus))
+			return;
+		takeBus(bus);
 	}
 
 	void startPlaylist(enum sr_replay_bus bus)
@@ -1306,6 +1395,10 @@ private:
 
 	void setMarkIn()
 	{
+		if (!recordingHasMedia()) {
+			setStatus("EventDock.RecordBeforeMark");
+			return;
+		}
 		if (!controller || !sr_event_controller_mark_in(controller, obs_get_video_frame_time())) {
 			setStatus("EventDock.Failed");
 			return;
@@ -1326,6 +1419,10 @@ private:
 
 	void quickMark(unsigned seconds)
 	{
+		if (!recordingHasMedia()) {
+			setStatus("EventDock.RecordBeforeMark");
+			return;
+		}
 		uint64_t eventId = 0;
 		if (!controller || !sr_event_controller_quick_mark(controller, obs_get_video_frame_time(),
 								   seconds * NS_PER_SECOND, 0, &eventId)) {
@@ -1549,6 +1646,7 @@ private:
 	QPushButton *exportCancelButton = nullptr;
 	QProgressBar *exportProgressBar = nullptr;
 	QTableWidget *table = nullptr;
+	QLabel *recordStatus = nullptr;
 	QLabel *transportStatus = nullptr;
 	QLabel *status = nullptr;
 	QTimer *refreshTimer = nullptr;

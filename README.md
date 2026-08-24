@@ -63,6 +63,31 @@ second tab. Development artifacts are unsigned and require OBS Studio 31+.
 
 ## How to use
 
+### Disk/Event operator (vMix-style)
+
+1. Add **Pitel Instant Replay Capture** to every camera. Encoder, quality,
+   GOP and sync offset remain per-camera settings; the dock controls whether
+   all configured cameras are recording.
+2. In **Replay operator**, click **START RECORD**. Wait for the green `REC`
+   status and increasing packet/MB counters before marking an Event. The dock
+   reports encoder/write failures and a reached disk-space reserve directly.
+3. Create an Event with **IN** then **OUT**, or use **-5/-10/-20** after the
+   action. Empty Events are rejected until recorded packets are available.
+4. Add a **Pitel Instant Replay Event Output** source configured for bus A to a
+   replay scene. Select an Event and click **PLAY EVENT** (or double-click its
+   row) to cue it internally and take it to air in one action.
+5. **Cue A/B** and **TAKE A/B** remain available for advanced two-bus operation:
+   prepare B while A is on air, then switch without replaying the IN Stinger.
+   Use **RETURN LIVE** to return to the scene that was live before replay.
+
+Continuous recording keeps its camera sources showing internally even when
+they are not in the current OBS scene. **STOP RECORD** releases those holds and
+stops every Pitel capture writer. The default disk-space reserve is 20 GB; set
+the recording folder, reserve, segment duration and optional native OBS
+Stingers from the dock settings.
+
+### Legacy RAM replay
+
 1. **Add the capture filter to each camera.** Right-click a camera source →
    *Filters* → add **Pitel Instant Replay Capture**. Set the buffer duration and
    quality there.

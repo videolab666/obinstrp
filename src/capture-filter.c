@@ -21,6 +21,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-session.h"
 #include "sr-segment-writer.h"
 
+#include <string.h>
+
 #define S_DURATION "duration_ms"
 #define S_ENCODER "encoder"
 #define S_QUALITY "quality"
@@ -37,6 +39,8 @@ struct sr_capture {
 	int qp;
 	uint32_t gop_ms;
 	bool disk_recording;
+	bool restart_writer;
+	bool parent_showing_held;
 	bool writer_failed;
 	bool master_audio_acquired;
 
@@ -47,7 +51,65 @@ struct sr_capture {
 	bool reset_encoder;
 
 	uint64_t last_stats_log;
+	uint64_t last_status_publish;
+	pthread_mutex_t status_mutex;
+	struct sr_capture_recording_summary status;
 };
+
+static void set_parent_showing_hold(struct sr_capture *c, bool hold)
+{
+	if (!c || hold == c->parent_showing_held)
+		return;
+	obs_source_t *parent = obs_filter_get_parent(c->self);
+	if (!parent)
+		return;
+	if (hold)
+		obs_source_inc_showing(parent);
+	else
+		obs_source_dec_showing(parent);
+	c->parent_showing_held = hold;
+}
+
+static void publish_status(struct sr_capture *c, uint64_t now, bool force)
+{
+	if (!c || (!force && c->last_status_publish && now - c->last_status_publish < 500000000ULL))
+		return;
+
+	struct sr_capture_recording_summary status = {
+		.camera_count = 1,
+		.requested_count = c->disk_recording ? 1 : 0,
+		.active_count = c->writer ? 1 : 0,
+		.failed_count = (c->writer_failed || c->encoder_failed) ? 1 : 0,
+	};
+	if (c->writer) {
+		struct sr_segment_writer_stats stats;
+		sr_segment_writer_get_stats(c->writer, &stats);
+		status.reserve_blocked_count = stats.reserve_blocked ? 1 : 0;
+		status.packets_written = stats.packets_written;
+		status.bytes_written = stats.bytes_written;
+		if (stats.write_failed)
+			status.failed_count = 1;
+	}
+
+	pthread_mutex_lock(&c->status_mutex);
+	c->status = status;
+	pthread_mutex_unlock(&c->status_mutex);
+	c->last_status_publish = now;
+}
+
+static void publish_recording_intent(struct sr_capture *c)
+{
+	if (!c)
+		return;
+	pthread_mutex_lock(&c->status_mutex);
+	c->status.camera_count = 1;
+	c->status.requested_count = c->disk_recording ? 1 : 0;
+	if (!c->disk_recording) {
+		c->status.failed_count = 0;
+		c->status.reserve_blocked_count = 0;
+	}
+	pthread_mutex_unlock(&c->status_mutex);
+}
 
 struct sr_buffer *sr_capture_get_buffer(void *capture_data)
 {
@@ -71,6 +133,7 @@ static void destroy_writer(struct sr_capture *c)
 		sr_master_audio_release();
 		c->master_audio_acquired = false;
 	}
+	publish_status(c, 0, true);
 }
 
 static void sr_capture_update(void *data, obs_data_t *settings)
@@ -99,15 +162,21 @@ static void sr_capture_update(void *data, obs_data_t *settings)
 		/* Only change intent here. The writer itself is created/destroyed in
 		 * filter_video so it cannot be freed by the UI update callback while
 		 * the video callback is queueing an encoded packet. */
+		if (!disk_recording)
+			c->restart_writer = true;
 		c->disk_recording = disk_recording;
 		c->writer_failed = false;
+		if (disk_recording)
+			set_parent_showing_hold(c, true);
 	}
+	publish_recording_intent(c);
 }
 
 static void *sr_capture_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct sr_capture *c = bzalloc(sizeof(struct sr_capture));
 	c->self = source;
+	pthread_mutex_init(&c->status_mutex, NULL);
 	sr_buffer_init(&c->buffer);
 	c->backend = SR_ENC_AUTO;
 	c->qp = 23;
@@ -119,9 +188,11 @@ static void *sr_capture_create(obs_data_t *settings, obs_source_t *source)
 static void sr_capture_destroy(void *data)
 {
 	struct sr_capture *c = data;
+	set_parent_showing_hold(c, false);
 	destroy_writer(c);
 	sr_encoder_destroy(c->encoder);
 	sr_buffer_free(&c->buffer);
+	pthread_mutex_destroy(&c->status_mutex);
 	bfree(c);
 }
 
@@ -195,6 +266,7 @@ static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi
 				"'%s': continuous video is recording, but master replay audio could not start",
 				obs_source_get_name(c->self));
 	}
+	publish_status(c, 0, true);
 	return true;
 }
 
@@ -226,13 +298,19 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 {
 	struct sr_capture *c = data;
 
-	if (!frame || !frame->data[0] || c->encoder_failed)
-		return frame;
-
 	/* Apply a recording toggle on the video callback rather than the UI
 	 * settings callback; see sr_capture_update. */
+	if (c->restart_writer) {
+		destroy_writer(c);
+		c->restart_writer = false;
+	}
 	if (!c->disk_recording && c->writer)
 		destroy_writer(c);
+	if (!c->disk_recording)
+		set_parent_showing_hold(c, false);
+
+	if (!frame || !frame->data[0] || c->encoder_failed)
+		return frame;
 
 	if (c->encoder && (c->reset_encoder || frame->width != c->enc_width || frame->height != c->enc_height)) {
 		destroy_writer(c);
@@ -253,6 +331,7 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 			obs_log(LOG_ERROR, "'%s': no H.264 encoder available, replay capture disabled",
 				obs_source_get_name(c->self));
 			c->encoder_failed = true;
+			publish_status(c, frame->timestamp, true);
 			return frame;
 		}
 		c->reset_encoder = false;
@@ -287,6 +366,7 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 	}
 
 	log_buffer_stats(c, frame->timestamp);
+	publish_status(c, frame->timestamp, false);
 	return frame;
 }
 
@@ -308,6 +388,76 @@ static struct obs_audio_data *sr_capture_filter_audio(void *data, struct obs_aud
 		sr_buffer_push_audio(&c->buffer, audio, get_audio_channels(c->buffer.speakers));
 
 	return audio;
+}
+
+struct capture_control_context {
+	bool update_setting;
+	bool enabled;
+	struct sr_capture_recording_summary *summary;
+	size_t camera_count;
+};
+
+static void capture_control_filter(obs_source_t *parent, obs_source_t *child, void *param)
+{
+	UNUSED_PARAMETER(parent);
+	struct capture_control_context *ctx = param;
+	if (!ctx || strcmp(obs_source_get_unversioned_id(child), SR_CAPTURE_ID) != 0)
+		return;
+
+	ctx->camera_count++;
+	if (ctx->update_setting) {
+		obs_data_t *settings = obs_source_get_settings(child);
+		if (ctx->enabled && obs_data_get_bool(settings, S_DISK_RECORDING)) {
+			obs_data_set_bool(settings, S_DISK_RECORDING, false);
+			obs_source_update(child, settings);
+		}
+		obs_data_set_bool(settings, S_DISK_RECORDING, ctx->enabled);
+		obs_source_update(child, settings);
+		obs_data_release(settings);
+	}
+
+	if (!ctx->summary)
+		return;
+	struct sr_capture *capture = obs_obj_get_data(child);
+	if (!capture)
+		return;
+	struct sr_capture_recording_summary status;
+	pthread_mutex_lock(&capture->status_mutex);
+	status = capture->status;
+	pthread_mutex_unlock(&capture->status_mutex);
+
+	ctx->summary->camera_count += status.camera_count;
+	ctx->summary->requested_count += status.requested_count;
+	ctx->summary->active_count += status.active_count;
+	ctx->summary->failed_count += status.failed_count;
+	ctx->summary->reserve_blocked_count += status.reserve_blocked_count;
+	ctx->summary->packets_written += status.packets_written;
+	ctx->summary->bytes_written += status.bytes_written;
+}
+
+static bool capture_control_source(void *param, obs_source_t *source)
+{
+	obs_source_enum_filters(source, capture_control_filter, param);
+	return true;
+}
+
+bool sr_capture_set_all_disk_recording(bool enabled, size_t *camera_count)
+{
+	struct capture_control_context ctx = {.update_setting = true, .enabled = enabled};
+	obs_enum_sources(capture_control_source, &ctx);
+	if (camera_count)
+		*camera_count = ctx.camera_count;
+	return true;
+}
+
+bool sr_capture_get_recording_summary(struct sr_capture_recording_summary *summary)
+{
+	if (!summary)
+		return false;
+	memset(summary, 0, sizeof(*summary));
+	struct capture_control_context ctx = {.summary = summary};
+	obs_enum_sources(capture_control_source, &ctx);
+	return true;
 }
 
 static obs_properties_t *sr_capture_properties(void *unused)
