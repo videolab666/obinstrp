@@ -19,7 +19,7 @@ jobs:
       - name: Apply thumbnail gallery patch
         run: python3 .github/scripts/patch-event-thumbnails.py
       - name: Format C++
-        run: clang-format-19 -i src/sr-event-dock.cpp
+        run: clang-format -i src/sr-event-dock.cpp
       - name: Commit product changes and remove helper
         shell: bash
         run: |
