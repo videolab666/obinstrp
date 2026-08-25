@@ -452,8 +452,8 @@ static void sr_capture_gpu_render(void *data, uint32_t cx, uint32_t cy)
 	}
 
 	if (!c->gpu_encoder) {
-		c->gpu_encoder = sr_gpu_encoder_create(c->enc_width, c->enc_height, ovi.fps_num, ovi.fps_den, c->backend,
-						       c->qp, c->gop_ms);
+		c->gpu_encoder = sr_gpu_encoder_create(c->enc_width, c->enc_height, ovi.fps_num, ovi.fps_den,
+						       c->backend, c->qp, c->gop_ms);
 		if (!c->gpu_encoder) {
 			c->gpu_failed = true;
 			if (!c->gpu_fallback_logged) {
@@ -473,7 +473,8 @@ static void sr_capture_gpu_render(void *data, uint32_t cx, uint32_t cy)
 	obs_source_t *target = obs_filter_get_target(c->self);
 	AVPacket *pkt = NULL;
 	if (!sr_gpu_encoder_render_encode(c->gpu_encoder, target, &pkt)) {
-		obs_log(LOG_WARNING, "'%s': GPU capture encoder failed; switching to CPU-frame fallback at a new segment",
+		obs_log(LOG_WARNING,
+			"'%s': GPU capture encoder failed; switching to CPU-frame fallback at a new segment",
 			obs_source_get_name(c->self));
 		destroy_writer(c);
 		sr_gpu_encoder_destroy(c->gpu_encoder);
