@@ -124,8 +124,10 @@ bool sr_capture_get_recording_summary(struct sr_capture_recording_summary *summa
 /* Captures one frontend-thread-safe diagnostic row per Pitel capture filter.
  * Producer callbacks refresh the underlying snapshot at roughly 500 ms while
  * video is flowing; the UI only copies that published state and never waits on
- * the encoder/writer render-path mutex. The caller owns snapshot->entries and
- * must release it with sr_capture_free_performance_snapshot(). */
+ * the encoder/writer render-path mutex. Rows are returned in the current OBS
+ * source-enumeration order and their storage is valid only until the matching
+ * free call. The caller owns snapshot->entries and must release it with
+ * sr_capture_free_performance_snapshot(). */
 bool sr_capture_get_performance_snapshot(struct sr_capture_performance_snapshot *snapshot);
 void sr_capture_free_performance_snapshot(struct sr_capture_performance_snapshot *snapshot);
 
