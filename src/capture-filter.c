@@ -33,6 +33,9 @@ the Free Software Foundation; either version 2 of the License, or
 
 struct sr_capture {
 	obs_source_t *self;
+	pthread_mutex_t parent_mutex;
+	obs_weak_source_t *parent_weak;
+	char camera_name[256];
 	struct sr_buffer buffer;
 	struct sr_encoder *encoder;
 	struct sr_gpu_encoder *gpu_encoder;
@@ -80,6 +83,69 @@ struct sr_capture {
 };
 
 static void sr_capture_gpu_render(void *data, uint32_t cx, uint32_t cy);
+
+static void sr_capture_set_parent(struct sr_capture *c, obs_source_t *parent)
+{
+	if (!c)
+		return;
+
+	obs_weak_source_t *weak = parent ? obs_source_get_weak_source(parent) : NULL;
+	pthread_mutex_lock(&c->parent_mutex);
+	obs_weak_source_t *old = c->parent_weak;
+	c->parent_weak = weak;
+	if (parent) {
+		const char *name = obs_source_get_name(parent);
+		if (name) {
+			strncpy(c->camera_name, name, sizeof(c->camera_name) - 1);
+			c->camera_name[sizeof(c->camera_name) - 1] = '\0';
+		}
+	}
+	pthread_mutex_unlock(&c->parent_mutex);
+
+	if (old)
+		obs_weak_source_release(old);
+}
+
+static obs_source_t *sr_capture_parent_ref(struct sr_capture *c)
+{
+	if (!c)
+		return NULL;
+
+	pthread_mutex_lock(&c->parent_mutex);
+	obs_source_t *parent = c->parent_weak ? obs_weak_source_get_source(c->parent_weak) : NULL;
+	pthread_mutex_unlock(&c->parent_mutex);
+	return parent;
+}
+
+static void sr_capture_filter_add(void *data, obs_source_t *source)
+{
+	sr_capture_set_parent(data, source);
+}
+
+static void sr_capture_filter_remove(void *data, obs_source_t *source)
+{
+	UNUSED_PARAMETER(source);
+	sr_capture_set_parent(data, NULL);
+}
+
+static void sr_capture_ensure_parent_from_filter_callback(struct sr_capture *c)
+{
+	if (!c)
+		return;
+
+	pthread_mutex_lock(&c->parent_mutex);
+	const bool have_parent = c->parent_weak != NULL;
+	pthread_mutex_unlock(&c->parent_mutex);
+	if (have_parent)
+		return;
+
+	/* obs_filter_get_parent() is guaranteed by libobs inside filter_video.
+	 * Cache only a weak reference here so the capture filter cannot keep its
+	 * parent alive through a source/filter reference cycle. */
+	obs_source_t *parent = obs_filter_get_parent(c->self);
+	if (parent)
+		sr_capture_set_parent(c, parent);
+}
 
 static bool gpu_backend_candidate(enum sr_encoder_backend backend)
 {
@@ -287,6 +353,7 @@ static void *sr_capture_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct sr_capture *c = bzalloc(sizeof(struct sr_capture));
 	c->self = source;
+	pthread_mutex_init(&c->parent_mutex, NULL);
 	pthread_mutex_init(&c->status_mutex, NULL);
 	pthread_mutex_init(&c->camera_audio_mutex, NULL);
 	pthread_mutex_init(&c->encode_mutex, NULL);
@@ -304,6 +371,7 @@ static void sr_capture_destroy(void *data)
 	struct sr_capture *c = data;
 	obs_remove_main_render_callback(sr_capture_gpu_render, c);
 	set_parent_showing_hold(c, false);
+	sr_capture_set_parent(c, NULL);
 
 	pthread_mutex_lock(&c->encode_mutex);
 	destroy_writer(c);
@@ -319,20 +387,20 @@ static void sr_capture_destroy(void *data)
 	sr_gpu_encoder_destroy(gpu_encoder);
 	sr_buffer_free(&c->buffer);
 	pthread_mutex_destroy(&c->status_mutex);
+	pthread_mutex_destroy(&c->parent_mutex);
 	pthread_mutex_destroy(&c->camera_audio_mutex);
 	pthread_mutex_destroy(&c->encode_mutex);
 	bfree(c);
 }
 
-static obs_source_t *capture_camera_source(struct sr_capture *c)
+static obs_source_t *capture_camera_source_ref(struct sr_capture *c)
 {
-	return c ? obs_filter_get_parent(c->self) : NULL;
+	return sr_capture_parent_ref(c);
 }
 
 static const char *capture_camera_name(struct sr_capture *c)
 {
-	obs_source_t *parent = capture_camera_source(c);
-	return parent ? obs_source_get_name(parent) : obs_source_get_name(c->self);
+	return c && c->camera_name[0] ? c->camera_name : obs_source_get_name(c->self);
 }
 
 static bool capture_encoder_ready(const struct sr_capture *c)
@@ -384,15 +452,18 @@ static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi
 	int extradata_size = 0;
 	capture_encoder_get_extradata(c, &extradata, &extradata_size);
 
-	obs_source_t *camera_source = capture_camera_source(c);
+	obs_source_t *camera_source = capture_camera_source_ref(c);
 	char camera_key[SR_CAMERA_STABLE_KEY_MAX] = {0};
 	if (!camera_source || !sr_camera_key_from_source(camera_source, camera_key, sizeof(camera_key))) {
 		obs_log(LOG_ERROR, "'%s': could not resolve persistent OBS UUID for replay camera '%s'",
 			obs_source_get_name(c->self), capture_camera_name(c));
+		if (camera_source)
+			obs_source_release(camera_source);
 		bfree(session_dir);
 		c->writer_failed = true;
 		return false;
 	}
+	obs_source_release(camera_source);
 
 	struct sr_segment_writer_config cfg = {
 		.session_dir = session_dir,
@@ -536,10 +607,20 @@ static void sr_capture_gpu_render(void *data, uint32_t cx, uint32_t cy)
 			obs_source_get_name(c->self), sr_gpu_encoder_name(c->gpu_encoder));
 	}
 
-	obs_source_t *target = obs_filter_get_target(c->self);
+	/* The main render callback is outside libobs filter callbacks, where
+	 * obs_filter_get_target()/get_parent() are not guaranteed valid. Resolve
+	 * the weak parent cached by filter_add/filter_video into a strong ref for
+	 * the duration of this render instead. */
+	obs_source_t *target = capture_camera_source_ref(c);
+	if (!target) {
+		publish_status(c, obs_get_video_frame_time(), false);
+		pthread_mutex_unlock(&c->encode_mutex);
+		return;
+	}
 	AVPacket *pkt = NULL;
 	const uint64_t encode_start = os_gettime_ns();
 	const bool encode_ok = sr_gpu_encoder_render_encode(c->gpu_encoder, target, &pkt);
+	obs_source_release(target);
 	const uint64_t encode_elapsed = os_gettime_ns() - encode_start;
 	c->encode_calls++;
 	c->encode_time_ns_total += encode_elapsed;
@@ -582,6 +663,7 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 	if (!c)
 		return frame;
 
+	sr_capture_ensure_parent_from_filter_callback(c);
 	pthread_mutex_lock(&c->encode_mutex);
 	apply_recording_intent(c);
 
@@ -879,6 +961,8 @@ struct obs_source_info sr_capture_info = {
 	.update = sr_capture_update,
 	.get_defaults = sr_capture_defaults,
 	.get_properties = sr_capture_properties,
+	.filter_add = sr_capture_filter_add,
+	.filter_remove = sr_capture_filter_remove,
 	.filter_video = sr_capture_filter_video,
 	.filter_audio = sr_capture_filter_audio,
 };
