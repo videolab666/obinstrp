@@ -130,7 +130,8 @@ QStringList nativeEventTransitions()
 	obs_frontend_get_transitions(&transitions);
 	for (size_t i = 0; i < transitions.sources.num; i++) {
 		obs_source_t *transition = transitions.sources.array[i];
-		if (strcmp(obs_source_get_unversioned_id(transition), "obs_stinger_transition") == 0)
+		const char *transitionId = obs_source_get_unversioned_id(transition);
+		if (strcmp(transitionId, "obs_stinger_transition") == 0 || strcmp(transitionId, "cut_transition") == 0)
 			continue;
 		const QString name = QString::fromUtf8(obs_source_get_name(transition));
 		if (!name.isEmpty() && !names.contains(name))

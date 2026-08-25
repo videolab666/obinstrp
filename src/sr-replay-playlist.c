@@ -49,6 +49,21 @@ static enum sr_replay_bus other_bus(enum sr_replay_bus bus)
 	return bus == SR_REPLAY_BUS_A ? SR_REPLAY_BUS_B : SR_REPLAY_BUS_A;
 }
 
+/* A sequence item must always begin at Event IN. sr_replay_channel_cue() has
+ * an intentional same-Event/different-camera fast path for live angle
+ * switching that preserves the current playhead; that behavior is wrong for
+ * sequential angle playback (and for a repeated Event two A/B hops later).
+ * Clear the off-air transport before cueing, while preserving the operator's
+ * per-bus replay-audio choice. */
+static void reset_bus_for_sequence(enum sr_replay_bus bus)
+{
+	struct sr_replay_channel_state state = {0};
+	const enum sr_replay_audio_mode audio_mode = sr_replay_channel_get_state(bus, &state) ? state.audio_mode
+											      : SR_REPLAY_AUDIO_MASTER;
+	sr_replay_channel_clear(bus);
+	sr_replay_channel_set_audio_mode(bus, audio_mode);
+}
+
 static void clear_bus_locked(struct sr_playlist_bus *bus)
 {
 	if (!bus)
@@ -323,6 +338,7 @@ bool sr_replay_playlist_start_event_angles(enum sr_replay_bus bus, uint64_t even
 	playlist->count = count;
 	playlist->cross_bus_transitions = cross_bus_transitions;
 
+	reset_bus_for_sequence(bus);
 	size_t first = 0;
 	bool cued = false;
 	for (; first < count; first++) {
@@ -362,9 +378,12 @@ static bool advance_locked(enum sr_replay_bus bus, struct sr_playlist_bus *playl
 		return false;
 	}
 
+	const bool cross_bus = playlist->cross_bus_transitions;
+	const enum sr_replay_bus target_bus = cross_bus ? other_bus(bus) : bus;
+	if (cross_bus || playlist->angle_sequence)
+		reset_bus_for_sequence(target_bus);
+
 	for (size_t next = playlist->position + 1; next < playlist->count; next++) {
-		const bool cross_bus = playlist->cross_bus_transitions;
-		const enum sr_replay_bus target_bus = cross_bus ? other_bus(bus) : bus;
 		if (!cue_item_locked(target_bus, playlist, next))
 			continue;
 
