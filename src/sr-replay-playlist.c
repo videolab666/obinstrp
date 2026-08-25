@@ -13,6 +13,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-camera-list.h"
 #include "sr-event-controller.h"
 #include "sr-replay-coverage.h"
+#include "sr-replay-take.h"
 
 #include <obs-module.h>
 #include <util/bmem.h>
@@ -22,8 +23,11 @@ the Free Software Foundation; either version 2 of the License, or
 
 struct sr_playlist_bus {
 	bool active;
+	bool angle_sequence;
+	bool cross_bus_transitions;
 	unsigned list_id;
 	uint64_t *event_ids;
+	char **angle_cameras;
 	size_t count;
 	size_t position;
 	uint64_t event_id;
@@ -40,13 +44,29 @@ static struct sr_playlist_bus *get_bus(enum sr_replay_bus bus)
 	return bus >= SR_REPLAY_BUS_A && bus < SR_REPLAY_BUS_COUNT ? &g_buses[bus] : NULL;
 }
 
+static enum sr_replay_bus other_bus(enum sr_replay_bus bus)
+{
+	return bus == SR_REPLAY_BUS_A ? SR_REPLAY_BUS_B : SR_REPLAY_BUS_A;
+}
+
 static void clear_bus_locked(struct sr_playlist_bus *bus)
 {
 	if (!bus)
 		return;
+	if (bus->angle_cameras) {
+		for (size_t i = 0; i < bus->count; i++)
+			bfree(bus->angle_cameras[i]);
+	}
+	bfree(bus->angle_cameras);
 	bfree(bus->event_ids);
 	bfree(bus->preferred_camera);
 	memset(bus, 0, sizeof(*bus));
+}
+
+static void clear_all_locked(void)
+{
+	for (size_t i = 0; i < SR_REPLAY_BUS_COUNT; i++)
+		clear_bus_locked(&g_buses[i]);
 }
 
 static bool same_camera(const char *a, const char *b)
@@ -119,6 +139,17 @@ static bool cue_best_camera_locked(enum sr_replay_bus bus, uint64_t event_id, co
 	return cued;
 }
 
+static bool cue_item_locked(enum sr_replay_bus bus, const struct sr_playlist_bus *playlist, size_t index)
+{
+	if (!playlist || index >= playlist->count || !playlist->event_ids)
+		return false;
+	if (playlist->angle_sequence) {
+		const char *camera = playlist->angle_cameras ? playlist->angle_cameras[index] : NULL;
+		return camera && *camera && sr_replay_channel_cue(bus, playlist->event_ids[index], camera);
+	}
+	return cue_best_camera_locked(bus, playlist->event_ids[index], playlist->preferred_camera);
+}
+
 bool sr_replay_playlist_init(struct sr_event_controller *events)
 {
 	if (g_started)
@@ -138,8 +169,7 @@ void sr_replay_playlist_shutdown(void)
 	if (!g_started)
 		return;
 	pthread_mutex_lock(&g_mutex);
-	for (size_t i = 0; i < SR_REPLAY_BUS_COUNT; i++)
-		clear_bus_locked(&g_buses[i]);
+	clear_all_locked();
 	g_events = NULL;
 	g_started = false;
 	pthread_mutex_unlock(&g_mutex);
@@ -147,6 +177,12 @@ void sr_replay_playlist_shutdown(void)
 }
 
 bool sr_replay_playlist_start(enum sr_replay_bus bus, unsigned list_id, const char *preferred_camera)
+{
+	return sr_replay_playlist_start_with_transitions(bus, list_id, preferred_camera, false);
+}
+
+bool sr_replay_playlist_start_with_transitions(enum sr_replay_bus bus, unsigned list_id,
+					       const char *preferred_camera, bool cross_bus_transitions)
 {
 	struct sr_playlist_bus *playlist = get_bus(bus);
 	if (!g_started || !playlist || !g_events)
@@ -160,41 +196,164 @@ bool sr_replay_playlist_start(enum sr_replay_bus bus, unsigned list_id, const ch
 	}
 
 	pthread_mutex_lock(&g_mutex);
-	clear_bus_locked(playlist);
+	clear_all_locked();
+	playlist = get_bus(bus);
+	playlist->active = true;
+	playlist->list_id = list_id;
+	playlist->event_ids = event_ids;
+	playlist->count = count;
+	playlist->preferred_camera = bstrdup(preferred_camera ? preferred_camera : "");
+	playlist->cross_bus_transitions = cross_bus_transitions;
 
 	size_t first = 0;
 	bool cued = false;
 	for (; first < count; first++) {
-		if (cue_best_camera_locked(bus, event_ids[first], preferred_camera) && sr_replay_channel_play(bus)) {
+		if (cue_item_locked(bus, playlist, first) && sr_replay_channel_play(bus)) {
 			cued = true;
 			break;
 		}
 	}
 
 	if (!cued) {
+		clear_bus_locked(playlist);
 		pthread_mutex_unlock(&g_mutex);
-		bfree(event_ids);
 		return false;
 	}
 
-	playlist->active = true;
-	playlist->list_id = list_id;
-	playlist->event_ids = event_ids;
-	playlist->count = count;
 	playlist->position = first;
 	playlist->event_id = event_ids[first];
-	playlist->preferred_camera = bstrdup(preferred_camera ? preferred_camera : "");
 	const uint64_t first_event_id = playlist->event_id;
 	pthread_mutex_unlock(&g_mutex);
 
 	blog(LOG_INFO,
-	     "Pitel Instant Replay: started Event List %u highlight reel on bus %c at item %zu/%zu (Event %llu)",
-	     list_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', first + 1, count, (unsigned long long)first_event_id);
+	     "Pitel Instant Replay: started Event List %u highlight reel on bus %c at item %zu/%zu (Event %llu)%s",
+	     list_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', first + 1, count, (unsigned long long)first_event_id,
+	     cross_bus_transitions ? " with A/B Event Transitions" : "");
 	return true;
 }
 
-static bool advance_locked(enum sr_replay_bus bus, struct sr_playlist_bus *playlist)
+static bool collect_event_angles(uint64_t event_id, uint64_t **event_ids_out, char ***cameras_out, size_t *count_out)
 {
+	*event_ids_out = NULL;
+	*cameras_out = NULL;
+	*count_out = 0;
+
+	struct sr_event_record event = {0};
+	if (!sr_event_controller_get_event(g_events, event_id, &event) || event.pending) {
+		if (event.id)
+			sr_event_controller_free_event(&event);
+		return false;
+	}
+
+	struct sr_camera_list cameras = {0};
+	if (!sr_camera_list_capture(&cameras)) {
+		sr_event_controller_free_event(&event);
+		return false;
+	}
+
+	size_t full_count = 0;
+	size_t partial_count = 0;
+	for (size_t i = 0; i < cameras.count; i++) {
+		struct sr_replay_coverage_info coverage = {0};
+		if (!sr_replay_coverage_query(cameras.names[i], event.in_ns, event.out_ns, &coverage))
+			continue;
+		if (coverage.coverage == SR_REPLAY_COVERAGE_FULL)
+			full_count++;
+		else if (coverage.coverage == SR_REPLAY_COVERAGE_PARTIAL)
+			partial_count++;
+	}
+
+	const enum sr_replay_coverage wanted = full_count ? SR_REPLAY_COVERAGE_FULL : SR_REPLAY_COVERAGE_PARTIAL;
+	const size_t wanted_count = full_count ? full_count : partial_count;
+	if (!wanted_count) {
+		sr_camera_list_free(&cameras);
+		sr_event_controller_free_event(&event);
+		return false;
+	}
+
+	uint64_t *event_ids = bzalloc(wanted_count * sizeof(*event_ids));
+	char **angle_cameras = bzalloc(wanted_count * sizeof(*angle_cameras));
+	size_t actual = 0;
+	for (size_t i = 0; i < cameras.count && actual < wanted_count; i++) {
+		struct sr_replay_coverage_info coverage = {0};
+		if (!sr_replay_coverage_query(cameras.names[i], event.in_ns, event.out_ns, &coverage) ||
+		    coverage.coverage != wanted)
+			continue;
+		char *camera = bstrdup(cameras.names[i]);
+		if (!camera)
+			continue;
+		event_ids[actual] = event_id;
+		angle_cameras[actual] = camera;
+		actual++;
+	}
+
+	sr_camera_list_free(&cameras);
+	sr_event_controller_free_event(&event);
+	if (!actual) {
+		bfree(event_ids);
+		bfree(angle_cameras);
+		return false;
+	}
+
+	*event_ids_out = event_ids;
+	*cameras_out = angle_cameras;
+	*count_out = actual;
+	return true;
+}
+
+bool sr_replay_playlist_start_event_angles(enum sr_replay_bus bus, uint64_t event_id,
+					   bool cross_bus_transitions)
+{
+	struct sr_playlist_bus *playlist = get_bus(bus);
+	if (!g_started || !playlist || !g_events || !event_id)
+		return false;
+
+	uint64_t *event_ids = NULL;
+	char **angle_cameras = NULL;
+	size_t count = 0;
+	if (!collect_event_angles(event_id, &event_ids, &angle_cameras, &count))
+		return false;
+
+	pthread_mutex_lock(&g_mutex);
+	clear_all_locked();
+	playlist = get_bus(bus);
+	playlist->active = true;
+	playlist->angle_sequence = true;
+	playlist->event_ids = event_ids;
+	playlist->angle_cameras = angle_cameras;
+	playlist->count = count;
+	playlist->cross_bus_transitions = cross_bus_transitions;
+
+	size_t first = 0;
+	bool cued = false;
+	for (; first < count; first++) {
+		if (cue_item_locked(bus, playlist, first) && sr_replay_channel_play(bus)) {
+			cued = true;
+			break;
+		}
+	}
+	if (!cued) {
+		clear_bus_locked(playlist);
+		pthread_mutex_unlock(&g_mutex);
+		return false;
+	}
+
+	playlist->position = first;
+	playlist->event_id = event_id;
+	const char *first_camera = playlist->angle_cameras[first];
+	pthread_mutex_unlock(&g_mutex);
+
+	blog(LOG_INFO, "Pitel Instant Replay: started Event %llu angle sequence on bus %c, angle %zu/%zu '%s'%s",
+	     (unsigned long long)event_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', first + 1, count,
+	     first_camera ? first_camera : "", cross_bus_transitions ? " with A/B Event Transitions" : "");
+	return true;
+}
+
+static bool advance_locked(enum sr_replay_bus bus, struct sr_playlist_bus *playlist, bool *queue_take,
+			   enum sr_replay_bus *take_bus)
+{
+	*queue_take = false;
+	*take_bus = bus;
 	if (!playlist->active || playlist->position >= playlist->count)
 		return false;
 
@@ -205,24 +364,51 @@ static bool advance_locked(enum sr_replay_bus bus, struct sr_playlist_bus *playl
 	}
 
 	for (size_t next = playlist->position + 1; next < playlist->count; next++) {
-		if (!cue_best_camera_locked(bus, playlist->event_ids[next], playlist->preferred_camera))
-			continue;
-		if (!sr_replay_channel_play(bus))
+		const bool cross_bus = playlist->cross_bus_transitions;
+		const enum sr_replay_bus target_bus = cross_bus ? other_bus(bus) : bus;
+		if (!cue_item_locked(target_bus, playlist, next))
 			continue;
 
-		playlist->position = next;
-		playlist->event_id = playlist->event_ids[next];
-		if (!sr_event_controller_set_played(g_events, playlist->event_id, true))
-			blog(LOG_WARNING, "Pitel Instant Replay: playlist Event %llu could not be marked played",
-			     (unsigned long long)playlist->event_id);
-		blog(LOG_INFO, "Pitel Instant Replay: Event List %u advanced bus %c to item %zu/%zu (Event %llu)",
-		     playlist->list_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', next + 1, playlist->count,
-		     (unsigned long long)playlist->event_id);
+		struct sr_playlist_bus *active = playlist;
+		if (cross_bus) {
+			struct sr_playlist_bus moved = *playlist;
+			memset(playlist, 0, sizeof(*playlist));
+			struct sr_playlist_bus *target = get_bus(target_bus);
+			clear_bus_locked(target);
+			*target = moved;
+			active = target;
+			*queue_take = true;
+			*take_bus = target_bus;
+		} else if (!sr_replay_channel_play(target_bus)) {
+			continue;
+		}
+
+		active->position = next;
+		active->event_id = active->event_ids[next];
+		if (!sr_event_controller_set_played(g_events, active->event_id, true))
+			blog(LOG_WARNING, "Pitel Instant Replay: sequence Event %llu could not be marked played",
+			     (unsigned long long)active->event_id);
+
+		if (active->angle_sequence) {
+			blog(LOG_INFO,
+			     "Pitel Instant Replay: Event %llu angle sequence advanced to bus %c angle %zu/%zu '%s'",
+			     (unsigned long long)active->event_id, target_bus == SR_REPLAY_BUS_A ? 'A' : 'B', next + 1,
+			     active->count, active->angle_cameras[next] ? active->angle_cameras[next] : "");
+		} else {
+			blog(LOG_INFO,
+			     "Pitel Instant Replay: Event List %u advanced to bus %c item %zu/%zu (Event %llu)",
+			     active->list_id, target_bus == SR_REPLAY_BUS_A ? 'A' : 'B', next + 1, active->count,
+			     (unsigned long long)active->event_id);
+		}
 		return true;
 	}
 
-	blog(LOG_INFO, "Pitel Instant Replay: Event List %u finished on bus %c", playlist->list_id,
-	     bus == SR_REPLAY_BUS_A ? 'A' : 'B');
+	if (playlist->angle_sequence)
+		blog(LOG_INFO, "Pitel Instant Replay: Event %llu angle sequence finished on bus %c",
+		     (unsigned long long)playlist->event_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B');
+	else
+		blog(LOG_INFO, "Pitel Instant Replay: Event List %u finished on bus %c", playlist->list_id,
+		     bus == SR_REPLAY_BUS_A ? 'A' : 'B');
 	clear_bus_locked(playlist);
 	return false;
 }
@@ -232,9 +418,15 @@ bool sr_replay_playlist_next(enum sr_replay_bus bus)
 	struct sr_playlist_bus *playlist = get_bus(bus);
 	if (!g_started || !playlist)
 		return false;
+
+	bool queue_take = false;
+	enum sr_replay_bus take_bus = bus;
 	pthread_mutex_lock(&g_mutex);
-	const bool advanced = advance_locked(bus, playlist);
+	const bool advanced = advance_locked(bus, playlist, &queue_take, &take_bus);
 	pthread_mutex_unlock(&g_mutex);
+
+	if (advanced && queue_take)
+		sr_replay_take_advance_event_async(g_events, take_bus);
 	return advanced;
 }
 
@@ -261,6 +453,7 @@ bool sr_replay_playlist_get_state(enum sr_replay_bus bus, struct sr_replay_playl
 	memset(state, 0, sizeof(*state));
 	pthread_mutex_lock(&g_mutex);
 	state->active = playlist->active;
+	state->angle_sequence = playlist->angle_sequence;
 	state->list_id = playlist->list_id;
 	state->position = playlist->position;
 	state->count = playlist->count;
