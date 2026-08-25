@@ -24,7 +24,7 @@ jobs:
           set -euo pipefail
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           brew install --quiet obsproject/tools/clang-format@19
-          clang-format-19 -i src/capture-filter.c src/sr-disk-player.h src/sr-event-dock.cpp
+          /home/linuxbrew/.linuxbrew/opt/clang-format@19/bin/clang-format-19 -i src/capture-filter.c src/sr-disk-player.h src/sr-event-dock.cpp
           git rm .github/workflows/format-hardware-status.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
