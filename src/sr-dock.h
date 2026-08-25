@@ -28,7 +28,7 @@ struct sr_event_controller;
  * OBS frontend. Call once, after the frontend is ready. */
 void sr_dock_register(struct sr_event_controller *controller);
 
-/* Opens the unified settings dialog used by compact operator controls such as
+/* Opens the unified settings dialog used by compact operator controls, including
  * the gear beside the global REC button. Must be called on the UI thread. */
 void sr_dock_open_settings(void);
 
