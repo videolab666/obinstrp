@@ -1,0 +1,31 @@
+name: Apply Event thumbnail gallery
+
+on:
+  push:
+    branches: [feature/hardware-zero-copy]
+    paths:
+      - '.github/workflows/apply-event-thumbnails.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+      - name: Apply thumbnail gallery patch
+        run: python3 .github/scripts/patch-event-thumbnails.py
+      - name: Format C++
+        run: clang-format-19 -i src/sr-event-dock.cpp
+      - name: Commit product changes and remove helper
+        shell: bash
+        run: |
+          rm -f .github/scripts/patch-event-thumbnails.py .github/workflows/apply-event-thumbnails.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: add visual Event thumbnail bin'
+          git push origin HEAD:feature/hardware-zero-copy
