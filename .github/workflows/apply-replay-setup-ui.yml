@@ -1,0 +1,49 @@
+name: Apply replay setup and preflight UI
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-replay-setup-ui.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
+      - name: Prepare patch script
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/apply-replay-setup-ui.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace("'''.encode('utf-8').decode('unicode_escape')", "'''\nmethods = methods.replace('\\\\t', '\\t').replace('\\\\n', '\\n')")
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Apply implementation
+        run: python3 .github/scripts/apply-replay-setup-ui.py
+      - name: Install clang-format 19
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install --quiet obsproject/tools/clang-format@19
+          echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> "$GITHUB_PATH"
+      - name: Format native sources
+        run: |
+          clang-format-19 -i \
+            src/sr-replay-setup.h src/sr-replay-setup.c \
+            src/sr-capture.h src/capture-filter.c \
+            src/sr-replay-take.c src/sr-event-dock.cpp
+          git diff --check
+      - name: Commit implementation and remove helpers
+        run: |
+          rm -f .github/scripts/apply-replay-setup-ui.py .github/workflows/apply-replay-setup-ui.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: add one-click Replay Setup and REC preflight'
+          git push origin HEAD:feature/hardware-zero-copy
