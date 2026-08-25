@@ -1,0 +1,31 @@
+name: Fix thumbnail source cleanup
+
+on:
+  push:
+    branches: [feature/hardware-zero-copy]
+    paths:
+      - '.github/workflows/fix-thumbnail-tabs.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+      - name: Clean generated C++ tabs
+        run: python3 .github/scripts/fix-thumbnail-tabs.py
+      - name: Format C++
+        run: clang-format -i src/sr-event-dock.cpp
+      - name: Commit cleanup and remove helper
+        shell: bash
+        run: |
+          rm -f .github/scripts/fix-thumbnail-tabs.py .github/workflows/fix-thumbnail-tabs.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: normalize Event thumbnail gallery source'
+          git push origin HEAD:feature/hardware-zero-copy
