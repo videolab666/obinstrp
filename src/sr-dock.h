@@ -29,7 +29,7 @@ struct sr_event_controller;
 void sr_dock_register(struct sr_event_controller *controller);
 
 /* Opens the same unified settings dialog from compact operator controls such
- * as the gear beside the global REC button. UI thread only. */
+ * as the gear beside the global REC button. Must be called on the UI thread. */
 void sr_dock_open_settings(void);
 
 /* Marks a saved replay as already gone to air, the same way launching one
