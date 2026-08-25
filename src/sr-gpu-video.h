@@ -13,12 +13,12 @@ the Free Software Foundation; either version 2 of the License, or
 #include <stdbool.h>
 #include <stdint.h>
 
-#include <libavutil/buffer.h>
-#include <libavutil/frame.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include <libavutil/buffer.h>
+#include <libavutil/frame.h>
 
 /* On Windows/D3D11 this creates an FFmpeg D3D11VA device backed by OBS's own
  * ID3D11Device. Decoded surfaces therefore stay on the same GPU/device as the
