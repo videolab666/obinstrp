@@ -561,7 +561,11 @@ public:
 		recordToggle = new QToolButton(this);
 		recordToggle->setText(QStringLiteral("● REC"));
 		recordToggle->setToolButtonStyle(Qt::ToolButtonTextOnly);
-		recordToggle->setMinimumWidth(58);
+		recordToggle->setMinimumSize(116, 36);
+		auto recordFont = recordToggle->font();
+		recordFont.setPointSizeF(recordFont.pointSizeF() * 1.35);
+		recordFont.setBold(true);
+		recordToggle->setFont(recordFont);
 		recordToggle->setAutoRaise(false);
 		auto *settingsGear = new QToolButton(this);
 		settingsGear->setText(QString::fromUtf8("\xE2\x9A\x99"));
@@ -575,7 +579,13 @@ public:
 		setupButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
 		setupButton->setAutoRaise(true);
 		setupButton->setMinimumWidth(82);
+		auto *repairABButton = new QToolButton(this);
+		repairABButton->setText(T("EventDock.Setup.CreateAB"));
+		repairABButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+		repairABButton->setAutoRaise(true);
+		repairABButton->setToolTip(T("EventDock.Setup.CreateAB"));
 		recordBar->addWidget(recordToggle);
+		recordBar->addWidget(repairABButton);
 		recordBar->addWidget(settingsGear);
 		recordBar->addWidget(setupButton);
 		recordBar->addWidget(recordStatus, 1);
@@ -893,6 +903,17 @@ public:
 		connect(mark10, &QPushButton::clicked, this, [this]() { quickMark(10); });
 		connect(mark20, &QPushButton::clicked, this, [this]() { quickMark(20); });
 		connect(recordToggle, &QToolButton::clicked, this, [this]() { toggleAllRecording(); });
+		connect(repairABButton, &QToolButton::clicked, this, [this]() {
+			sr_replay_setup_result result = {};
+			if (!sr_replay_setup_ensure_event_scenes(&result)) {
+				QMessageBox::warning(this, T("EventDock.Setup.Title"), T("EventDock.Setup.ABFailed"));
+			} else {
+				status->setText(T("EventDock.Setup.ABReady")
+							.arg(QString::fromUtf8(result.scene_a))
+							.arg(QString::fromUtf8(result.scene_b)));
+			}
+			refreshSetupStatus();
+		});
 		connect(settingsGear, &QToolButton::clicked, this, []() { sr_dock_open_settings(); });
 		connect(setupButton, &QToolButton::clicked, this, [this]() { openReplaySetup(); });
 		connect(up, &QPushButton::clicked, this, [this]() { moveRow(-1); });
@@ -1322,26 +1343,46 @@ private:
 			haveCapture = true;
 		}
 
-		if (eventTransitionConfigured() && !abReady) {
-			QMessageBox prompt(QMessageBox::Warning, T("EventDock.Setup.PreflightTitle"),
-					   T("EventDock.Setup.NoABPreflight"), QMessageBox::NoButton, this);
-			QPushButton *repair = prompt.addButton(T("EventDock.Setup.CreateAB"), QMessageBox::AcceptRole);
-			QPushButton *cuts = prompt.addButton(T("EventDock.Setup.StartCuts"), QMessageBox::ActionRole);
-			prompt.addButton(QMessageBox::Cancel);
-			prompt.exec();
-			if (prompt.clickedButton() == repair) {
-				sr_replay_setup_result result = {};
-				if (!sr_replay_setup_ensure_event_scenes(&result)) {
-					QMessageBox::warning(this, T("EventDock.Setup.PreflightTitle"),
-							     T("EventDock.Setup.ABFailed"));
-					return false;
-				}
+		if (!haveCapture)
+			return false;
+
+		/* Replay A/B is part of the normal recording topology, not only an
+		 * Event-Transition feature. Prepare it automatically before REC so a
+		 * fresh OBS scene collection is one-click ready for replay. */
+		sr_replay_setup_snapshot current = {};
+		if (sr_replay_setup_get_snapshot(&current))
+			abReady = current.event_transition_ready;
+		sr_replay_setup_free_snapshot(&current);
+
+		if (!abReady) {
+			sr_replay_setup_result result = {};
+			if (sr_replay_setup_ensure_event_scenes(&result)) {
 				abReady = result.event_transition_ready;
 				refreshSetupStatus();
-				if (!abReady)
+				status->setText(T("EventDock.Setup.ABReady")
+							.arg(QString::fromUtf8(result.scene_a))
+							.arg(QString::fromUtf8(result.scene_b)));
+			} else {
+				QMessageBox prompt(QMessageBox::Warning, T("EventDock.Setup.PreflightTitle"),
+						   T("EventDock.Setup.ABFailed"), QMessageBox::NoButton, this);
+				QPushButton *openSetup =
+					prompt.addButton(T("EventDock.Setup.Open"), QMessageBox::AcceptRole);
+				QPushButton *cuts =
+					prompt.addButton(T("EventDock.Setup.StartCuts"), QMessageBox::ActionRole);
+				prompt.addButton(QMessageBox::Cancel);
+				prompt.exec();
+				if (prompt.clickedButton() == openSetup) {
+					if (!openReplaySetup())
+						return false;
+					sr_replay_setup_snapshot repaired = {};
+					const bool repairedReady = sr_replay_setup_get_snapshot(&repaired) &&
+								   repaired.event_transition_ready;
+					sr_replay_setup_free_snapshot(&repaired);
+					if (!repairedReady)
+						return false;
+				} else if (prompt.clickedButton() != cuts) {
 					return false;
-			} else if (prompt.clickedButton() != cuts) {
-				return false;
+				}
 			}
 		}
 		return haveCapture;
