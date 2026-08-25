@@ -274,6 +274,8 @@ public:
 	/* UI thread. Flags a replay as aired and badges it if it is already
 	 * on the list; a replay saved seconds ago usually isn't yet, and the
 	 * folder watcher's refresh picks the badge up from playedPaths. */
+	void showSettings() { openSettings(); }
+
 	void markPlayed(const QString &path)
 	{
 		QString abs = QFileInfo(path).absoluteFilePath();
@@ -824,6 +826,12 @@ void sr_dock_register(struct sr_event_controller *controller)
 		return;
 	}
 	g_dock = clips;
+}
+
+void sr_dock_open_settings(void)
+{
+	if (g_dock)
+		g_dock->showSettings();
 }
 
 void sr_dock_mark_played(const char *path)

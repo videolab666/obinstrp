@@ -13,6 +13,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-camera-list.h"
 #include "sr-capture.h"
 #include "sr-event-controller.h"
+#include "sr-dock.h"
 #include "sr-event-export.h"
 #include "sr-replay-channel.h"
 #include "sr-replay-coverage.h"
@@ -28,6 +29,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <cstring>
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -46,14 +48,19 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
+#include <QMouseEvent>
+#include <QPainter>
 #include <QPushButton>
 #include <QProgressBar>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStandardPaths>
+#include <QStyle>
+#include <QStyleOptionSlider>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QVector>
 #include <QWidget>
@@ -376,6 +383,148 @@ void runExportJob(ExportJob *job)
 	job->done.store(true, std::memory_order_release);
 }
 
+
+class SrRangeSlider : public QSlider {
+public:
+	using RangeHandler = std::function<void(int, int)>;
+	using ClickHandler = std::function<void(int)>;
+
+	explicit SrRangeSlider(QWidget *parent = nullptr) : QSlider(Qt::Horizontal, parent) {}
+
+	void setRangeHandler(RangeHandler handler) { rangeHandler = std::move(handler); }
+	void setClickHandler(ClickHandler handler) { clickHandler = std::move(handler); }
+
+	void clearSelection()
+	{
+		selecting = false;
+		hasSelection = false;
+		update();
+	}
+
+protected:
+	void mousePressEvent(QMouseEvent *event) override
+	{
+		if (!isEnabled() || event->button() != Qt::LeftButton) {
+			QSlider::mousePressEvent(event);
+			return;
+		}
+
+		QStyleOptionSlider option;
+		initStyleOption(&option);
+		const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
+		const QPoint position = event->position().toPoint();
+		if (handle.contains(position)) {
+			selecting = false;
+			QSlider::mousePressEvent(event);
+			return;
+		}
+
+		selectionStart = valueAtX(position.x());
+		selectionEnd = selectionStart;
+		selectionMoved = false;
+		selecting = true;
+		event->accept();
+		update();
+	}
+
+	void mouseMoveEvent(QMouseEvent *event) override
+	{
+		if (!selecting) {
+			QSlider::mouseMoveEvent(event);
+			return;
+		}
+
+		selectionEnd = valueAtX(event->position().toPoint().x());
+		selectionMoved = selectionMoved || qAbs(selectionEnd - selectionStart) >= 5;
+		event->accept();
+		update();
+	}
+
+	void mouseReleaseEvent(QMouseEvent *event) override
+	{
+		if (!selecting || event->button() != Qt::LeftButton) {
+			QSlider::mouseReleaseEvent(event);
+			return;
+		}
+
+		selectionEnd = valueAtX(event->position().toPoint().x());
+		const int rangeIn = qMin(selectionStart, selectionEnd);
+		const int rangeOut = qMax(selectionStart, selectionEnd);
+		selecting = false;
+		if (selectionMoved && rangeOut > rangeIn) {
+			hasSelection = true;
+			selectionStart = rangeIn;
+			selectionEnd = rangeOut;
+			if (rangeHandler)
+				rangeHandler(rangeIn, rangeOut);
+		} else {
+			hasSelection = false;
+			setValue(selectionEnd);
+			if (clickHandler)
+				clickHandler(selectionEnd);
+		}
+		event->accept();
+		update();
+	}
+
+	void paintEvent(QPaintEvent *event) override
+	{
+		QSlider::paintEvent(event);
+		if (!selecting && !hasSelection)
+			return;
+
+		const int rangeIn = qMin(selectionStart, selectionEnd);
+		const int rangeOut = qMax(selectionStart, selectionEnd);
+		const int left = pixelForValue(rangeIn);
+		const int right = pixelForValue(rangeOut);
+		if (right <= left)
+			return;
+
+		QStyleOptionSlider option;
+		initStyleOption(&option);
+		const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+		QColor highlight = palette().color(QPalette::Highlight);
+		highlight.setAlpha(115);
+		QPainter painter(this);
+		painter.setPen(Qt::NoPen);
+		painter.setBrush(highlight);
+		painter.drawRoundedRect(QRect(left, groove.center().y() - 4, right - left, 8), 3, 3);
+	}
+
+private:
+	int valueAtX(int x) const
+	{
+		QStyleOptionSlider option;
+		initStyleOption(&option);
+		const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+		const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
+		const int sliderMin = groove.x();
+		const int sliderMax = groove.right() - handle.width() + 1;
+		const int pos = qBound(0, x - sliderMin - handle.width() / 2, qMax(0, sliderMax - sliderMin));
+		return QStyle::sliderValueFromPosition(minimum(), maximum(), pos, qMax(1, sliderMax - sliderMin),
+						 option.upsideDown);
+	}
+
+	int pixelForValue(int value) const
+	{
+		QStyleOptionSlider option;
+		initStyleOption(&option);
+		const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+		const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
+		const int span = qMax(1, groove.width() - handle.width());
+		return groove.x() + handle.width() / 2 +
+		       QStyle::sliderPositionFromValue(minimum(), maximum(), value, span, option.upsideDown);
+	}
+
+	RangeHandler rangeHandler;
+	ClickHandler clickHandler;
+	int selectionStart = 0;
+	int selectionEnd = 0;
+	bool selecting = false;
+	bool selectionMoved = false;
+	bool hasSelection = false;
+};
+
 class SrEventDock : public QWidget {
 public:
 	explicit SrEventDock(sr_event_controller *eventController, QWidget *parent = nullptr)
@@ -383,32 +532,44 @@ public:
 		  controller(eventController)
 	{
 		auto *root = new QVBoxLayout(this);
-		root->setContentsMargins(4, 4, 4, 4);
-		root->setSpacing(4);
+		root->setContentsMargins(2, 2, 2, 2);
+		root->setSpacing(2);
+		setStyleSheet(QStringLiteral(
+			"QPushButton { padding: 1px 5px; min-height: 20px; }"
+			"QToolButton { padding: 1px 4px; min-height: 20px; }"
+			"QComboBox { padding: 1px 4px; min-height: 20px; }"
+			"QTableWidget::item { padding-top: 0px; padding-bottom: 0px; }"));
 
 		auto *operatorHint = new QLabel(T("EventDock.OperatorHint"), this);
 		operatorHint->setWordWrap(true);
 		operatorHint->setStyleSheet(
 			QStringLiteral("QLabel { color: palette(text); background: palette(alternate-base); "
-				       "border: 1px solid palette(mid); border-radius: 3px; padding: 5px; }"));
+				       "border: 1px solid palette(mid); border-radius: 3px; padding: 3px; }"));
 		root->addWidget(operatorHint);
 
 		auto *recordBar = new QHBoxLayout();
-		auto *startRecord = new QPushButton(T("EventDock.RecordStart"), this);
-		auto *stopRecord = new QPushButton(T("EventDock.RecordStop"), this);
-		startRecord->setStyleSheet(QStringLiteral("font-weight: bold;"));
-		stopRecord->setStyleSheet(QStringLiteral("font-weight: bold;"));
+		recordBar->setSpacing(3);
+		recordToggle = new QToolButton(this);
+		recordToggle->setText(QStringLiteral("● REC"));
+		recordToggle->setToolButtonStyle(Qt::ToolButtonTextOnly);
+		recordToggle->setMinimumWidth(58);
+		recordToggle->setAutoRaise(false);
+		auto *settingsGear = new QToolButton(this);
+		settingsGear->setText(QString::fromUtf8("\xE2\x9A\x99"));
+		settingsGear->setToolTip(T("Dock.Settings"));
+		settingsGear->setAutoRaise(true);
+		settingsGear->setFixedWidth(28);
 		recordStatus = new QLabel(this);
 		recordStatus->setWordWrap(true);
-		recordBar->addWidget(startRecord);
-		recordBar->addWidget(stopRecord);
+		recordBar->addWidget(recordToggle);
+		recordBar->addWidget(settingsGear);
 		recordBar->addWidget(recordStatus, 1);
 		root->addLayout(recordBar);
 
 		auto *performanceBox = new QGroupBox(T("EventDock.Performance.Title"), this);
 		auto *performanceLayout = new QVBoxLayout(performanceBox);
-		performanceLayout->setContentsMargins(5, 5, 5, 5);
-		performanceLayout->setSpacing(3);
+		performanceLayout->setContentsMargins(3, 3, 3, 3);
+		performanceLayout->setSpacing(1);
 		performanceSummary = new QLabel(performanceBox);
 		performanceSummary->setWordWrap(true);
 		performanceSummary->setStyleSheet(QStringLiteral("color: gray;"));
@@ -430,23 +591,26 @@ public:
 		for (int column = 1; column < performanceTable->columnCount(); column++)
 			performanceTable->horizontalHeader()->setSectionResizeMode(column,
 										   QHeaderView::ResizeToContents);
-		performanceTable->setMinimumHeight(88);
-		performanceTable->setMaximumHeight(160);
+		performanceTable->verticalHeader()->setDefaultSectionSize(20);
+		performanceTable->setMinimumHeight(72);
+		performanceTable->setMaximumHeight(120);
 		performanceLayout->addWidget(performanceTable);
 		root->addWidget(performanceBox);
 
 		auto *programBar = new QHBoxLayout();
+		programBar->setSpacing(3);
 		programStatus = new QLabel(this);
 		cueAStatus = new QLabel(this);
 		cueBStatus = new QLabel(this);
 		for (QLabel *label : {programStatus, cueAStatus, cueBStatus}) {
 			label->setAlignment(Qt::AlignCenter);
-			label->setMinimumHeight(28);
+			label->setMinimumHeight(22);
 			programBar->addWidget(label, 1);
 		}
 		root->addLayout(programBar);
 
 		auto *markBar = new QHBoxLayout();
+		markBar->setSpacing(3);
 		markBar->addWidget(new QLabel(T("EventDock.List"), this));
 		listCombo = new QComboBox(this);
 		for (unsigned i = 1; i <= SR_EVENT_LIST_COUNT; i++)
@@ -481,6 +645,7 @@ public:
 		table->setSelectionMode(QAbstractItemView::SingleSelection);
 		table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
 		table->verticalHeader()->setVisible(false);
+		table->verticalHeader()->setDefaultSectionSize(22);
 		table->horizontalHeader()->setStretchLastSection(true);
 		table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 		table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
@@ -490,6 +655,7 @@ public:
 		root->addWidget(table, 1);
 
 		auto *actionBar = new QHBoxLayout();
+		actionBar->setSpacing(3);
 		auto *up = new QPushButton(QStringLiteral("↑"), this);
 		auto *down = new QPushButton(QStringLiteral("↓"), this);
 		auto *played = new QPushButton(T("EventDock.Played"), this);
@@ -518,6 +684,7 @@ public:
 		root->addLayout(actionBar);
 
 		auto *exportBar = new QHBoxLayout();
+		exportBar->setSpacing(3);
 		exportBar->addWidget(new QLabel(T("EventDock.Export"), this));
 		exportModeCombo = new QComboBox(this);
 		exportModeCombo->addItem(T("EventDock.ExportPreferred"), 0);
@@ -536,6 +703,7 @@ public:
 		root->addLayout(exportBar);
 
 		auto *cueBar = new QHBoxLayout();
+		cueBar->setSpacing(3);
 		cueBar->addWidget(new QLabel(T("EventDock.Camera"), this));
 		cameraCombo = new QComboBox(this);
 		cameraCombo->setMinimumContentsLength(18);
@@ -548,7 +716,7 @@ public:
 		cueBar->addWidget(clearPreferred);
 		cueBar->addWidget(cueA);
 		cueBar->addWidget(cueB);
-		cueBar->addSpacing(12);
+		cueBar->addSpacing(6);
 		cueBar->addWidget(new QLabel(T("EventDock.TransportBus"), this));
 		busCombo = new QComboBox(this);
 		busCombo->addItem(QStringLiteral("A"), SR_REPLAY_BUS_A);
@@ -587,6 +755,7 @@ public:
 		root->addLayout(cueBar);
 
 		auto *angleHeader = new QHBoxLayout();
+		angleHeader->setSpacing(3);
 		angleHeader->addWidget(new QLabel(T("EventDock.Angles"), this));
 		angleHeader->addStretch(1);
 		auto *angleLegend = new QLabel(T("EventDock.AnglesLegend"), this);
@@ -594,13 +763,14 @@ public:
 		angleHeader->addWidget(angleLegend);
 		root->addLayout(angleHeader);
 		angleGrid = new QGridLayout();
-		angleGrid->setHorizontalSpacing(4);
-		angleGrid->setVerticalSpacing(3);
+		angleGrid->setHorizontalSpacing(2);
+		angleGrid->setVerticalSpacing(1);
 		root->addLayout(angleGrid);
 
 		auto *timelineBar = new QHBoxLayout();
+		timelineBar->setSpacing(3);
 		timelineBar->addWidget(new QLabel(T("EventDock.Timeline"), this));
-		timelineSlider = new QSlider(Qt::Horizontal, this);
+		timelineSlider = new SrRangeSlider(this);
 		timelineSlider->setRange(0, 10000);
 		timelineSlider->setSingleStep(1);
 		timelineSlider->setPageStep(100);
@@ -608,11 +778,12 @@ public:
 		timelineSlider->setToolTip(T("EventDock.Timeline.Tooltip"));
 		timelineBar->addWidget(timelineSlider, 1);
 		timelineTime = new QLabel(QStringLiteral("--:--.--- / --:--.---"), this);
-		timelineTime->setMinimumWidth(150);
+		timelineTime->setMinimumWidth(130);
 		timelineBar->addWidget(timelineTime);
 		root->addLayout(timelineBar);
 
 		auto *jogShuttleBar = new QHBoxLayout();
+		jogShuttleBar->setSpacing(3);
 		jogShuttleBar->addWidget(new QLabel(T("EventDock.Jog"), this));
 		jogSlider = new QSlider(Qt::Horizontal, this);
 		jogSlider->setRange(-24, 24);
@@ -621,7 +792,7 @@ public:
 		jogSlider->setPageStep(1);
 		jogSlider->setToolTip(T("EventDock.Jog.Tooltip"));
 		jogShuttleBar->addWidget(jogSlider, 1);
-		jogShuttleBar->addSpacing(8);
+		jogShuttleBar->addSpacing(4);
 		jogShuttleBar->addWidget(new QLabel(T("EventDock.Shuttle"), this));
 		shuttleSlider = new QSlider(Qt::Horizontal, this);
 		shuttleSlider->setRange(-5, 5);
@@ -631,11 +802,12 @@ public:
 		shuttleSlider->setToolTip(T("EventDock.Shuttle.Tooltip"));
 		jogShuttleBar->addWidget(shuttleSlider, 1);
 		shuttleValue = new QLabel(QStringLiteral("0"), this);
-		shuttleValue->setMinimumWidth(48);
+		shuttleValue->setMinimumWidth(42);
 		jogShuttleBar->addWidget(shuttleValue);
 		root->addLayout(jogShuttleBar);
 
 		auto *takeBar = new QHBoxLayout();
+		takeBar->setSpacing(3);
 		takeBar->addStretch(1);
 		auto *takeA = new QPushButton(T("EventDock.TakeA"), this);
 		auto *takeB = new QPushButton(T("EventDock.TakeB"), this);
@@ -651,7 +823,7 @@ public:
 		takeBar->addWidget(playlistB);
 		takeBar->addWidget(playlistNext);
 		takeBar->addWidget(playlistStop);
-		takeBar->addSpacing(10);
+		takeBar->addSpacing(5);
 		takeBar->addWidget(playSelected);
 		takeBar->addWidget(takeA);
 		takeBar->addWidget(takeB);
@@ -679,8 +851,8 @@ public:
 		connect(mark5, &QPushButton::clicked, this, [this]() { quickMark(5); });
 		connect(mark10, &QPushButton::clicked, this, [this]() { quickMark(10); });
 		connect(mark20, &QPushButton::clicked, this, [this]() { quickMark(20); });
-		connect(startRecord, &QPushButton::clicked, this, [this]() { setAllRecording(true); });
-		connect(stopRecord, &QPushButton::clicked, this, [this]() { setAllRecording(false); });
+		connect(recordToggle, &QToolButton::clicked, this, [this]() { toggleAllRecording(); });
+		connect(settingsGear, &QToolButton::clicked, this, []() { sr_dock_open_settings(); });
 		connect(up, &QPushButton::clicked, this, [this]() { moveRow(-1); });
 		connect(down, &QPushButton::clicked, this, [this]() { moveRow(1); });
 		connect(played, &QPushButton::clicked, this, [this]() { togglePlayed(); });
@@ -727,6 +899,11 @@ public:
 			timelineDragging = false;
 			syncTimeline();
 		});
+		timelineSlider->setClickHandler([this](int value) {
+			seekTimeline(value);
+			syncTimeline();
+		});
+		timelineSlider->setRangeHandler([this](int rangeIn, int rangeOut) { createRangeEvent(rangeIn, rangeOut); });
 		connect(jogSlider, &QSlider::sliderPressed, this, [this]() { jogLastValue = jogSlider->value(); });
 		connect(jogSlider, &QSlider::sliderMoved, this, [this](int value) { jogMoved(value); });
 		connect(jogSlider, &QSlider::sliderReleased, this, [this]() {
@@ -829,6 +1006,32 @@ private:
 
 	void setCreatedStatus(uint64_t eventId) { status->setText(T("EventDock.Created").arg(eventId)); }
 
+	void updateRecordToggle(const sr_capture_recording_summary *summary)
+	{
+		if (!recordToggle)
+			return;
+		const bool requested = summary && summary->requested_count > 0;
+		const bool active = summary && summary->active_count > 0;
+		recordToggle->setToolTip(T(requested ? "EventDock.RecordStop" : "EventDock.RecordStart"));
+		if (active) {
+			recordToggle->setStyleSheet(QStringLiteral(
+				"QToolButton { color: #ff4040; font-weight: bold; border: 1px solid #7f3030; border-radius: 3px; }"));
+		} else if (requested) {
+			recordToggle->setStyleSheet(QStringLiteral(
+				"QToolButton { color: #d8a000; font-weight: bold; border: 1px solid #806b2a; border-radius: 3px; }"));
+		} else {
+			recordToggle->setStyleSheet(QStringLiteral(
+				"QToolButton { color: #8a8a8a; font-weight: bold; border: 1px solid #5a5a5a; border-radius: 3px; }"));
+		}
+	}
+
+	void toggleAllRecording()
+	{
+		sr_capture_recording_summary summary = {};
+		const bool requested = sr_capture_get_recording_summary(&summary) && summary.requested_count > 0;
+		setAllRecording(!requested);
+	}
+
 	void setAllRecording(bool enabled)
 	{
 		size_t cameras = 0;
@@ -847,10 +1050,13 @@ private:
 			return;
 		sr_capture_recording_summary summary = {};
 		if (!sr_capture_get_recording_summary(&summary) || !summary.camera_count) {
+			updateRecordToggle(nullptr);
 			recordStatus->setText(T("EventDock.RecordNoCameras"));
 			recordStatus->setStyleSheet(QStringLiteral("color: #d8a000;"));
 			return;
 		}
+
+		updateRecordToggle(&summary);
 
 		if (summary.reserve_blocked_count) {
 			recordStatus->setText(T("EventDock.RecordReserve")
@@ -1293,16 +1499,16 @@ private:
 						       .arg(programBus == SR_REPLAY_BUS_A ? QStringLiteral("A")
 											  : QStringLiteral("B")));
 			programStatus->setStyleSheet(QStringLiteral(
-				"font-weight: bold; color: white; background: #b52b2b; border-radius: 3px; padding: 4px;"));
+				"font-weight: bold; color: white; background: #b52b2b; border-radius: 3px; padding: 2px;"));
 		} else {
 			programStatus->setText(T("EventDock.ProgramLive"));
 			programStatus->setStyleSheet(QStringLiteral(
-				"font-weight: bold; color: white; background: #247a3b; border-radius: 3px; padding: 4px;"));
+				"font-weight: bold; color: white; background: #247a3b; border-radius: 3px; padding: 2px;"));
 		}
 		cueAStatus->setText(cueStatus(SR_REPLAY_BUS_A, QStringLiteral("A")));
 		cueBStatus->setText(cueStatus(SR_REPLAY_BUS_B, QStringLiteral("B")));
 		cueAStatus->setStyleSheet(QStringLiteral(
-			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #3f78c5; border-radius: 3px; padding: 4px;"));
+			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #3f78c5; border-radius: 3px; padding: 2px;"));
 		cueBStatus->setStyleSheet(QStringLiteral(
 			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #d49a2a; border-radius: 3px; padding: 4px;"));
 	}
@@ -1359,6 +1565,8 @@ private:
 		sr_replay_channel_state state = {};
 		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued ||
 		    state.out_ns <= state.in_ns) {
+			timelineEventId = 0;
+			timelineSlider->clearSelection();
 			timelineSlider->setEnabled(false);
 			if (!timelineDragging)
 				timelineSlider->setValue(0);
@@ -1366,6 +1574,10 @@ private:
 			return;
 		}
 
+		if (timelineEventId != state.event_id) {
+			timelineEventId = state.event_id;
+			timelineSlider->clearSelection();
+		}
 		timelineSlider->setEnabled(true);
 		const uint64_t duration = state.out_ns - state.in_ns;
 		const uint64_t position = state.playhead_ns <= state.in_ns    ? 0
@@ -1395,6 +1607,39 @@ private:
 		sr_replay_channel_seek(transportBus(), target);
 		timelineTime->setText(replayClockText(offset > duration ? duration : offset) + QStringLiteral(" / ") +
 				      replayClockText(duration));
+	}
+
+	void createRangeEvent(int rangeIn, int rangeOut)
+	{
+		if (!controller || rangeOut <= rangeIn)
+			return;
+
+		sr_replay_channel_state state = {};
+		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued || state.out_ns <= state.in_ns) {
+			setStatus("EventDock.NoCue");
+			return;
+		}
+
+		rangeIn = qBound(0, rangeIn, 10000);
+		rangeOut = qBound(0, rangeOut, 10000);
+		const uint64_t duration = state.out_ns - state.in_ns;
+		const uint64_t inOffset = (uint64_t)((long double)duration * (long double)rangeIn / 10000.0L);
+		const uint64_t outOffset = (uint64_t)((long double)duration * (long double)rangeOut / 10000.0L);
+		const uint64_t inNs = state.in_ns + inOffset;
+		const uint64_t outNs = rangeOut >= 10000 ? state.out_ns : state.in_ns + outOffset;
+		if (outNs <= inNs || !sr_event_controller_mark_in(controller, inNs)) {
+			setStatus("EventDock.Failed");
+			return;
+		}
+
+		uint64_t eventId = 0;
+		if (!sr_event_controller_mark_out(controller, outNs, &eventId)) {
+			sr_event_controller_cancel_mark_in(controller);
+			setStatus("EventDock.Failed");
+			return;
+		}
+		setCreatedStatus(eventId);
+		refresh(eventId);
 	}
 
 	void jogMoved(int value)
@@ -2083,7 +2328,7 @@ private:
 	QComboBox *exportModeCombo = nullptr;
 	QGridLayout *angleGrid = nullptr;
 	QVector<QPushButton *> angleButtons;
-	QSlider *timelineSlider = nullptr;
+	SrRangeSlider *timelineSlider = nullptr;
 	QSlider *jogSlider = nullptr;
 	QSlider *shuttleSlider = nullptr;
 	QLabel *timelineTime = nullptr;
@@ -2094,6 +2339,7 @@ private:
 	QProgressBar *exportProgressBar = nullptr;
 	QTableWidget *table = nullptr;
 	QTableWidget *performanceTable = nullptr;
+	QToolButton *recordToggle = nullptr;
 	QLabel *recordStatus = nullptr;
 	QLabel *performanceSummary = nullptr;
 	QLabel *programStatus = nullptr;
@@ -2110,6 +2356,7 @@ private:
 	unsigned cameraRefreshTicks = 0;
 	std::unique_ptr<ExportJob> exportJob;
 	std::unique_ptr<AnglePreviewJob> anglePreviewJob;
+	uint64_t timelineEventId = 0;
 	uint64_t previewTargetEventId = 0;
 	uint64_t previewLoadedEventId = 0;
 };
