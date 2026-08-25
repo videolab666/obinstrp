@@ -41,6 +41,7 @@ enum sr_gop_interval {
 };
 
 struct sr_encoder;
+struct sr_gpu_encoder;
 struct sr_decoder;
 
 /* Creates a replay-optimized H.264 encoder. Tries hardware encoders first
@@ -64,6 +65,25 @@ const char *sr_encoder_name(const struct sr_encoder *enc);
 /* Codec header (SPS/PPS) produced by the encoder, needed to decode the
  * stored packets and to mux them to a file. Valid while the encoder lives. */
 void sr_encoder_get_extradata(const struct sr_encoder *enc, const uint8_t **data, int *size);
+
+/* Windows/D3D11 capture-to-encoder path. The target source is rendered by OBS
+ * into a GPU texture, converted on-GPU to an NV12 D3D11 hwframe, then submitted
+ * directly to h264_nvenc or h264_amf. SR_ENC_AUTO tries those two backends in
+ * that order. QSV/x264 and unsupported renderers return NULL so callers can
+ * continue through the portable CPU encoder above. */
+struct sr_gpu_encoder *sr_gpu_encoder_create(uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den,
+					     enum sr_encoder_backend backend, int qp, uint32_t gop_interval_ms);
+void sr_gpu_encoder_destroy(struct sr_gpu_encoder *enc);
+
+/* Must be called from an OBS graphics/render callback. On success, returns true;
+ * *packet may still be NULL when the hardware encoder is buffering. A false
+ * return marks a capability/runtime failure and the caller should switch back
+ * to the CPU path at a clean writer boundary. */
+bool sr_gpu_encoder_render_encode(struct sr_gpu_encoder *enc, obs_source_t *target, AVPacket **packet);
+
+enum AVCodecID sr_gpu_encoder_codec_id(const struct sr_gpu_encoder *enc);
+const char *sr_gpu_encoder_name(const struct sr_gpu_encoder *enc);
+void sr_gpu_encoder_get_extradata(const struct sr_gpu_encoder *enc, const uint8_t **data, int *size);
 
 /* Portable software decoder. This constructor is retained for legacy RAM
  * replay and tools that explicitly require CPU-addressable AVFrames. */
