@@ -170,7 +170,7 @@ static void set_parent_showing_hold(struct sr_capture *c, bool hold)
 {
 	if (!c || hold == c->parent_showing_held)
 		return;
-	obs_source_t *parent = obs_filter_get_parent(c->self);
+	obs_source_t *parent = sr_capture_parent_ref(c);
 	if (!parent)
 		return;
 	if (hold)
@@ -178,6 +178,7 @@ static void set_parent_showing_hold(struct sr_capture *c, bool hold)
 	else
 		obs_source_dec_showing(parent);
 	c->parent_showing_held = hold;
+	obs_source_release(parent);
 }
 
 static void publish_status(struct sr_capture *c, uint64_t now, bool force)
