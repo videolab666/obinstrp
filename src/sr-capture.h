@@ -47,6 +47,12 @@ extern "C" {
  * take replay snapshots. */
 struct sr_buffer *sr_capture_get_buffer(void *capture_data);
 
+/* The GPU capture render callback runs outside libobs filter callbacks. Parent
+ * source lifetime therefore stays internal to capture-filter.c: it caches a
+ * weak parent reference from valid filter callbacks and resolves a short-lived
+ * strong reference only while rendering/encoding. Callers of this header must
+ * not retain filter parent/target pointers. */
+
 /* Aggregate health of all capture filters. This is intentionally a snapshot:
  * the dock uses it for the vMix-style global recording controls without
  * touching writer objects owned by the video callbacks. */
