@@ -56,12 +56,5 @@ runs:
 
         print ::group::Run clang-format-19
         local -a changes=(${(s:,:)CHANGED_FILES//[\[\]\'\"]/})
-        for diagnostic_file in src/sr-gpu-encoder.cpp src/capture-filter.c; do
-          if [[ -f ${diagnostic_file} ]]; then
-            local formatted_file="/tmp/${diagnostic_file:t}.formatted"
-            clang-format-19 -style=file -fallback-style=none ${diagnostic_file} > ${formatted_file}
-            diff -u ${diagnostic_file} ${formatted_file} || true
-          fi
-        done
         ./build-aux/run-clang-format --fail-${{ inputs.failCondition }} --check ${changes}
         print ::endgroup::
