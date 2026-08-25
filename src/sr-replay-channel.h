@@ -49,6 +49,11 @@ struct sr_replay_channel_state {
 	bool backward;
 	bool loop;
 	bool partial_coverage;
+	bool decoder_open;
+	bool hardware_decode;
+	uint64_t decode_requests;
+	uint64_t decode_cache_hits;
+	uint64_t decoded_frames;
 	char camera_name[256];
 };
 

@@ -154,6 +154,27 @@ Correctness takes priority over keeping a hardware path active after a capabilit
 failure; an optimization failure must not turn an on-air replay black or mix
 incompatible codec headers in one storage segment.
 
+## Operator Hardware / Performance status
+
+The Replay operator dock now exposes the runtime path instead of only showing
+the configured encoder preference. A compact per-camera table is refreshed from
+callback-published snapshots and therefore does not take the encoder/render
+mutex from the Qt frontend thread.
+
+For each capture camera the panel reports:
+
+- actual active path (`D3D11 -> NVENC/AMF`, `CPU -> NVENC/AMF/QSV/x264`, waiting or error);
+- video size/FPS, GOP and QP;
+- disk writer queue depth/high-watermark, dropped packets and recording state;
+- RAM replay-buffer footprint, finalized segment count and encoder submission
+  timing in the row tooltip;
+- explicit D3D11 creation/runtime fallback reason when a GPU path failed.
+
+The summary also reports replay bus A/B decoder state (`D3D11VA` or software),
+current decoded size, disk-player LRU cache hit ratio and decoded-frame count.
+The encode timing is intentionally labelled as **submission/callback time**: it
+does not pretend to measure asynchronous GPU completion latency.
+
 ## CI/build validation
 
 The GPU encoder implementation is guarded so non-Windows targets compile only

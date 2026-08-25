@@ -647,6 +647,15 @@ bool sr_replay_channel_get_state(enum sr_replay_bus bus, struct sr_replay_channe
 	state->backward = channel->backward;
 	state->loop = channel->loop;
 	state->partial_coverage = channel->partial_coverage;
+	if (channel->player) {
+		struct sr_disk_player_performance performance;
+		sr_disk_player_get_performance(channel->player, &performance);
+		state->decoder_open = performance.decoder_open;
+		state->hardware_decode = performance.hardware_decode;
+		state->decode_requests = performance.requests;
+		state->decode_cache_hits = performance.cache_hits;
+		state->decoded_frames = performance.decoded_frames;
+	}
 	if (channel->camera_name)
 		strncpy(state->camera_name, channel->camera_name, sizeof(state->camera_name) - 1);
 	pthread_mutex_unlock(&channel->mutex);

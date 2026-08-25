@@ -10,6 +10,8 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <obs-module.h>
 #include <plugin-support.h>
+#include <util/bmem.h>
+#include <util/platform.h>
 
 #include "sr-buffer.h"
 #include "sr-camera-identity.h"
@@ -58,6 +60,11 @@ struct sr_capture {
 	bool gpu_reset;
 	bool gpu_failed;
 	bool gpu_fallback_logged;
+	enum sr_capture_gpu_fallback_reason gpu_fallback_reason;
+
+	uint64_t encode_calls;
+	uint64_t encode_time_ns_total;
+	uint64_t encode_time_ns_last;
 
 	/* The GPU path runs on the OBS video clock. Keep the most recent mapping
 	 * back into the asynchronous source/device clock so the legacy RAM ring
@@ -69,6 +76,7 @@ struct sr_capture {
 	uint64_t last_status_publish;
 	pthread_mutex_t status_mutex;
 	struct sr_capture_recording_summary status;
+	struct sr_capture_performance_entry performance_status;
 };
 
 static void sr_capture_gpu_render(void *data, uint32_t cx, uint32_t cy);
@@ -81,6 +89,15 @@ static bool gpu_backend_candidate(enum sr_encoder_backend backend)
 	UNUSED_PARAMETER(backend);
 	return false;
 #endif
+}
+
+static void reset_encode_metrics(struct sr_capture *c)
+{
+	if (!c)
+		return;
+	c->encode_calls = 0;
+	c->encode_time_ns_total = 0;
+	c->encode_time_ns_last = 0;
 }
 
 static void set_parent_showing_hold(struct sr_capture *c, bool hold)
@@ -108,6 +125,37 @@ static void publish_status(struct sr_capture *c, uint64_t now, bool force)
 		.active_count = c->writer ? 1 : 0,
 		.failed_count = (c->writer_failed || c->encoder_failed) ? 1 : 0,
 	};
+	struct sr_capture_performance_entry performance = {
+		.path = c->encoder_failed ? SR_CAPTURE_PERF_ERROR
+			: c->gpu_encoder  ? SR_CAPTURE_PERF_GPU_D3D11
+			: c->encoder      ? SR_CAPTURE_PERF_CPU
+					  : SR_CAPTURE_PERF_WAITING,
+		.gpu_fallback_reason = c->gpu_fallback_reason,
+		.width = c->enc_width,
+		.height = c->enc_height,
+		.gop_ms = c->gop_ms,
+		.qp = c->qp,
+		.disk_requested = c->disk_recording,
+		.writer_active = c->writer != NULL,
+		.writer_failed = c->writer_failed,
+		.encoder_failed = c->encoder_failed,
+		.ram_bytes = sr_buffer_video_bytes(&c->buffer),
+		.encode_calls = c->encode_calls,
+		.encode_time_ns_total = c->encode_time_ns_total,
+		.encode_time_ns_last = c->encode_time_ns_last,
+	};
+
+	struct obs_video_info ovi;
+	if (obs_get_video_info(&ovi)) {
+		performance.fps_num = ovi.fps_num;
+		performance.fps_den = ovi.fps_den;
+	}
+
+	const char *encoder_name = c->gpu_encoder ? sr_gpu_encoder_name(c->gpu_encoder)
+					  : c->encoder ? sr_encoder_name(c->encoder) : NULL;
+	if (encoder_name)
+		strncpy(performance.encoder_name, encoder_name, sizeof(performance.encoder_name) - 1);
+
 	if (c->writer) {
 		struct sr_segment_writer_stats stats;
 		sr_segment_writer_get_stats(c->writer, &stats);
@@ -116,10 +164,20 @@ static void publish_status(struct sr_capture *c, uint64_t now, bool force)
 		status.bytes_written = stats.bytes_written;
 		if (stats.write_failed)
 			status.failed_count = 1;
+
+		performance.reserve_blocked = stats.reserve_blocked;
+		performance.writer_failed = performance.writer_failed || stats.write_failed;
+		performance.packets_written = stats.packets_written;
+		performance.bytes_written = stats.bytes_written;
+		performance.packets_dropped = stats.packets_dropped;
+		performance.segments_finalized = stats.segments_finalized;
+		performance.queue_depth = stats.queue_depth;
+		performance.queue_high_watermark = stats.queue_high_watermark;
 	}
 
 	pthread_mutex_lock(&c->status_mutex);
 	c->status = status;
+	c->performance_status = performance;
 	pthread_mutex_unlock(&c->status_mutex);
 	c->last_status_publish = now;
 }
@@ -131,6 +189,7 @@ static void publish_recording_intent(struct sr_capture *c)
 	pthread_mutex_lock(&c->status_mutex);
 	c->status.camera_count = 1;
 	c->status.requested_count = c->disk_recording ? 1 : 0;
+	c->performance_status.disk_requested = c->disk_recording;
 	if (!c->disk_recording) {
 		c->status.failed_count = 0;
 		c->status.reserve_blocked_count = 0;
@@ -202,8 +261,10 @@ static void sr_capture_update(void *data, obs_data_t *settings)
 		c->gpu_reset = true;
 		c->gpu_failed = false;
 		c->gpu_fallback_logged = false;
+		c->gpu_fallback_reason = SR_CAPTURE_GPU_FALLBACK_NONE;
 		c->encoder_failed = false;
 		c->writer_failed = false;
+		reset_encode_metrics(c);
 	}
 
 	if (disk_recording != c->disk_recording) {
@@ -437,6 +498,8 @@ static void sr_capture_gpu_render(void *data, uint32_t cx, uint32_t cy)
 		c->reset_encoder = false;
 		c->encoder_failed = false;
 		c->writer_failed = false;
+		c->gpu_fallback_reason = SR_CAPTURE_GPU_FALLBACK_NONE;
+		reset_encode_metrics(c);
 		sr_buffer_clear(&c->buffer);
 	}
 
@@ -456,12 +519,14 @@ static void sr_capture_gpu_render(void *data, uint32_t cx, uint32_t cy)
 						       c->backend, c->qp, c->gop_ms);
 		if (!c->gpu_encoder) {
 			c->gpu_failed = true;
+			c->gpu_fallback_reason = SR_CAPTURE_GPU_FALLBACK_CREATE_FAILED;
 			if (!c->gpu_fallback_logged) {
 				obs_log(LOG_INFO,
 					"'%s': native D3D11 capture encoder unavailable; continuing with CPU-frame encoder path",
 					obs_source_get_name(c->self));
 				c->gpu_fallback_logged = true;
 			}
+			publish_status(c, obs_get_video_frame_time(), true);
 			pthread_mutex_unlock(&c->encode_mutex);
 			return;
 		}
@@ -472,7 +537,13 @@ static void sr_capture_gpu_render(void *data, uint32_t cx, uint32_t cy)
 
 	obs_source_t *target = obs_filter_get_target(c->self);
 	AVPacket *pkt = NULL;
-	if (!sr_gpu_encoder_render_encode(c->gpu_encoder, target, &pkt)) {
+	const uint64_t encode_start = os_gettime_ns();
+	const bool encode_ok = sr_gpu_encoder_render_encode(c->gpu_encoder, target, &pkt);
+	const uint64_t encode_elapsed = os_gettime_ns() - encode_start;
+	c->encode_calls++;
+	c->encode_time_ns_total += encode_elapsed;
+	c->encode_time_ns_last = encode_elapsed;
+	if (!encode_ok) {
 		obs_log(LOG_WARNING,
 			"'%s': GPU capture encoder failed; switching to CPU-frame fallback at a new segment",
 			obs_source_get_name(c->self));
@@ -480,8 +551,11 @@ static void sr_capture_gpu_render(void *data, uint32_t cx, uint32_t cy)
 		sr_gpu_encoder_destroy(c->gpu_encoder);
 		c->gpu_encoder = NULL;
 		c->gpu_failed = true;
+		c->gpu_fallback_reason = SR_CAPTURE_GPU_FALLBACK_RUNTIME_FAILED;
 		c->writer_failed = false;
+		reset_encode_metrics(c);
 		sr_buffer_clear(&c->buffer);
+		publish_status(c, obs_get_video_frame_time(), true);
 		pthread_mutex_unlock(&c->encode_mutex);
 		return;
 	}
@@ -536,7 +610,9 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 		c->encoder_failed = false;
 		c->gpu_failed = false;
 		c->gpu_fallback_logged = false;
+		c->gpu_fallback_reason = SR_CAPTURE_GPU_FALLBACK_NONE;
 		c->writer_failed = false;
+		reset_encode_metrics(c);
 		sr_buffer_clear(&c->buffer);
 	}
 	c->enc_width = frame->width;
@@ -571,7 +647,12 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 		update_buffer_video_format(c);
 	}
 
+	const uint64_t encode_start = os_gettime_ns();
 	AVPacket *pkt = sr_encoder_encode(c->encoder, frame);
+	const uint64_t encode_elapsed = os_gettime_ns() - encode_start;
+	c->encode_calls++;
+	c->encode_time_ns_total += encode_elapsed;
+	c->encode_time_ns_last = encode_elapsed;
 	if (pkt) {
 		/* Async input frames retain the source/device timestamp. OBS maps
 		 * those frames onto its own video clock when selecting them for the
@@ -628,6 +709,7 @@ struct capture_control_context {
 	bool update_setting;
 	bool enabled;
 	struct sr_capture_recording_summary *summary;
+	struct sr_capture_performance_snapshot *performance;
 	size_t camera_count;
 };
 
@@ -650,23 +732,42 @@ static void capture_control_filter(obs_source_t *parent, obs_source_t *child, vo
 		obs_data_release(settings);
 	}
 
-	if (!ctx->summary)
+	if (!ctx->summary && !ctx->performance)
 		return;
 	struct sr_capture *capture = obs_obj_get_data(child);
 	if (!capture)
 		return;
+
 	struct sr_capture_recording_summary status;
+	struct sr_capture_performance_entry performance;
 	pthread_mutex_lock(&capture->status_mutex);
 	status = capture->status;
+	performance = capture->performance_status;
 	pthread_mutex_unlock(&capture->status_mutex);
 
-	ctx->summary->camera_count += status.camera_count;
-	ctx->summary->requested_count += status.requested_count;
-	ctx->summary->active_count += status.active_count;
-	ctx->summary->failed_count += status.failed_count;
-	ctx->summary->reserve_blocked_count += status.reserve_blocked_count;
-	ctx->summary->packets_written += status.packets_written;
-	ctx->summary->bytes_written += status.bytes_written;
+	if (ctx->summary) {
+		ctx->summary->camera_count += status.camera_count;
+		ctx->summary->requested_count += status.requested_count;
+		ctx->summary->active_count += status.active_count;
+		ctx->summary->failed_count += status.failed_count;
+		ctx->summary->reserve_blocked_count += status.reserve_blocked_count;
+		ctx->summary->packets_written += status.packets_written;
+		ctx->summary->bytes_written += status.bytes_written;
+	}
+
+	if (ctx->performance) {
+		const char *camera_name = capture_camera_name(capture);
+		if (camera_name)
+			strncpy(performance.camera_name, camera_name, sizeof(performance.camera_name) - 1);
+		const size_t new_count = ctx->performance->count + 1;
+		struct sr_capture_performance_entry *entries =
+			brealloc(ctx->performance->entries, new_count * sizeof(*entries));
+		if (entries) {
+			ctx->performance->entries = entries;
+			ctx->performance->entries[ctx->performance->count] = performance;
+			ctx->performance->count = new_count;
+		}
+	}
 }
 
 static bool capture_control_source(void *param, obs_source_t *source)
@@ -692,6 +793,24 @@ bool sr_capture_get_recording_summary(struct sr_capture_recording_summary *summa
 	struct capture_control_context ctx = {.summary = summary};
 	obs_enum_sources(capture_control_source, &ctx);
 	return true;
+}
+
+bool sr_capture_get_performance_snapshot(struct sr_capture_performance_snapshot *snapshot)
+{
+	if (!snapshot)
+		return false;
+	memset(snapshot, 0, sizeof(*snapshot));
+	struct capture_control_context ctx = {.performance = snapshot};
+	obs_enum_sources(capture_control_source, &ctx);
+	return true;
+}
+
+void sr_capture_free_performance_snapshot(struct sr_capture_performance_snapshot *snapshot)
+{
+	if (!snapshot)
+		return;
+	bfree(snapshot->entries);
+	memset(snapshot, 0, sizeof(*snapshot));
 }
 
 static obs_properties_t *sr_capture_properties(void *unused)

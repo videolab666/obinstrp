@@ -41,6 +41,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
+#include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -143,6 +144,108 @@ QString channelSummary(enum sr_replay_bus bus, const QString &label)
 		.arg(duration, 0, 'f', 2)
 		.arg(mode)
 		.arg(flags);
+}
+
+QString encoderShortName(const char *name)
+{
+	const QString encoder = QString::fromUtf8(name ? name : "");
+	if (encoder.contains(QStringLiteral("nvenc"), Qt::CaseInsensitive))
+		return QStringLiteral("NVENC");
+	if (encoder.contains(QStringLiteral("amf"), Qt::CaseInsensitive))
+		return QStringLiteral("AMF");
+	if (encoder.contains(QStringLiteral("qsv"), Qt::CaseInsensitive))
+		return QStringLiteral("QSV");
+	if (encoder.contains(QStringLiteral("x264"), Qt::CaseInsensitive))
+		return QStringLiteral("x264");
+	return encoder.isEmpty() ? QStringLiteral("—") : encoder;
+}
+
+QString capturePerformancePath(const sr_capture_performance_entry &entry)
+{
+	const QString encoder = encoderShortName(entry.encoder_name);
+	switch (entry.path) {
+	case SR_CAPTURE_PERF_GPU_D3D11:
+		return QStringLiteral("D3D11 → %1").arg(encoder);
+	case SR_CAPTURE_PERF_CPU:
+		return QStringLiteral("CPU → %1").arg(encoder);
+	case SR_CAPTURE_PERF_ERROR:
+		return T("EventDock.Performance.Error");
+	case SR_CAPTURE_PERF_WAITING:
+	default:
+		return T("EventDock.Performance.Waiting");
+	}
+}
+
+QString captureFallbackText(enum sr_capture_gpu_fallback_reason reason)
+{
+	switch (reason) {
+	case SR_CAPTURE_GPU_FALLBACK_CREATE_FAILED:
+		return T("EventDock.Performance.FallbackCreate");
+	case SR_CAPTURE_GPU_FALLBACK_RUNTIME_FAILED:
+		return T("EventDock.Performance.FallbackRuntime");
+	case SR_CAPTURE_GPU_FALLBACK_NONE:
+	default:
+		return QString();
+	}
+}
+
+QString captureVideoMode(const sr_capture_performance_entry &entry)
+{
+	if (!entry.width || !entry.height)
+		return QStringLiteral("—");
+	QString fps = QStringLiteral("—");
+	if (entry.fps_num && entry.fps_den) {
+		if (entry.fps_num % entry.fps_den == 0)
+			fps = QString::number(entry.fps_num / entry.fps_den);
+		else
+			fps = QString::number((double)entry.fps_num / (double)entry.fps_den, 'f', 2);
+	}
+	return QStringLiteral("%1×%2 @ %3").arg(entry.width).arg(entry.height).arg(fps);
+}
+
+QString captureGopMode(const sr_capture_performance_entry &entry)
+{
+	const QString gop = entry.gop_ms ? QStringLiteral("%1 ms").arg(entry.gop_ms) : QStringLiteral("All-I");
+	return QStringLiteral("%1 / QP %2").arg(gop).arg(entry.qp);
+}
+
+QString captureDiskState(const sr_capture_performance_entry &entry)
+{
+	if (!entry.disk_requested)
+		return T("EventDock.Performance.Off");
+	if (entry.reserve_blocked)
+		return T("EventDock.Performance.Reserve");
+	if (entry.writer_failed)
+		return T("EventDock.Performance.WriteError");
+	if (!entry.writer_active)
+		return T("EventDock.Performance.Starting");
+	return T("EventDock.Performance.Recording")
+		.arg((double)entry.bytes_written / (1024.0 * 1024.0), 0, 'f', 1);
+}
+
+QString replayPerformanceSummary(enum sr_replay_bus bus, const QString &label)
+{
+	sr_replay_channel_state state = {};
+	if (!sr_replay_channel_get_state(bus, &state) || !state.cued)
+		return T("EventDock.Performance.ReplayEmpty").arg(label);
+
+	QString decoder = T("EventDock.Performance.Waiting");
+	if (state.decoder_open)
+		decoder = state.hardware_decode ? QStringLiteral("D3D11VA") : QStringLiteral("Software");
+
+	QString video = QStringLiteral("—");
+	if (state.width && state.height)
+		video = QStringLiteral("%1×%2").arg(state.width).arg(state.height);
+	const uint64_t hitPercent =
+		state.decode_requests ? state.decode_cache_hits * 100ULL / state.decode_requests : 0ULL;
+	return T("EventDock.Performance.Replay")
+		.arg(label)
+		.arg(decoder)
+		.arg(video)
+		.arg(hitPercent)
+		.arg(state.decode_cache_hits)
+		.arg(state.decode_requests)
+		.arg(state.decoded_frames);
 }
 
 QString safeFilePart(const QString &value)
@@ -302,6 +405,34 @@ public:
 		recordBar->addWidget(stopRecord);
 		recordBar->addWidget(recordStatus, 1);
 		root->addLayout(recordBar);
+
+		auto *performanceBox = new QGroupBox(T("EventDock.Performance.Title"), this);
+		auto *performanceLayout = new QVBoxLayout(performanceBox);
+		performanceLayout->setContentsMargins(5, 5, 5, 5);
+		performanceLayout->setSpacing(3);
+		performanceSummary = new QLabel(performanceBox);
+		performanceSummary->setWordWrap(true);
+		performanceSummary->setStyleSheet(QStringLiteral("color: gray;"));
+		performanceLayout->addWidget(performanceSummary);
+		performanceTable = new QTableWidget(performanceBox);
+		performanceTable->setColumnCount(7);
+		performanceTable->setHorizontalHeaderLabels(
+			{T("EventDock.Performance.Camera"), T("EventDock.Performance.Path"), T("EventDock.Performance.Video"),
+			 T("EventDock.Performance.Gop"), T("EventDock.Performance.Queue"), T("EventDock.Performance.Drops"),
+			 T("EventDock.Performance.Disk")});
+		performanceTable->setSelectionMode(QAbstractItemView::NoSelection);
+		performanceTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+		performanceTable->setFocusPolicy(Qt::NoFocus);
+		performanceTable->setAlternatingRowColors(true);
+		performanceTable->verticalHeader()->setVisible(false);
+		performanceTable->horizontalHeader()->setStretchLastSection(false);
+		performanceTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+		for (int column = 1; column < performanceTable->columnCount(); column++)
+			performanceTable->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
+		performanceTable->setMinimumHeight(88);
+		performanceTable->setMaximumHeight(160);
+		performanceLayout->addWidget(performanceTable);
+		root->addWidget(performanceBox);
 
 		auto *programBar = new QHBoxLayout();
 		programStatus = new QLabel(this);
@@ -629,6 +760,7 @@ public:
 			refresh();
 			refreshTransportStatus();
 			refreshRecordingStatus();
+			refreshHardwareStatus();
 			if (++cameraRefreshTicks >= 4) {
 				cameraRefreshTicks = 0;
 				refreshCameras();
@@ -655,6 +787,7 @@ public:
 		refreshTransportStatus();
 		refreshProgramState();
 		refreshRecordingStatus();
+		refreshHardwareStatus();
 		syncTransportControls();
 	}
 
@@ -743,6 +876,91 @@ private:
 			recordStatus->setText(T("EventDock.RecordIdle").arg(summary.camera_count));
 			recordStatus->setStyleSheet(QStringLiteral("color: gray;"));
 		}
+	}
+
+	void refreshHardwareStatus()
+	{
+		if (!performanceSummary || !performanceTable)
+			return;
+
+		sr_capture_performance_snapshot snapshot = {};
+		if (!sr_capture_get_performance_snapshot(&snapshot)) {
+			performanceSummary->setText(T("EventDock.Performance.Unavailable"));
+			performanceTable->setRowCount(0);
+			return;
+		}
+
+		performanceTable->setUpdatesEnabled(false);
+		performanceTable->setRowCount((int)snapshot.count);
+		size_t gpuCount = 0;
+		size_t cpuCount = 0;
+		size_t waitingCount = 0;
+		size_t errorCount = 0;
+		size_t fallbackCount = 0;
+		uint64_t droppedPackets = 0;
+
+		for (size_t i = 0; i < snapshot.count; i++) {
+			const sr_capture_performance_entry &entry = snapshot.entries[i];
+			switch (entry.path) {
+			case SR_CAPTURE_PERF_GPU_D3D11:
+				gpuCount++;
+				break;
+			case SR_CAPTURE_PERF_CPU:
+				cpuCount++;
+				break;
+			case SR_CAPTURE_PERF_ERROR:
+				errorCount++;
+				break;
+			case SR_CAPTURE_PERF_WAITING:
+			default:
+				waitingCount++;
+				break;
+			}
+			if (entry.gpu_fallback_reason != SR_CAPTURE_GPU_FALLBACK_NONE)
+				fallbackCount++;
+			droppedPackets += entry.packets_dropped;
+
+			const int row = (int)i;
+			const QString path = capturePerformancePath(entry);
+			const QString video = captureVideoMode(entry);
+			const QString gop = captureGopMode(entry);
+			const QString queue =
+				QStringLiteral("%1 / peak %2").arg(entry.queue_depth).arg(entry.queue_high_watermark);
+			const QString drops = QString::number(entry.packets_dropped);
+			const QString disk = captureDiskState(entry);
+			const QString fallback = captureFallbackText(entry.gpu_fallback_reason);
+			const double averageSubmitMs =
+				entry.encode_calls ? (double)entry.encode_time_ns_total / (double)entry.encode_calls / 1e6 : 0.0;
+			const double lastSubmitMs = (double)entry.encode_time_ns_last / 1e6;
+			QString tooltip = T("EventDock.Performance.Tooltip")
+						  .arg(averageSubmitMs, 0, 'f', 3)
+						  .arg(lastSubmitMs, 0, 'f', 3)
+						  .arg((double)entry.ram_bytes / (1024.0 * 1024.0), 0, 'f', 1)
+						  .arg(entry.segments_finalized)
+						  .arg(entry.queue_high_watermark);
+			if (!fallback.isEmpty())
+				tooltip = fallback + QStringLiteral("\n") + tooltip;
+
+			const QString values[] = {QString::fromUtf8(entry.camera_name), path, video, gop, queue, drops, disk};
+			for (int column = 0; column < performanceTable->columnCount(); column++) {
+				auto *item = new QTableWidgetItem(values[column]);
+				item->setToolTip(tooltip);
+				performanceTable->setItem(row, column, item);
+			}
+		}
+
+		performanceTable->setUpdatesEnabled(true);
+		performanceSummary->setText(
+			T("EventDock.Performance.Summary")
+				.arg(gpuCount)
+				.arg(cpuCount)
+				.arg(waitingCount)
+				.arg(errorCount)
+				.arg(fallbackCount)
+				.arg(droppedPackets) +
+			QStringLiteral("\n") + replayPerformanceSummary(SR_REPLAY_BUS_A, QStringLiteral("A")) +
+			QStringLiteral("    ") + replayPerformanceSummary(SR_REPLAY_BUS_B, QStringLiteral("B")));
+		sr_capture_free_performance_snapshot(&snapshot);
 	}
 
 	bool recordingHasMedia()
@@ -1872,7 +2090,9 @@ private:
 	QPushButton *exportCancelButton = nullptr;
 	QProgressBar *exportProgressBar = nullptr;
 	QTableWidget *table = nullptr;
+	QTableWidget *performanceTable = nullptr;
 	QLabel *recordStatus = nullptr;
+	QLabel *performanceSummary = nullptr;
 	QLabel *programStatus = nullptr;
 	QLabel *cueAStatus = nullptr;
 	QLabel *cueBStatus = nullptr;

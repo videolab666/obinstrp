@@ -21,6 +21,14 @@ extern "C" {
 
 struct sr_disk_player;
 
+struct sr_disk_player_performance {
+	bool decoder_open;
+	bool hardware_decode;
+	uint64_t requests;
+	uint64_t cache_hits;
+	uint64_t decoded_frames;
+};
+
 /* Persistent keyframe-aware reader for one camera in one continuous replay
  * session. Unlike sr_disk_decode_frame_at(), this object keeps the catalog,
  * current segment, decoder state and last decoded frame warm between seeks.
@@ -36,6 +44,12 @@ bool sr_disk_player_refresh(struct sr_disk_player *player);
 
 /* Returns the current indexed media range for this camera. */
 bool sr_disk_player_get_bounds(const struct sr_disk_player *player, uint64_t *first_ns, uint64_t *last_ns);
+
+/* Lightweight transport diagnostics. The caller must serialize access with
+ * decode/seek operations (sr_replay_channel already does this with its bus
+ * mutex). hardware_decode becomes true only after a native D3D11 frame has
+ * actually been produced by the decoder. */
+void sr_disk_player_get_performance(const struct sr_disk_player *player, struct sr_disk_player_performance *performance);
 
 /* Decodes the newest frame at/before target_ns. Random/backward seeks start at
  * the nearest preceding keyframe and decode forward. Sequential forward calls

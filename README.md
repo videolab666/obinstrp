@@ -71,6 +71,9 @@ second tab. Development artifacts are unsigned and require OBS Studio 31+.
 2. In **Replay operator**, click **START RECORD**. Wait for the green `REC`
    status and increasing packet/MB counters before marking an Event. The dock
    reports encoder/write failures and a reached disk-space reserve directly.
+   The **Hardware / Performance** block shows the actual per-camera path
+   (`D3D11 -> NVENC/AMF` versus CPU fallback), video/GOP settings, disk queue,
+   dropped packets and A/B replay decode/cache status.
 3. Create an Event with **IN** then **OUT**, or use **-5/-10/-20** after the
    action. Empty Events are rejected until recorded packets are available.
 4. Add a **Pitel Instant Replay Event Output** source configured for bus A to a
