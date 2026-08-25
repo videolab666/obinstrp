@@ -33,6 +33,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <cstring>
 #include <atomic>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -42,6 +43,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QAbstractItemView>
 #include <QAbstractItemDelegate>
 #include <QAction>
+#include <QApplication>
 #include <QComboBox>
 #include <QDir>
 #include <QDialog>
@@ -55,6 +57,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QLabel>
+#include <QListWidget>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
@@ -65,6 +68,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QRubberBand>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QStackedWidget>
 #include <QStandardPaths>
 #include <QStyle>
 #include <QStyleOptionSlider>
@@ -312,8 +316,11 @@ struct ExportJob {
 	sr_event_export_result result = {};
 };
 
-constexpr int ANGLE_PREVIEW_WIDTH = 128;
-constexpr int ANGLE_PREVIEW_HEIGHT = 72;
+constexpr int ANGLE_PREVIEW_WIDTH = 176;
+constexpr int ANGLE_PREVIEW_HEIGHT = 99;
+constexpr int EVENT_THUMB_WIDTH = 192;
+constexpr int EVENT_THUMB_HEIGHT = 108;
+constexpr size_t EVENT_THUMB_BATCH = 24;
 
 struct AnglePreviewResult {
 	std::string camera;
@@ -334,6 +341,36 @@ struct AnglePreviewJob {
 	std::thread worker;
 };
 
+struct EventThumbnailResult {
+	uint64_t eventId = 0;
+	uint64_t inNs = 0;
+	uint64_t outNs = 0;
+	std::vector<uint8_t> rgba;
+};
+
+struct EventThumbnailTask {
+	uint64_t eventId = 0;
+	uint64_t inNs = 0;
+	uint64_t outNs = 0;
+	std::string camera;
+	uint64_t timestampNs = 0;
+};
+
+struct EventThumbnailJob {
+	uint64_t generation = 0;
+	std::string sessionDir;
+	std::vector<EventThumbnailTask> tasks;
+	std::vector<EventThumbnailResult> results;
+	std::atomic<bool> done{false};
+	std::thread worker;
+};
+
+struct CachedEventThumbnail {
+	uint64_t inNs = 0;
+	uint64_t outNs = 0;
+	QIcon icon;
+};
+
 void runAnglePreviewJob(AnglePreviewJob *job)
 {
 	for (const AnglePreviewTask &task : job->tasks) {
@@ -344,6 +381,26 @@ void runAnglePreviewJob(AnglePreviewJob *job)
 					   ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT, &rgba) &&
 		    rgba) {
 			const size_t bytes = (size_t)ANGLE_PREVIEW_WIDTH * ANGLE_PREVIEW_HEIGHT * 4;
+			result.rgba.assign(rgba, rgba + bytes);
+		}
+		bfree(rgba);
+		job->results.emplace_back(std::move(result));
+	}
+	job->done.store(true, std::memory_order_release);
+}
+
+void runEventThumbnailJob(EventThumbnailJob *job)
+{
+	for (const EventThumbnailTask &task : job->tasks) {
+		uint8_t *rgba = nullptr;
+		EventThumbnailResult result;
+		result.eventId = task.eventId;
+		result.inNs = task.inNs;
+		result.outNs = task.outNs;
+		if (sr_disk_thumbnail_rgba(job->sessionDir.c_str(), task.camera.c_str(), task.timestampNs,
+					   EVENT_THUMB_WIDTH, EVENT_THUMB_HEIGHT, &rgba) &&
+		    rgba) {
+			const size_t bytes = (size_t)EVENT_THUMB_WIDTH * EVENT_THUMB_HEIGHT * 4;
 			result.rgba.assign(rgba, rgba + bytes);
 		}
 		bfree(rgba);
@@ -796,7 +853,22 @@ public:
 		markBar->addStretch(1);
 		root->addLayout(markBar);
 
-		table = new SrEventTable(this);
+		auto *eventViewBar = new QHBoxLayout();
+		eventViewBar->setSpacing(3);
+		eventViewBar->addStretch(1);
+		auto *viewListButton = new QToolButton(this);
+		viewListButton->setText(QStringLiteral("☷ ") + T("EventDock.ViewList"));
+		viewListButton->setCheckable(true);
+		viewListButton->setChecked(true);
+		auto *viewThumbButton = new QToolButton(this);
+		viewThumbButton->setText(QStringLiteral("▦ ") + T("EventDock.ViewThumbnails"));
+		viewThumbButton->setCheckable(true);
+		eventViewBar->addWidget(viewListButton);
+		eventViewBar->addWidget(viewThumbButton);
+		root->addLayout(eventViewBar);
+
+		eventViewStack = new QStackedWidget(this);
+		table = new SrEventTable(eventViewStack);
 		table->setColumnCount(6);
 		table->setHorizontalHeaderLabels({T("EventDock.Column.Id"), T("EventDock.Column.Duration"),
 						  T("EventDock.Column.Speed"), T("EventDock.Column.State"),
@@ -814,7 +886,24 @@ public:
 		table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
 		table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
 		table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
-		root->addWidget(table, 1);
+		eventViewStack->addWidget(table);
+
+		thumbnailList = new QListWidget(eventViewStack);
+		thumbnailList->setViewMode(QListView::IconMode);
+		thumbnailList->setResizeMode(QListView::Adjust);
+		thumbnailList->setMovement(QListView::Static);
+		thumbnailList->setWrapping(true);
+		thumbnailList->setWordWrap(true);
+		thumbnailList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+		thumbnailList->setSelectionRectVisible(true);
+		thumbnailList->setIconSize(QSize(EVENT_THUMB_WIDTH, EVENT_THUMB_HEIGHT));
+		thumbnailList->setGridSize(QSize(220, 164));
+		thumbnailList->setSpacing(4);
+		thumbnailList->setUniformItemSizes(true);
+		thumbnailList->setToolTip(T("EventDock.ViewThumbnails.Tooltip"));
+		eventViewStack->addWidget(thumbnailList);
+		eventViewStack->setCurrentWidget(table);
+		root->addWidget(eventViewStack, 1);
 
 		auto *actionBar = new QHBoxLayout();
 		actionBar->setSpacing(3);
@@ -906,8 +995,8 @@ public:
 		angleHeader->addWidget(angleLegend);
 		root->addLayout(angleHeader);
 		angleGrid = new QGridLayout();
-		angleGrid->setHorizontalSpacing(2);
-		angleGrid->setVerticalSpacing(1);
+		angleGrid->setHorizontalSpacing(4);
+		angleGrid->setVerticalSpacing(4);
 		root->addLayout(angleGrid);
 
 		auto *timelineBar = new QHBoxLayout();
@@ -1128,7 +1217,31 @@ public:
 		connect(takeB, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_B); });
 		connect(takeToggle, &QPushButton::clicked, this, [this]() { takeToggleBus(); });
 		connect(returnLive, &QPushButton::clicked, this, [this]() { returnLiveBus(); });
-		connect(table, &QTableWidget::itemSelectionChanged, this, [this]() { refreshAngleCoverage(); });
+		connect(viewListButton, &QToolButton::clicked, this, [this, viewListButton, viewThumbButton]() {
+			viewListButton->setChecked(true);
+			viewThumbButton->setChecked(false);
+			eventViewStack->setCurrentWidget(table);
+			syncGallerySelectionFromTable();
+		});
+		connect(viewThumbButton, &QToolButton::clicked, this, [this, viewListButton, viewThumbButton]() {
+			viewListButton->setChecked(false);
+			viewThumbButton->setChecked(true);
+			eventViewStack->setCurrentWidget(thumbnailList);
+			refreshEventGallery();
+			syncGallerySelectionFromTable();
+			requestEventThumbnails();
+		});
+		connect(table, &QTableWidget::itemSelectionChanged, this, [this]() {
+			if (!syncingEventViews)
+				syncGallerySelectionFromTable();
+			refreshAngleCoverage();
+		});
+		connect(thumbnailList, &QListWidget::itemSelectionChanged, this, [this]() {
+			if (!syncingEventViews)
+				syncTableSelectionFromGallery();
+		});
+		connect(thumbnailList, &QListWidget::itemDoubleClicked, this,
+			[this](QListWidgetItem *) { playSelectedEvent(); });
 		connect(table, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) { editEvent(item); });
 		connect(table->itemDelegate(), &QAbstractItemDelegate::closeEditor, this,
 			[this]() { tableEditing = false; });
@@ -1163,6 +1276,7 @@ public:
 			syncAngleButtonState();
 			pollExport();
 			pollAnglePreviews();
+			pollEventThumbnails();
 		});
 		transportTimer->start();
 
@@ -1187,6 +1301,8 @@ public:
 		}
 		if (anglePreviewJob && anglePreviewJob->worker.joinable())
 			anglePreviewJob->worker.join();
+		if (eventThumbnailJob && eventThumbnailJob->worker.joinable())
+			eventThumbnailJob->worker.join();
 	}
 
 private:
@@ -1205,6 +1321,306 @@ private:
 	}
 
 	QString selectedCamera() const { return cameraCombo ? cameraCombo->currentData().toString() : QString(); }
+
+	\tbool thumbnailViewActive() const
+\t
+	{
+		\t\treturn eventViewStack &&thumbnailList && eventViewStack->currentWidget() == thumbnailList;
+		\t
+	}
+
+	\tQListWidgetItem *galleryItemById(uint64_t eventId) const
+\t
+	{
+		\t\tif(!thumbnailList || !eventId)
+\t\t\treturn nullptr;
+		\t\tfor(int i = 0; i < thumbnailList->count(); i++)
+		{
+			\t\t\tQListWidgetItem *item = thumbnailList->item(i);
+			\t\t\tif(item && item->data(Qt::UserRole).toULongLong() == eventId)
+\t\t\t\treturn item;
+			\t\t
+		}
+		\t\treturn nullptr;
+		\t
+	}
+
+	\tvoid syncGallerySelectionFromTable()
+\t
+	{
+		\t\tif(!table || !thumbnailList || syncingEventViews)
+\t\t\treturn;
+		\t\tsyncingEventViews = true;
+		\t\tconst QSignalBlocker blocker(thumbnailList);
+		\t\tthumbnailList->clearSelection();
+		\t\tconst std::vector<uint64_t> ids = selectedEventIds();
+		\t\tconst uint64_t currentId = selectedEventId();
+		\t\tfor(uint64_t id : ids)
+		{
+			\t\t\tif(QListWidgetItem *item = galleryItemById(id))
+\t\t\t\titem->setSelected(true);
+			\t\t
+		}
+		\t\tif(QListWidgetItem *current = galleryItemById(currentId))
+\t\t\tthumbnailList->setCurrentItem(current, QItemSelectionModel::NoUpdate);
+		\t\tsyncingEventViews = false;
+		\t
+	}
+
+	\tvoid syncTableSelectionFromGallery()
+\t
+	{
+		\t\tif(!table || !thumbnailList || syncingEventViews)
+\t\t\treturn;
+		\t\tsyncingEventViews = true;
+		\t\tconst QSignalBlocker blocker(table);
+		\t\ttable->clearSelection();
+		\t\tuint64_t currentId = 0;
+		\t\tif(QListWidgetItem *current = thumbnailList->currentItem())
+\t\t\tcurrentId = current->data(Qt::UserRole).toULongLong();
+		\t\tint currentRow = -1;
+		\t\tfor(int row = 0; row < table->rowCount(); row++)
+		{
+			\t\t\tQTableWidgetItem *idItem = table->item(row, 0);
+			\t\t\tconst uint64_t id = idItem ? idItem->data(Qt::UserRole).toULongLong() : 0;
+			\t\t\tQListWidgetItem *galleryItem = galleryItemById(id);
+			\t\t\tif(galleryItem && galleryItem->isSelected())
+\t\t\t\ttable->selectionModel()->select(table->model()->index(row, 0),
+\t\t\t\t\t\t\tQItemSelectionModel::Select | QItemSelectionModel::Rows);
+			\t\t\tif(id && id == currentId)
+\t\t\t\tcurrentRow = row;
+			\t\t
+		}
+		\t\tif(currentRow >= 0)
+\t\t\ttable->setCurrentCell(currentRow, 0, QItemSelectionModel::NoUpdate);
+		\t\tsyncingEventViews = false;
+		\t\trefreshAngleCoverage();
+		\t
+	}
+
+	\tQString eventGalleryText(const sr_event_record &event) const
+\t
+	{
+		\t\tconst QString name = QString::fromUtf8(event.name ? event.name : "").trimmed();
+		\t\tconst QString tag = QString::fromUtf8(event.tag ? event.tag : "").trimmed();
+		\t\tQString first = QStringLiteral("#%1").arg(event.id);
+		\t\tif(!name.isEmpty())
+\t\t\tfirst += QStringLiteral("  ") + name;
+		\t\tQString second = QStringLiteral("%1  ·  %2%")
+\t\t\t\t\t.arg(durationText(event))
+\t\t\t\t\t.arg(event.speed_percent, 0, 'f', 0);
+		\t\tif(!tag.isEmpty())
+\t\t\tsecond += QStringLiteral("  ·  ") + tag;
+		\t\treturn first + QStringLiteral("\n") + second;
+		\t
+	}
+
+	\tbool makeEventThumbnailTask(const sr_event_record &event, const QStringList &cameras,
+\t\t\t\t EventThumbnailTask *task)
+\t
+	{
+		\t\tif(!task || cameras.isEmpty() || event.out_ns <= event.in_ns)
+\t\t\treturn false;
+
+		\t\tQString preferred;
+		\t\tif(event.preferred_camera_id)
+		{
+			\t\t\tchar *name = nullptr;
+			\t\t\tif(sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &name) &&
+				 name)
+\t\t\t\tpreferred = QString::fromUtf8(name);
+			\t\t\tbfree(name);
+			\t\t
+		}
+
+		\t\tauto prepare = [&](const QString &camera, bool fullOnly) -> bool {
+			\t\t\tif(camera.isEmpty())
+\t\t\t\treturn false;
+			\t\t\tsr_replay_coverage_info coverage = {};
+			\t\t\tconst QByteArray cameraUtf8 = camera.toUtf8();
+			\t\t\tif(!sr_replay_coverage_query(cameraUtf8.constData(), event.in_ns, event.out_ns,
+							   &coverage) ||
+\t\t\t coverage.coverage == SR_REPLAY_COVERAGE_NONE ||
+\t\t\t(fullOnly && coverage.coverage != SR_REPLAY_COVERAGE_FULL))
+\t\t\t\treturn false;
+			\t\t\tuint64_t timestamp = event.in_ns + (event.out_ns - event.in_ns) / 2;
+			\t\t\tif(coverage.coverage == SR_REPLAY_COVERAGE_PARTIAL &&
+				 coverage.playable_out_ns > coverage.playable_in_ns)
+\t\t\t\ttimestamp = coverage.playable_in_ns + (coverage.playable_out_ns - coverage.playable_in_ns) / 2;
+			\t\t\tconst int64_t offset = coverage.sync_offset_ns;
+			\t\t\tif(offset >= 0 && (uint64_t)offset <= UINT64_MAX - timestamp)
+\t\t\t\ttimestamp += (uint64_t)offset;
+			\t\t\telse if (offset < 0 && (uint64_t)(-offset) < timestamp)
+\t\t\t\ttimestamp -= (uint64_t)(-offset);
+			\t\t\ttask->eventId = event.id;
+			\t\t\ttask->inNs = event.in_ns;
+			\t\t\ttask->outNs = event.out_ns;
+			\t\t\ttask->camera = cameraUtf8.constData();
+			\t\t\ttask->timestampNs = timestamp;
+			\t\t\treturn true;
+			\t\t
+		};
+
+		\t\tif(!preferred.isEmpty() && prepare(preferred, false))
+\t\t\treturn true;
+		\t\tfor(const QString &camera : cameras)
+		{
+			\t\t\tif(camera != preferred && prepare(camera, true))
+\t\t\t\treturn true;
+			\t\t
+		}
+		\t\tfor(const QString &camera : cameras)
+		{
+			\t\t\tif(camera != preferred && prepare(camera, false))
+\t\t\t\treturn true;
+			\t\t
+		}
+		\t\treturn false;
+		\t
+	}
+
+	\tvoid refreshEventGallery()
+\t
+	{
+		\t\tif(!thumbnailList || !table || !controller)
+\t\t\treturn;
+
+		\t\tstd::vector<uint64_t> ids;
+		\t\tids.reserve((size_t)table->rowCount());
+		\t\tfor(int row = 0; row < table->rowCount(); row++)
+		{
+			\t\t\tQTableWidgetItem *item = table->item(row, 0);
+			\t\t\tconst uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+			\t\t\tif(id)
+\t\t\t\tids.push_back(id);
+			\t\t
+		}
+
+		\t\tconst bool structureChanged = galleryListId != currentList() || ids != galleryEventIds;
+		\t\tif(structureChanged)
+		{
+			\t\t\tgalleryListId = currentList();
+			\t\t\tgalleryEventIds = ids;
+			\t\t\tgalleryGeneration++;
+			\t\t\tconst QSignalBlocker blocker(thumbnailList);
+			\t\t\tthumbnailList->clear();
+			\t\t\tfor(uint64_t id : galleryEventIds)
+			{
+				\t\t\t\tauto *item = new QListWidgetItem(thumbnailList);
+				\t\t\t\titem->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(id));
+				\t\t\t\titem->setTextAlignment(Qt::AlignHCenter | Qt::AlignTop);
+				\t\t\t
+			}
+			\t\t
+		}
+
+		\t\tfor(int i = 0; i < thumbnailList->count(); i++)
+		{
+			\t\t\tQListWidgetItem *item = thumbnailList->item(i);
+			\t\t\tconst uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+			\t\t\tsr_event_record event = {};
+			\t\t\tif(!id || !sr_event_controller_get_event(controller, id, &event))
+\t\t\t\tcontinue;
+			\t\t\titem->setText(eventGalleryText(event));
+			\t\t\titem->setToolTip(QStringLiteral("#%1 · %2 · %3")
+\t\t\t\t\t\t.arg(event.id)
+\t\t\t\t\t\t.arg(stateText(event))
+\t\t\t\t\t\t.arg(QString::fromUtf8(event.tag ? event.tag : "")));
+			\t\t\titem->setData(Qt::UserRole + 1, QVariant::fromValue<qulonglong>(event.in_ns));
+			\t\t\titem->setData(Qt::UserRole + 2, QVariant::fromValue<qulonglong>(event.out_ns));
+			\t\t\tauto cached = eventThumbnailCache.find(id);
+			\t\t\tif(cached != eventThumbnailCache.end() && cached->second.inNs == event.in_ns &&
+\t\t\t cached->second.outNs == event.out_ns)
+\t\t\t\titem->setIcon(cached->second.icon);
+			\t\t\telse
+\t\t\t\titem->setIcon(QIcon());
+			\t\t\tsr_event_controller_free_event(&event);
+			\t\t
+		}
+
+		\t\tif(structureChanged)
+\t\t\tsyncGallerySelectionFromTable();
+		\t\tif(thumbnailViewActive())
+\t\t\trequestEventThumbnails();
+		\t
+	}
+
+	\tvoid requestEventThumbnails()
+\t
+	{
+		\t\tif(!thumbnailViewActive() || eventThumbnailJob || !controller || !thumbnailList)
+\t\t\treturn;
+		\t\tconst QStringList cameras = captureCameraNames();
+		\t\tif(cameras.isEmpty())
+\t\t\treturn;
+
+		\t\tauto job = std::make_unique<EventThumbnailJob>();
+		\t\tjob->generation = galleryGeneration;
+		\t\tfor(int i = 0; i < thumbnailList->count() && job->tasks.size() < EVENT_THUMB_BATCH; i++)
+		{
+			\t\t\tQListWidgetItem *item = thumbnailList->item(i);
+			\t\t\tconst uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+			\t\t\tconst uint64_t inNs = item ? item->data(Qt::UserRole + 1).toULongLong() : 0;
+			\t\t\tconst uint64_t outNs = item ? item->data(Qt::UserRole + 2).toULongLong() : 0;
+			\t\t\tauto cached = eventThumbnailCache.find(id);
+			\t\t\tif(cached != eventThumbnailCache.end() && cached->second.inNs == inNs &&
+\t\t\t cached->second.outNs == outNs && !cached->second.icon.isNull())
+\t\t\t\tcontinue;
+			\t\t\tsr_event_record event = {};
+			\t\t\tif(!id || !sr_event_controller_get_event(controller, id, &event))
+\t\t\t\tcontinue;
+			\t\t\tEventThumbnailTask task;
+			\t\t\tif(makeEventThumbnailTask(event, cameras, &task))
+\t\t\t\tjob->tasks.emplace_back(std::move(task));
+			\t\t\tsr_event_controller_free_event(&event);
+			\t\t
+		}
+		\t\tif(job->tasks.empty())
+\t\t\treturn;
+		\t\tchar *sessionPath = sr_session_get_or_create_path();
+		\t\tif(!sessionPath)
+\t\t\treturn;
+		\t\tjob->sessionDir = sessionPath;
+		\t\tbfree(sessionPath);
+		\t\teventThumbnailJob = std::move(job);
+		\t\tEventThumbnailJob *workerJob = eventThumbnailJob.get();
+		\t\tworkerJob->worker = std::thread([workerJob]() { runEventThumbnailJob(workerJob); });
+		\t
+	}
+
+	\tvoid pollEventThumbnails()
+\t
+	{
+		\t\tif(!eventThumbnailJob || !eventThumbnailJob->done.load(std::memory_order_acquire))
+\t\t\treturn;
+		\t\tif(eventThumbnailJob->worker.joinable())
+\t\t\teventThumbnailJob->worker.join();
+		\t\tif(eventThumbnailJob->generation == galleryGeneration)
+		{
+			\t\t\tfor(const EventThumbnailResult &result : eventThumbnailJob->results)
+			{
+				\t\t\t\tif(result.rgba.empty())
+\t\t\t\t\tcontinue;
+				\t\t\t\tQListWidgetItem *item = galleryItemById(result.eventId);
+				\t\t\t\tif(!item || item->data(Qt::UserRole + 1).toULongLong() != result.inNs ||
+\t\t\t\t item->data(Qt::UserRole + 2).toULongLong() != result.outNs)
+\t\t\t\t\tcontinue;
+				\t\t\t\tconst QImage image(result.rgba.data(), EVENT_THUMB_WIDTH, EVENT_THUMB_HEIGHT,
+\t\t\t\t\t\t EVENT_THUMB_WIDTH * 4, QImage::Format_RGBA8888);
+				\t\t\t\tCachedEventThumbnail cached;
+				\t\t\t\tcached.inNs = result.inNs;
+				\t\t\t\tcached.outNs = result.outNs;
+				\t\t\t\tcached.icon = QIcon(QPixmap::fromImage(image.copy()));
+				\t\t\t\teventThumbnailCache[result.eventId] = cached;
+				\t\t\t\titem->setIcon(cached.icon);
+				\t\t\t
+			}
+			\t\t
+		}
+		\t\teventThumbnailJob.reset();
+		\t\trequestEventThumbnails();
+		\t
+	}
 
 	uint64_t selectedEventId() const
 	{
@@ -1728,9 +2144,13 @@ private:
 
 		for (int i = 0; i < names.size(); i++) {
 			const QString camera = names.at(i);
-			auto *button = new QPushButton(camera, this);
+			auto *button = new QToolButton(this);
+			button->setText(camera);
+			button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
 			button->setCheckable(true);
-			button->setMinimumSize(170, 86);
+			button->setAutoRaise(false);
+			button->setMinimumSize(210, 132);
+			button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 			button->setIconSize(QSize(ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT));
 			button->setProperty("cameraName", camera);
 			button->setProperty("coverage", (int)SR_REPLAY_COVERAGE_NONE);
@@ -1799,7 +2219,7 @@ private:
 			bfree(preferredName);
 		}
 
-		for (QPushButton *button : angleButtons) {
+		for (QToolButton *button : angleButtons) {
 			const QString camera = button->property("cameraName").toString();
 			sr_replay_coverage_info coverage = {};
 			if (haveEvent) {
@@ -1854,7 +2274,7 @@ private:
 		if (previewTargetEventId != eventId) {
 			previewTargetEventId = eventId;
 			previewLoadedEventId = 0;
-			for (QPushButton *button : angleButtons)
+			for (QToolButton *button : angleButtons)
 				button->setIcon(QIcon());
 		}
 		if (!eventId || previewLoadedEventId == eventId || anglePreviewJob)
@@ -1867,7 +2287,7 @@ private:
 		job->eventId = eventId;
 		job->sessionDir = sessionPath;
 		bfree(sessionPath);
-		for (QPushButton *button : angleButtons) {
+		for (QToolButton *button : angleButtons) {
 			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_NONE)
 				continue;
 			const qint64 offset = button->property("syncOffsetNs").toLongLong();
@@ -1898,7 +2318,7 @@ private:
 			for (const AnglePreviewResult &result : anglePreviewJob->results) {
 				if (result.rgba.empty())
 					continue;
-				QPushButton *button = angleButton(QString::fromUtf8(result.camera.c_str()));
+				QToolButton *button = angleButton(QString::fromUtf8(result.camera.c_str()));
 				if (!button)
 					continue;
 				const QImage image(result.rgba.data(), ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT,
@@ -1918,7 +2338,7 @@ private:
 		const bool sameEvent = haveState && state.cued && eventId && state.event_id == eventId;
 		const QString activeCamera = sameEvent ? QString::fromUtf8(state.camera_name) : QString();
 
-		for (QPushButton *button : angleButtons) {
+		for (QToolButton *button : angleButtons) {
 			const auto coverage = static_cast<sr_replay_coverage>(button->property("coverage").toInt());
 			const uint64_t playableIn = button->property("playableInNs").toULongLong();
 			const uint64_t playableOut = button->property("playableOutNs").toULongLong();
@@ -2287,7 +2707,7 @@ private:
 			setStatus("EventDock.NoCameraSelected");
 			return false;
 		}
-		QPushButton *angle = angleButton(camera);
+		QToolButton *angle = angleButton(camera);
 		if (angle && angle->property("coverage").toInt() == SR_REPLAY_COVERAGE_NONE) {
 			status->setText(T("EventDock.CueNoCoverage").arg(camera));
 			return false;
@@ -2540,9 +2960,9 @@ private:
 		refreshTransportStatus();
 	}
 
-	QPushButton *angleButton(const QString &camera) const
+	QToolButton *angleButton(const QString &camera) const
 	{
-		for (QPushButton *button : angleButtons) {
+		for (QToolButton *button : angleButtons) {
 			if (button->property("cameraName").toString() == camera)
 				return button;
 		}
@@ -2552,7 +2972,7 @@ private:
 	bool addExportTask(std::vector<ExportTask> &tasks, const std::string &sessionDir, const QString &camera,
 			   const QString &outputPath, const sr_event_record &event)
 	{
-		QPushButton *button = angleButton(camera);
+		QToolButton *button = angleButton(camera);
 		if (!button || button->property("coverage").toInt() != SR_REPLAY_COVERAGE_FULL)
 			return false;
 
@@ -2596,7 +3016,7 @@ private:
 		}
 
 		QStringList fullAngles;
-		for (QPushButton *button : angleButtons) {
+		for (QToolButton *button : angleButtons) {
 			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_FULL)
 				fullAngles.append(button->property("cameraName").toString());
 		}
@@ -2751,7 +3171,8 @@ private:
 
 	void refresh(uint64_t selectEventId = 0)
 	{
-		if (!controller || !table || tableEditing || table->selectionGestureActive())
+		if (!controller || !table || tableEditing || table->selectionGestureActive() ||
+		    (thumbnailViewActive() && (QApplication::mouseButtons() & Qt::LeftButton)))
 			return;
 		std::vector<uint64_t> preserveSelection;
 		if (selectEventId)
@@ -2810,6 +3231,7 @@ private:
 			table->setCurrentCell(currentRow, 0, QItemSelectionModel::NoUpdate);
 		table->setUpdatesEnabled(true);
 		tableRefreshing = false;
+		refreshEventGallery();
 		refreshAngleCoverage();
 	}
 
@@ -3019,7 +3441,9 @@ private:
 	QComboBox *audioCombo = nullptr;
 	QComboBox *exportModeCombo = nullptr;
 	QGridLayout *angleGrid = nullptr;
-	QVector<QPushButton *> angleButtons;
+	QVector<QToolButton *> angleButtons;
+	QStackedWidget *eventViewStack = nullptr;
+	QListWidget *thumbnailList = nullptr;
 	SrRangeSlider *timelineSlider = nullptr;
 	QSlider *jogSlider = nullptr;
 	QSlider *shuttleSlider = nullptr;
@@ -3051,6 +3475,12 @@ private:
 	unsigned cameraRefreshTicks = 0;
 	std::unique_ptr<ExportJob> exportJob;
 	std::unique_ptr<AnglePreviewJob> anglePreviewJob;
+	std::unique_ptr<EventThumbnailJob> eventThumbnailJob;
+	std::map<uint64_t, CachedEventThumbnail> eventThumbnailCache;
+	std::vector<uint64_t> galleryEventIds;
+	unsigned galleryListId = 0;
+	uint64_t galleryGeneration = 1;
+	bool syncingEventViews = false;
 	uint64_t timelineEventId = 0;
 	uint64_t previewTargetEventId = 0;
 	uint64_t previewLoadedEventId = 0;
