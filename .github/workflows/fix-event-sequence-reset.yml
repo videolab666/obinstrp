@@ -1,0 +1,36 @@
+name: Fix replay sequence fresh cue
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-event-sequence-reset.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
+      - name: Apply sequence fix
+        run: python3 .github/scripts/fix-event-sequence-reset.py
+      - name: Install clang-format 19
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install --quiet obsproject/tools/clang-format@19
+      - name: Format and validate
+        run: |
+          /home/linuxbrew/.linuxbrew/opt/clang-format@19/bin/clang-format-19 -i src/sr-replay-playlist.c src/sr-dock.cpp
+          git diff --check
+      - name: Commit and remove helpers
+        run: |
+          rm -f .github/scripts/fix-event-sequence-reset.py .github/workflows/fix-event-sequence-reset.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: restart every replay sequence item from Event IN'
+          git push origin HEAD:feature/hardware-zero-copy
