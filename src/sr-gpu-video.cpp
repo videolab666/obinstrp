@@ -13,17 +13,24 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-module.h>
 #include <graphics/graphics.h>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <d3d11.h>
+#endif
+
+extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixfmt.h>
+#ifdef _WIN32
+#include <libavutil/hwcontext_d3d11va.h>
+#endif
 #include <libswscale/swscale.h>
+}
 
 #include <limits>
 #include <vector>
-
-#ifdef _WIN32
-#include <d3d11.h>
-#include <libavutil/hwcontext_d3d11va.h>
-#endif
 
 struct sr_gpu_renderer {
 	gs_texture_t *texture = nullptr;
@@ -128,11 +135,10 @@ extern "C" AVBufferRef *sr_gpu_create_replay_decode_device(void)
 				d3d->lock = ffmpeg_d3d11_lock;
 				d3d->unlock = ffmpeg_d3d11_unlock;
 				d3d->lock_ctx = nullptr;
-				/* Decoder surfaces are consumed by the D3D11 video processor on
-				 * the same device. D3D11_BIND_DECODER is the only binding the
-				 * decoder requires; avoiding an unnecessary SRV binding keeps
-				 * compatibility with older decode drivers. */
-				d3d->BindFlags = D3D11_BIND_DECODER;
+				/* FFmpeg initializes the immediate/video contexts from this
+				 * borrowed OBS device. Decoder-surface bind flags are selected by
+				 * FFmpeg itself; older OBS FFmpeg builds do not expose BindFlags on
+				 * AVD3D11VADeviceContext. */
 				if (av_hwdevice_ctx_init(device_ref) < 0)
 					av_buffer_unref(&device_ref);
 			}
@@ -456,7 +462,7 @@ static bool draw_software(sr_gpu_renderer *renderer, const AVFrame *frame, uint3
 	}
 
 	const uint64_t bytes64 = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ULL;
-	if (bytes64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+	if (bytes64 > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
 		av_frame_free(&transferred);
 		return false;
 	}
