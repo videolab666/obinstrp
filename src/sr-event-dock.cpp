@@ -219,8 +219,7 @@ QString captureDiskState(const sr_capture_performance_entry &entry)
 		return T("EventDock.Performance.WriteError");
 	if (!entry.writer_active)
 		return T("EventDock.Performance.Starting");
-	return T("EventDock.Performance.Recording")
-		.arg((double)entry.bytes_written / (1024.0 * 1024.0), 0, 'f', 1);
+	return T("EventDock.Performance.Recording").arg((double)entry.bytes_written / (1024.0 * 1024.0), 0, 'f', 1);
 }
 
 QString replayPerformanceSummary(enum sr_replay_bus bus, const QString &label)
@@ -236,8 +235,8 @@ QString replayPerformanceSummary(enum sr_replay_bus bus, const QString &label)
 	QString video = QStringLiteral("—");
 	if (state.width && state.height)
 		video = QStringLiteral("%1×%2").arg(state.width).arg(state.height);
-	const uint64_t hitPercent =
-		state.decode_requests ? state.decode_cache_hits * 100ULL / state.decode_requests : 0ULL;
+	const uint64_t hitPercent = state.decode_requests ? state.decode_cache_hits * 100ULL / state.decode_requests
+							  : 0ULL;
 	return T("EventDock.Performance.Replay")
 		.arg(label)
 		.arg(decoder)
@@ -417,8 +416,9 @@ public:
 		performanceTable = new QTableWidget(performanceBox);
 		performanceTable->setColumnCount(7);
 		performanceTable->setHorizontalHeaderLabels(
-			{T("EventDock.Performance.Camera"), T("EventDock.Performance.Path"), T("EventDock.Performance.Video"),
-			 T("EventDock.Performance.Gop"), T("EventDock.Performance.Queue"), T("EventDock.Performance.Drops"),
+			{T("EventDock.Performance.Camera"), T("EventDock.Performance.Path"),
+			 T("EventDock.Performance.Video"), T("EventDock.Performance.Gop"),
+			 T("EventDock.Performance.Queue"), T("EventDock.Performance.Drops"),
 			 T("EventDock.Performance.Disk")});
 		performanceTable->setSelectionMode(QAbstractItemView::NoSelection);
 		performanceTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -428,7 +428,8 @@ public:
 		performanceTable->horizontalHeader()->setStretchLastSection(false);
 		performanceTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
 		for (int column = 1; column < performanceTable->columnCount(); column++)
-			performanceTable->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
+			performanceTable->horizontalHeader()->setSectionResizeMode(column,
+										   QHeaderView::ResizeToContents);
 		performanceTable->setMinimumHeight(88);
 		performanceTable->setMaximumHeight(160);
 		performanceLayout->addWidget(performanceTable);
@@ -929,8 +930,9 @@ private:
 			const QString drops = QString::number(entry.packets_dropped);
 			const QString disk = captureDiskState(entry);
 			const QString fallback = captureFallbackText(entry.gpu_fallback_reason);
-			const double averageSubmitMs =
-				entry.encode_calls ? (double)entry.encode_time_ns_total / (double)entry.encode_calls / 1e6 : 0.0;
+			const double averageSubmitMs = entry.encode_calls ? (double)entry.encode_time_ns_total /
+										    (double)entry.encode_calls / 1e6
+									  : 0.0;
 			const double lastSubmitMs = (double)entry.encode_time_ns_last / 1e6;
 			QString tooltip = T("EventDock.Performance.Tooltip")
 						  .arg(averageSubmitMs, 0, 'f', 3)
@@ -941,7 +943,8 @@ private:
 			if (!fallback.isEmpty())
 				tooltip = fallback + QStringLiteral("\n") + tooltip;
 
-			const QString values[] = {QString::fromUtf8(entry.camera_name), path, video, gop, queue, drops, disk};
+			const QString values[] = {
+				QString::fromUtf8(entry.camera_name), path, video, gop, queue, drops, disk};
 			for (int column = 0; column < performanceTable->columnCount(); column++) {
 				auto *item = new QTableWidgetItem(values[column]);
 				item->setToolTip(tooltip);

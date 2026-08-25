@@ -49,7 +49,8 @@ bool sr_disk_player_get_bounds(const struct sr_disk_player *player, uint64_t *fi
  * decode/seek operations (sr_replay_channel already does this with its bus
  * mutex). hardware_decode becomes true only after a native D3D11 frame has
  * actually been produced by the decoder. */
-void sr_disk_player_get_performance(const struct sr_disk_player *player, struct sr_disk_player_performance *performance);
+void sr_disk_player_get_performance(const struct sr_disk_player *player,
+				    struct sr_disk_player_performance *performance);
 
 /* Decodes the newest frame at/before target_ns. Random/backward seeks start at
  * the nearest preceding keyframe and decode forward. Sequential forward calls

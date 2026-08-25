@@ -152,7 +152,8 @@ static void publish_status(struct sr_capture *c, uint64_t now, bool force)
 	}
 
 	const char *encoder_name = c->gpu_encoder ? sr_gpu_encoder_name(c->gpu_encoder)
-					  : c->encoder ? sr_encoder_name(c->encoder) : NULL;
+				   : c->encoder   ? sr_encoder_name(c->encoder)
+						  : NULL;
 	if (encoder_name)
 		strncpy(performance.encoder_name, encoder_name, sizeof(performance.encoder_name) - 1);
 
