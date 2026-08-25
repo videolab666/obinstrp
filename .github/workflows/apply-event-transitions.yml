@@ -18,9 +18,13 @@ jobs:
           fetch-depth: 0
       - name: Apply implementation patch
         run: python3 .github/scripts/apply-event-transitions.py
+      - name: Install clang-format 19
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install --quiet obsproject/tools/clang-format@19
       - name: Format modified native sources
         run: |
-          clang-format-19 -i \
+          /home/linuxbrew/.linuxbrew/opt/clang-format@19/bin/clang-format-19 -i \
             src/sr-config.h src/sr-config.c \
             src/sr-scene-tracker.h src/sr-scene-tracker.c \
             src/sr-replay-take.h src/sr-replay-take.c \
