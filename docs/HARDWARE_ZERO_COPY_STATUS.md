@@ -30,8 +30,10 @@ the fallback.
 ## Zero-CPU-copy replay presentation
 
 `Pitel Instant Replay Event Output` was changed from an asynchronous source that
-submitted CPU YUV planes with `obs_source_output_video()` to a synchronous
-`OBS_SOURCE_CUSTOM_DRAW` source.
+submitted CPU YUV planes with `obs_source_output_video()` to a synchronous video
+source. It deliberately does **not** advertise `OBS_SOURCE_CUSTOM_DRAW`: the
+renderer ultimately presents one OBS texture with `obs_source_draw()`, so libobs
+must provide its normal single-texture source effect.
 
 For a D3D11 hardware frame:
 
@@ -175,6 +177,22 @@ current decoded size, disk-player LRU cache hit ratio and decoded-frame count.
 The encode timing is intentionally labelled as **submission/callback time**: it
 does not pretend to measure asynchronous GPU completion latency.
 
+## Replay Setup and REC preflight
+
+The operator dock now has an idempotent `SETUP` control next to REC/settings.
+Replay Setup can create or repair separate `Pitel Replay A` / `Pitel Replay B`
+scenes with Event Output A/B, fit the output scene items to the OBS base canvas,
+and attach/remove only the Pitel Capture filter on operator-selected compatible
+asynchronous video sources. Existing valid user A/B topology remains usable and
+unrelated scenes, scene items and filters are not deleted or renamed.
+
+REC start performs a lightweight preflight. With no enabled Capture filters it
+offers Replay Setup first. If an Event Transition is configured but separate A/B
+replay scenes are missing, the operator can create/repair A/B or deliberately
+continue in Cut-only mode. REC stop is immediate and does not run preflight.
+Disabled Capture filters are excluded from centralized REC counts so an
+intentionally disabled camera cannot leave the dock stuck in STARTING.
+
 ## CI/build validation
 
 The GPU encoder implementation is guarded so non-Windows targets compile only
@@ -190,6 +208,10 @@ Real-GPU testing remains mandatory before treating this branch as release-ready.
 Windows/D3D11 must be validated on real hardware before merging into the release
 checkpoint:
 
+- Open Replay Setup in an existing scene collection and verify repeated Create/Repair A/B does not duplicate valid A/B scenes/outputs.
+- Verify selecting/deselecting cameras only adds/removes Pitel Capture filters and preserves every unrelated filter.
+- Verify REC preflight offers Setup when no Capture filters are enabled, and offers A/B repair vs Cut when Event Transition needs two replay scenes.
+- Verify a disabled Capture filter is excluded from centralized REC counts and does not leave STARTING stuck.
 - NVIDIA replay: confirm D3D11VA decode, GPU Video Decode utilization and no replay CPU-readback spike.
 - NVIDIA capture: confirm `h264_nvenc`, GPU Video Encode utilization and no plugin GPU->CPU readback during recording.
 - AMD replay: confirm D3D11VA/VCN decode on the OBS adapter.
