@@ -383,7 +383,6 @@ void runExportJob(ExportJob *job)
 	job->done.store(true, std::memory_order_release);
 }
 
-
 class SrRangeSlider : public QSlider {
 public:
 	using RangeHandler = std::function<void(int, int)>;
@@ -502,7 +501,7 @@ private:
 		const int sliderMax = groove.right() - handle.width() + 1;
 		const int pos = qBound(0, x - sliderMin - handle.width() / 2, qMax(0, sliderMax - sliderMin));
 		return QStyle::sliderValueFromPosition(minimum(), maximum(), pos, qMax(1, sliderMax - sliderMin),
-						 option.upsideDown);
+						       option.upsideDown);
 	}
 
 	int pixelForValue(int value) const
@@ -534,11 +533,10 @@ public:
 		auto *root = new QVBoxLayout(this);
 		root->setContentsMargins(2, 2, 2, 2);
 		root->setSpacing(2);
-		setStyleSheet(QStringLiteral(
-			"QPushButton { padding: 1px 5px; min-height: 20px; }"
-			"QToolButton { padding: 1px 4px; min-height: 20px; }"
-			"QComboBox { padding: 1px 4px; min-height: 20px; }"
-			"QTableWidget::item { padding-top: 0px; padding-bottom: 0px; }"));
+		setStyleSheet(QStringLiteral("QPushButton { padding: 1px 5px; min-height: 20px; }"
+					     "QToolButton { padding: 1px 4px; min-height: 20px; }"
+					     "QComboBox { padding: 1px 4px; min-height: 20px; }"
+					     "QTableWidget::item { padding-top: 0px; padding-bottom: 0px; }"));
 
 		auto *operatorHint = new QLabel(T("EventDock.OperatorHint"), this);
 		operatorHint->setWordWrap(true);
@@ -903,7 +901,8 @@ public:
 			seekTimeline(value);
 			syncTimeline();
 		});
-		timelineSlider->setRangeHandler([this](int rangeIn, int rangeOut) { createRangeEvent(rangeIn, rangeOut); });
+		timelineSlider->setRangeHandler(
+			[this](int rangeIn, int rangeOut) { createRangeEvent(rangeIn, rangeOut); });
 		connect(jogSlider, &QSlider::sliderPressed, this, [this]() { jogLastValue = jogSlider->value(); });
 		connect(jogSlider, &QSlider::sliderMoved, this, [this](int value) { jogMoved(value); });
 		connect(jogSlider, &QSlider::sliderReleased, this, [this]() {
@@ -1615,7 +1614,8 @@ private:
 			return;
 
 		sr_replay_channel_state state = {};
-		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued || state.out_ns <= state.in_ns) {
+		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued ||
+		    state.out_ns <= state.in_ns) {
 			setStatus("EventDock.NoCue");
 			return;
 		}
