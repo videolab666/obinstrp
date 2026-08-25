@@ -181,8 +181,8 @@ bool sr_replay_playlist_start(enum sr_replay_bus bus, unsigned list_id, const ch
 	return sr_replay_playlist_start_with_transitions(bus, list_id, preferred_camera, false);
 }
 
-bool sr_replay_playlist_start_with_transitions(enum sr_replay_bus bus, unsigned list_id,
-					       const char *preferred_camera, bool cross_bus_transitions)
+bool sr_replay_playlist_start_with_transitions(enum sr_replay_bus bus, unsigned list_id, const char *preferred_camera,
+					       bool cross_bus_transitions)
 {
 	struct sr_playlist_bus *playlist = get_bus(bus);
 	if (!g_started || !playlist || !g_events)
@@ -301,8 +301,7 @@ static bool collect_event_angles(uint64_t event_id, uint64_t **event_ids_out, ch
 	return true;
 }
 
-bool sr_replay_playlist_start_event_angles(enum sr_replay_bus bus, uint64_t event_id,
-					   bool cross_bus_transitions)
+bool sr_replay_playlist_start_event_angles(enum sr_replay_bus bus, uint64_t event_id, bool cross_bus_transitions)
 {
 	struct sr_playlist_bus *playlist = get_bus(bus);
 	if (!g_started || !playlist || !g_events || !event_id)

@@ -56,6 +56,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QPixmap>
 #include <QIcon>
 #include <QShowEvent>
+#include <QSpinBox>
 #include <QPainter>
 #include <QSet>
 #include <QPointer>
@@ -114,6 +115,37 @@ void populateStingerCombo(QComboBox *combo, const QStringList &names, const QStr
 	for (const QString &name : names)
 		combo->addItem(name, name);
 
+	int index = combo->findData(saved);
+	if (!saved.isEmpty() && index < 0) {
+		combo->addItem(T("Dock.StingerMissing").arg(saved), saved);
+		index = combo->count() - 1;
+	}
+	combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+QStringList nativeEventTransitions()
+{
+	QStringList names;
+	obs_frontend_source_list transitions = {};
+	obs_frontend_get_transitions(&transitions);
+	for (size_t i = 0; i < transitions.sources.num; i++) {
+		obs_source_t *transition = transitions.sources.array[i];
+		if (strcmp(obs_source_get_unversioned_id(transition), "obs_stinger_transition") == 0)
+			continue;
+		const QString name = QString::fromUtf8(obs_source_get_name(transition));
+		if (!name.isEmpty() && !names.contains(name))
+			names.append(name);
+	}
+	obs_frontend_source_list_free(&transitions);
+	names.sort(Qt::CaseInsensitive);
+	return names;
+}
+
+void populateEventTransitionCombo(QComboBox *combo, const QStringList &names, const QString &saved)
+{
+	combo->addItem(T("Dock.EventTransitionCut"), QString());
+	for (const QString &name : names)
+		combo->addItem(name, name);
 	int index = combo->findData(saved);
 	if (!saved.isEmpty() && index < 0) {
 		combo->addItem(T("Dock.StingerMissing").arg(saved), saved);
@@ -372,6 +404,33 @@ private:
 		populateStingerCombo(stingerOut, stingers, takeOut);
 		lay->addWidget(stingerOut);
 
+		char *eventTransitionRaw = sr_config_get_event_transition();
+		const QString eventTransition = QString::fromUtf8(eventTransitionRaw ? eventTransitionRaw : "");
+		bfree(eventTransitionRaw);
+		auto *eventTransitionRow = new QHBoxLayout();
+		eventTransitionRow->addWidget(new QLabel(T("Dock.EventTransition"), &dlg));
+		auto *eventTransitionCombo = new QComboBox(&dlg);
+		populateEventTransitionCombo(eventTransitionCombo, nativeEventTransitions(), eventTransition);
+		eventTransitionCombo->setMinimumWidth(180);
+		eventTransitionRow->addWidget(eventTransitionCombo, 1);
+		auto *eventTransitionMs = new QSpinBox(&dlg);
+		eventTransitionMs->setRange(50, 10000);
+		eventTransitionMs->setSingleStep(50);
+		eventTransitionMs->setValue((int)sr_config_get_event_transition_duration_ms());
+		eventTransitionRow->addWidget(eventTransitionMs);
+		eventTransitionRow->addWidget(new QLabel(T("Dock.EventTransitionMilliseconds"), &dlg));
+		lay->addLayout(eventTransitionRow);
+		eventTransitionMs->setEnabled(!eventTransitionCombo->currentData().toString().isEmpty());
+		connect(eventTransitionCombo, &QComboBox::currentIndexChanged, &dlg,
+			[eventTransitionCombo, eventTransitionMs](int) {
+				eventTransitionMs->setEnabled(
+					!eventTransitionCombo->currentData().toString().isEmpty());
+			});
+		auto *eventTransitionHint = new QLabel(T("Dock.EventTransitionHint"), &dlg);
+		eventTransitionHint->setWordWrap(true);
+		eventTransitionHint->setStyleSheet(QStringLiteral("color: gray;"));
+		lay->addWidget(eventTransitionHint);
+
 		auto *stingerHint = new QLabel(T("Dock.StingerHint"), &dlg);
 		stingerHint->setWordWrap(true);
 		stingerHint->setStyleSheet(QStringLiteral("color: gray;"));
@@ -430,6 +489,9 @@ private:
 			const QByteArray stingerOutName = stingerOut->currentData().toString().toUtf8();
 			sr_config_set_take_in_transition(stingerInName.constData());
 			sr_config_set_take_out_transition(stingerOutName.constData());
+			const QByteArray eventTransitionName = eventTransitionCombo->currentData().toString().toUtf8();
+			sr_config_set_event_transition(eventTransitionName.constData());
+			sr_config_set_event_transition_duration_ms((uint32_t)eventTransitionMs->value());
 
 			watchFolder();
 			refreshList();

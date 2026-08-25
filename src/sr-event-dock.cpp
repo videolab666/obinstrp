@@ -12,6 +12,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-camera-list.h"
 #include "sr-capture.h"
+#include "sr-config.h"
 #include "sr-event-controller.h"
 #include "sr-dock.h"
 #include "sr-event-export.h"
@@ -835,6 +836,7 @@ public:
 		auto *playMenu = new QMenu(playEventsButton);
 		auto *playAllAction = playMenu->addAction(T("EventDock.PlayAll"));
 		auto *playSelectedAction = playMenu->addAction(T("EventDock.PlaySelected"));
+		auto *playEachAngleAction = playMenu->addAction(T("EventDock.PlayEachAngle"));
 		auto *playLastAction = playMenu->addAction(T("EventDock.PlayLast"));
 		auto *playByIdAction = playMenu->addAction(T("EventDock.PlayById"));
 		playMenu->addSeparator();
@@ -946,6 +948,7 @@ public:
 		connect(playEventsButton, &QToolButton::clicked, this, [this]() { playSelectedEvent(); });
 		connect(playAllAction, &QAction::triggered, this, [this]() { startPlaylist(transportBus()); });
 		connect(playSelectedAction, &QAction::triggered, this, [this]() { playSelectedEvent(); });
+		connect(playEachAngleAction, &QAction::triggered, this, [this]() { playEachAngle(); });
 		connect(playLastAction, &QAction::triggered, this, [this]() { playLastEvent(); });
 		connect(playByIdAction, &QAction::triggered, this, [this]() { playById(); });
 		connect(playlistAAction, &QAction::triggered, this, [this]() { startPlaylist(SR_REPLAY_BUS_A); });
@@ -1505,7 +1508,36 @@ private:
 		sr_replay_playlist_state state = {};
 		if (!sr_replay_playlist_get_state(bus, &state) || !state.active)
 			return QString();
+		if (state.angle_sequence)
+			return T("EventDock.AngleSequenceState")
+				.arg(state.event_id)
+				.arg(state.position + 1)
+				.arg(state.count);
 		return T("EventDock.PlaylistState").arg(state.list_id).arg(state.position + 1).arg(state.count);
+	}
+
+	enum sr_replay_bus activePlaylistBus() const
+	{
+		enum sr_replay_bus program;
+		sr_replay_playlist_state state = {};
+		if (sr_replay_take_program_bus(&program) && sr_replay_playlist_get_state(program, &state) &&
+		    state.active)
+			return program;
+		if (sr_replay_playlist_get_state(SR_REPLAY_BUS_A, &state) && state.active)
+			return SR_REPLAY_BUS_A;
+		if (sr_replay_playlist_get_state(SR_REPLAY_BUS_B, &state) && state.active)
+			return SR_REPLAY_BUS_B;
+		return transportBus();
+	}
+
+	bool eventTransitionCrossBus(bool *requested = nullptr) const
+	{
+		char *configured = sr_config_get_event_transition();
+		const bool wanted = configured && *configured;
+		bfree(configured);
+		if (requested)
+			*requested = wanted;
+		return wanted && sr_replay_take_event_transition_ready();
 	}
 
 	void refreshTransportStatus()
@@ -1796,6 +1828,35 @@ private:
 		takeBus(bus);
 	}
 
+	void playEachAngle()
+	{
+		const uint64_t eventId = selectedEventId();
+		if (!controller || !eventId) {
+			setStatus("EventDock.NoEventSelected");
+			return;
+		}
+		bool transitionRequested = false;
+		const bool crossBus = eventTransitionCrossBus(&transitionRequested);
+		const enum sr_replay_bus bus = transportBus();
+		if (!sr_replay_playlist_start_event_angles(bus, eventId, crossBus)) {
+			setStatus("EventDock.AngleSequenceFailed");
+			return;
+		}
+		if (!sr_replay_take_bus(controller, bus)) {
+			sr_replay_playlist_stop(bus);
+			sr_replay_channel_stop(bus);
+			setStatus("EventDock.TakeFailed");
+			return;
+		}
+		sr_replay_playlist_state sequence = {};
+		sr_replay_playlist_get_state(bus, &sequence);
+		QString message = T("EventDock.AngleSequenceStarted").arg(eventId).arg(sequence.count);
+		if (transitionRequested && !crossBus)
+			message += QStringLiteral(" · ") + T("EventDock.EventTransitionFallback");
+		status->setText(message);
+		refreshTransportStatus();
+	}
+
 	bool selectEventRowById(uint64_t eventId)
 	{
 		if (!table || !eventId)
@@ -1844,7 +1905,10 @@ private:
 		const QString camera = selectedCamera();
 		const QByteArray cameraUtf8 = camera.toUtf8();
 		const char *preferred = camera.isEmpty() ? nullptr : cameraUtf8.constData();
-		if (!controller || !sr_replay_playlist_start(bus, currentList(), preferred)) {
+		bool transitionRequested = false;
+		const bool crossBus = eventTransitionCrossBus(&transitionRequested);
+		if (!controller ||
+		    !sr_replay_playlist_start_with_transitions(bus, currentList(), preferred, crossBus)) {
 			setStatus("EventDock.PlaylistFailed");
 			return;
 		}
@@ -1854,16 +1918,19 @@ private:
 			setStatus("EventDock.TakeFailed");
 			return;
 		}
-		status->setText(T("EventDock.PlaylistStarted")
-					.arg(currentList())
-					.arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B")));
+		QString message = T("EventDock.PlaylistStarted")
+					  .arg(currentList())
+					  .arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"));
+		if (transitionRequested && !crossBus)
+			message += QStringLiteral(" · ") + T("EventDock.EventTransitionFallback");
+		status->setText(message);
 		refresh();
 		refreshTransportStatus();
 	}
 
 	void nextPlaylist()
 	{
-		if (!sr_replay_playlist_next(transportBus())) {
+		if (!sr_replay_playlist_next(activePlaylistBus())) {
 			setStatus("EventDock.PlaylistFinished");
 			refreshTransportStatus();
 			return;
@@ -1875,7 +1942,7 @@ private:
 
 	void stopPlaylist()
 	{
-		sr_replay_playlist_stop(transportBus());
+		sr_replay_playlist_stop(activePlaylistBus());
 		setStatus("EventDock.PlaylistStopped");
 		refreshTransportStatus();
 	}

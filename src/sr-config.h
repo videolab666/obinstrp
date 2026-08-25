@@ -16,7 +16,7 @@ the Free Software Foundation; either version 2 of the License, or
 extern "C" {
 #endif
 
-#define SR_CONFIG_SCHEMA_VERSION 4
+#define SR_CONFIG_SCHEMA_VERSION 5
 
 enum sr_storage_low_space_action {
 	SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED = 0,
@@ -58,6 +58,13 @@ char *sr_config_get_take_in_transition(void);
 void sr_config_set_take_in_transition(const char *transition_name);
 char *sr_config_get_take_out_transition(void);
 void sr_config_set_take_out_transition(const char *transition_name);
+
+/* Optional non-Stinger OBS transition used between Events/angles while
+ * replay is already on Program. Empty means a direct same-bus cut. */
+char *sr_config_get_event_transition(void);
+void sr_config_set_event_transition(const char *transition_name);
+uint32_t sr_config_get_event_transition_duration_ms(void);
+void sr_config_set_event_transition_duration_ms(uint32_t milliseconds);
 
 #ifdef __cplusplus
 }

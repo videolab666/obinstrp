@@ -20,6 +20,7 @@ the Free Software Foundation; either version 2 of the License, or
 #define DEFAULT_MIN_FREE_BYTES (20ULL * 1024ULL * 1024ULL * 1024ULL)
 #define DEFAULT_PURGE_TARGET_BYTES (25ULL * 1024ULL * 1024ULL * 1024ULL)
 #define DEFAULT_SEGMENT_DURATION_MS 4000u
+#define DEFAULT_EVENT_TRANSITION_DURATION_MS 200u
 
 static pthread_mutex_t g_mutex;
 static char *g_save_dir;
@@ -31,6 +32,8 @@ static enum sr_storage_low_space_action g_low_space_action;
 static uint32_t g_segment_duration_ms;
 static char *g_take_in_transition;
 static char *g_take_out_transition;
+static char *g_event_transition;
+static uint32_t g_event_transition_duration_ms;
 
 /* Default location when the user hasn't chosen one: <Videos>/Pitel Instant Replay,
  * created if needed. Falls back to the plugin config dir. */
@@ -85,6 +88,8 @@ static void save_locked(void)
 	obs_data_set_int(data, "segment_duration_ms", g_segment_duration_ms);
 	obs_data_set_string(data, "take_in_transition", g_take_in_transition ? g_take_in_transition : "");
 	obs_data_set_string(data, "take_out_transition", g_take_out_transition ? g_take_out_transition : "");
+	obs_data_set_string(data, "event_transition", g_event_transition ? g_event_transition : "");
+	obs_data_set_int(data, "event_transition_duration_ms", g_event_transition_duration_ms);
 
 	char *path = obs_module_config_path("config.json");
 	if (path)
@@ -129,8 +134,14 @@ void sr_config_init(void)
 
 	const char *take_in = data ? obs_data_get_string(data, "take_in_transition") : "";
 	const char *take_out = data ? obs_data_get_string(data, "take_out_transition") : "";
+	const char *event_transition = data ? obs_data_get_string(data, "event_transition") : "";
+	const int64_t event_transition_ms = data ? obs_data_get_int(data, "event_transition_duration_ms") : 0;
 	g_take_in_transition = bstrdup(take_in ? take_in : "");
 	g_take_out_transition = bstrdup(take_out ? take_out : "");
+	g_event_transition = bstrdup(event_transition ? event_transition : "");
+	g_event_transition_duration_ms = event_transition_ms >= 50 && event_transition_ms <= 10000
+						 ? (uint32_t)event_transition_ms
+						 : DEFAULT_EVENT_TRANSITION_DURATION_MS;
 
 	os_mkdirs(g_save_dir);
 	os_mkdirs(g_session_root);
@@ -145,10 +156,12 @@ void sr_config_free(void)
 	bfree(g_session_root);
 	bfree(g_take_in_transition);
 	bfree(g_take_out_transition);
+	bfree(g_event_transition);
 	g_save_dir = NULL;
 	g_session_root = NULL;
 	g_take_in_transition = NULL;
 	g_take_out_transition = NULL;
+	g_event_transition = NULL;
 	pthread_mutex_destroy(&g_mutex);
 }
 
@@ -312,6 +325,43 @@ void sr_config_set_take_out_transition(const char *transition_name)
 	pthread_mutex_lock(&g_mutex);
 	bfree(g_take_out_transition);
 	g_take_out_transition = bstrdup(transition_name ? transition_name : "");
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+char *sr_config_get_event_transition(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	char *result = get_transition_name(g_event_transition);
+	pthread_mutex_unlock(&g_mutex);
+	return result;
+}
+
+void sr_config_set_event_transition(const char *transition_name)
+{
+	pthread_mutex_lock(&g_mutex);
+	bfree(g_event_transition);
+	g_event_transition = bstrdup(transition_name ? transition_name : "");
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+uint32_t sr_config_get_event_transition_duration_ms(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const uint32_t result = g_event_transition_duration_ms;
+	pthread_mutex_unlock(&g_mutex);
+	return result;
+}
+
+void sr_config_set_event_transition_duration_ms(uint32_t milliseconds)
+{
+	if (milliseconds < 50)
+		milliseconds = 50;
+	if (milliseconds > 10000)
+		milliseconds = 10000;
+	pthread_mutex_lock(&g_mutex);
+	g_event_transition_duration_ms = milliseconds;
 	save_locked();
 	pthread_mutex_unlock(&g_mutex);
 }

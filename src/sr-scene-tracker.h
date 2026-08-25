@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,6 +43,12 @@ void sr_switch_to_scene(const char *scene_name);
  * OBS reports TRANSITION_STOPPED. Missing/renamed stingers fall back to the
  * transition currently selected in OBS. */
 void sr_switch_to_scene_with_transition(const char *scene_name, const char *transition_name);
+
+/* One-shot arbitrary existing OBS transition with a temporary duration.
+ * Used only for replay Event/angle A<->B changes; it does not require a
+ * Stinger source and restores the operator's previous transition/duration. */
+void sr_switch_to_scene_with_transition_duration(const char *scene_name, const char *transition_name,
+						 uint32_t duration_ms);
 
 /* Same as sr_switch_to_scene(), but marks the switch as a "return to
  * previous scene" bounce, so a playback source landing there doesn't

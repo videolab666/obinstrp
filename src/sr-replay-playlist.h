@@ -44,15 +44,14 @@ bool sr_replay_playlist_start(enum sr_replay_bus bus, unsigned list_id, const ch
  * playable item is pre-cued on the opposite A/B bus and the TAKE layer is
  * asked to switch replay scenes with the configured Event Transition. The
  * first item still enters replay through the normal TAKE IN Stinger. */
-bool sr_replay_playlist_start_with_transitions(enum sr_replay_bus bus, unsigned list_id,
-					       const char *preferred_camera, bool cross_bus_transitions);
+bool sr_replay_playlist_start_with_transitions(enum sr_replay_bus bus, unsigned list_id, const char *preferred_camera,
+					       bool cross_bus_transitions);
 
 /* Plays every usable camera angle of one selected Event in camera order. Full
  * coverage angles are preferred; PARTIAL angles are used only when no camera
  * has FULL coverage. The same cross-bus Event Transition mechanism is used
  * between angles, so the TAKE IN/OUT Stingers are not retriggered. */
-bool sr_replay_playlist_start_event_angles(enum sr_replay_bus bus, uint64_t event_id,
-					   bool cross_bus_transitions);
+bool sr_replay_playlist_start_event_angles(enum sr_replay_bus bus, uint64_t event_id, bool cross_bus_transitions);
 
 /* Operator skip and automatic end-of-item advance. Both skip deleted,
  * Pending or currently unplayable Events/angles. */
