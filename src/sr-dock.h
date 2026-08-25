@@ -28,7 +28,8 @@ struct sr_event_controller;
  * OBS frontend. Call once, after the frontend is ready. */
 void sr_dock_register(struct sr_event_controller *controller);
 
-/* Opens the existing unified Pitel Instant Replay settings dialog. UI thread only. */
+/* Opens the same unified settings dialog from compact operator controls such
+ * as the gear beside the global REC button. UI thread only. */
 void sr_dock_open_settings(void);
 
 /* Marks a saved replay as already gone to air, the same way launching one
