@@ -1322,304 +1322,266 @@ private:
 
 	QString selectedCamera() const { return cameraCombo ? cameraCombo->currentData().toString() : QString(); }
 
-	\tbool thumbnailViewActive() const
-\t
+	bool thumbnailViewActive() const
+
 	{
-		\t\treturn eventViewStack &&thumbnailList && eventViewStack->currentWidget() == thumbnailList;
-		\t
+		return eventViewStack && thumbnailList && eventViewStack->currentWidget() == thumbnailList;
 	}
 
-	\tQListWidgetItem *galleryItemById(uint64_t eventId) const
-\t
+	QListWidgetItem *galleryItemById(uint64_t eventId) const
+
 	{
-		\t\tif(!thumbnailList || !eventId)
-\t\t\treturn nullptr;
-		\t\tfor(int i = 0; i < thumbnailList->count(); i++)
-		{
-			\t\t\tQListWidgetItem *item = thumbnailList->item(i);
-			\t\t\tif(item && item->data(Qt::UserRole).toULongLong() == eventId)
-\t\t\t\treturn item;
-			\t\t
+		if (!thumbnailList || !eventId)
+			return nullptr;
+		for (int i = 0; i < thumbnailList->count(); i++) {
+			QListWidgetItem *item = thumbnailList->item(i);
+			if (item && item->data(Qt::UserRole).toULongLong() == eventId)
+				return item;
 		}
-		\t\treturn nullptr;
-		\t
+		return nullptr;
 	}
 
-	\tvoid syncGallerySelectionFromTable()
-\t
+	void syncGallerySelectionFromTable()
+
 	{
-		\t\tif(!table || !thumbnailList || syncingEventViews)
-\t\t\treturn;
-		\t\tsyncingEventViews = true;
-		\t\tconst QSignalBlocker blocker(thumbnailList);
-		\t\tthumbnailList->clearSelection();
-		\t\tconst std::vector<uint64_t> ids = selectedEventIds();
-		\t\tconst uint64_t currentId = selectedEventId();
-		\t\tfor(uint64_t id : ids)
-		{
-			\t\t\tif(QListWidgetItem *item = galleryItemById(id))
-\t\t\t\titem->setSelected(true);
-			\t\t
+		if (!table || !thumbnailList || syncingEventViews)
+			return;
+		syncingEventViews = true;
+		const QSignalBlocker blocker(thumbnailList);
+		thumbnailList->clearSelection();
+		const std::vector<uint64_t> ids = selectedEventIds();
+		const uint64_t currentId = selectedEventId();
+		for (uint64_t id : ids) {
+			if (QListWidgetItem *item = galleryItemById(id))
+				item->setSelected(true);
 		}
-		\t\tif(QListWidgetItem *current = galleryItemById(currentId))
-\t\t\tthumbnailList->setCurrentItem(current, QItemSelectionModel::NoUpdate);
-		\t\tsyncingEventViews = false;
-		\t
+		if (QListWidgetItem *current = galleryItemById(currentId))
+			thumbnailList->setCurrentItem(current, QItemSelectionModel::NoUpdate);
+		syncingEventViews = false;
 	}
 
-	\tvoid syncTableSelectionFromGallery()
-\t
+	void syncTableSelectionFromGallery()
+
 	{
-		\t\tif(!table || !thumbnailList || syncingEventViews)
-\t\t\treturn;
-		\t\tsyncingEventViews = true;
-		\t\tconst QSignalBlocker blocker(table);
-		\t\ttable->clearSelection();
-		\t\tuint64_t currentId = 0;
-		\t\tif(QListWidgetItem *current = thumbnailList->currentItem())
-\t\t\tcurrentId = current->data(Qt::UserRole).toULongLong();
-		\t\tint currentRow = -1;
-		\t\tfor(int row = 0; row < table->rowCount(); row++)
-		{
-			\t\t\tQTableWidgetItem *idItem = table->item(row, 0);
-			\t\t\tconst uint64_t id = idItem ? idItem->data(Qt::UserRole).toULongLong() : 0;
-			\t\t\tQListWidgetItem *galleryItem = galleryItemById(id);
-			\t\t\tif(galleryItem && galleryItem->isSelected())
-\t\t\t\ttable->selectionModel()->select(table->model()->index(row, 0),
-\t\t\t\t\t\t\tQItemSelectionModel::Select | QItemSelectionModel::Rows);
-			\t\t\tif(id && id == currentId)
-\t\t\t\tcurrentRow = row;
-			\t\t
+		if (!table || !thumbnailList || syncingEventViews)
+			return;
+		syncingEventViews = true;
+		const QSignalBlocker blocker(table);
+		table->clearSelection();
+		uint64_t currentId = 0;
+		if (QListWidgetItem *current = thumbnailList->currentItem())
+			currentId = current->data(Qt::UserRole).toULongLong();
+		int currentRow = -1;
+		for (int row = 0; row < table->rowCount(); row++) {
+			QTableWidgetItem *idItem = table->item(row, 0);
+			const uint64_t id = idItem ? idItem->data(Qt::UserRole).toULongLong() : 0;
+			QListWidgetItem *galleryItem = galleryItemById(id);
+			if (galleryItem && galleryItem->isSelected())
+				table->selectionModel()->select(table->model()->index(row, 0),
+								QItemSelectionModel::Select |
+									QItemSelectionModel::Rows);
+			if (id && id == currentId)
+				currentRow = row;
 		}
-		\t\tif(currentRow >= 0)
-\t\t\ttable->setCurrentCell(currentRow, 0, QItemSelectionModel::NoUpdate);
-		\t\tsyncingEventViews = false;
-		\t\trefreshAngleCoverage();
-		\t
+		if (currentRow >= 0)
+			table->setCurrentCell(currentRow, 0, QItemSelectionModel::NoUpdate);
+		syncingEventViews = false;
+		refreshAngleCoverage();
 	}
 
-	\tQString eventGalleryText(const sr_event_record &event) const
-\t
+	QString eventGalleryText(const sr_event_record &event) const
+
 	{
-		\t\tconst QString name = QString::fromUtf8(event.name ? event.name : "").trimmed();
-		\t\tconst QString tag = QString::fromUtf8(event.tag ? event.tag : "").trimmed();
-		\t\tQString first = QStringLiteral("#%1").arg(event.id);
-		\t\tif(!name.isEmpty())
-\t\t\tfirst += QStringLiteral("  ") + name;
-		\t\tQString second = QStringLiteral("%1  ·  %2%")
-\t\t\t\t\t.arg(durationText(event))
-\t\t\t\t\t.arg(event.speed_percent, 0, 'f', 0);
-		\t\tif(!tag.isEmpty())
-\t\t\tsecond += QStringLiteral("  ·  ") + tag;
-		\t\treturn first + QStringLiteral("\n") + second;
-		\t
+		const QString name = QString::fromUtf8(event.name ? event.name : "").trimmed();
+		const QString tag = QString::fromUtf8(event.tag ? event.tag : "").trimmed();
+		QString first = QStringLiteral("#%1").arg(event.id);
+		if (!name.isEmpty())
+			first += QStringLiteral("  ") + name;
+		QString second =
+			QStringLiteral("%1  ·  %2%").arg(durationText(event)).arg(event.speed_percent, 0, 'f', 0);
+		if (!tag.isEmpty())
+			second += QStringLiteral("  ·  ") + tag;
+		return first + QStringLiteral("\n") + second;
 	}
 
-	\tbool makeEventThumbnailTask(const sr_event_record &event, const QStringList &cameras,
-\t\t\t\t EventThumbnailTask *task)
-\t
-	{
-		\t\tif(!task || cameras.isEmpty() || event.out_ns <= event.in_ns)
-\t\t\treturn false;
+	bool makeEventThumbnailTask(const sr_event_record &event, const QStringList &cameras, EventThumbnailTask *task)
 
-		\t\tQString preferred;
-		\t\tif(event.preferred_camera_id)
-		{
-			\t\t\tchar *name = nullptr;
-			\t\t\tif(sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &name) &&
-				 name)
-\t\t\t\tpreferred = QString::fromUtf8(name);
-			\t\t\tbfree(name);
-			\t\t
+	{
+		if (!task || cameras.isEmpty() || event.out_ns <= event.in_ns)
+			return false;
+
+		QString preferred;
+		if (event.preferred_camera_id) {
+			char *name = nullptr;
+			if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &name) && name)
+				preferred = QString::fromUtf8(name);
+			bfree(name);
 		}
 
-		\t\tauto prepare = [&](const QString &camera, bool fullOnly) -> bool {
-			\t\t\tif(camera.isEmpty())
-\t\t\t\treturn false;
-			\t\t\tsr_replay_coverage_info coverage = {};
-			\t\t\tconst QByteArray cameraUtf8 = camera.toUtf8();
-			\t\t\tif(!sr_replay_coverage_query(cameraUtf8.constData(), event.in_ns, event.out_ns,
-							   &coverage) ||
-\t\t\t coverage.coverage == SR_REPLAY_COVERAGE_NONE ||
-\t\t\t(fullOnly && coverage.coverage != SR_REPLAY_COVERAGE_FULL))
-\t\t\t\treturn false;
-			\t\t\tuint64_t timestamp = event.in_ns + (event.out_ns - event.in_ns) / 2;
-			\t\t\tif(coverage.coverage == SR_REPLAY_COVERAGE_PARTIAL &&
-				 coverage.playable_out_ns > coverage.playable_in_ns)
-\t\t\t\ttimestamp = coverage.playable_in_ns + (coverage.playable_out_ns - coverage.playable_in_ns) / 2;
-			\t\t\tconst int64_t offset = coverage.sync_offset_ns;
-			\t\t\tif(offset >= 0 && (uint64_t)offset <= UINT64_MAX - timestamp)
-\t\t\t\ttimestamp += (uint64_t)offset;
-			\t\t\telse if (offset < 0 && (uint64_t)(-offset) < timestamp)
-\t\t\t\ttimestamp -= (uint64_t)(-offset);
-			\t\t\ttask->eventId = event.id;
-			\t\t\ttask->inNs = event.in_ns;
-			\t\t\ttask->outNs = event.out_ns;
-			\t\t\ttask->camera = cameraUtf8.constData();
-			\t\t\ttask->timestampNs = timestamp;
-			\t\t\treturn true;
-			\t\t
+		auto prepare = [&](const QString &camera, bool fullOnly) -> bool {
+			if (camera.isEmpty())
+				return false;
+			sr_replay_coverage_info coverage = {};
+			const QByteArray cameraUtf8 = camera.toUtf8();
+			if (!sr_replay_coverage_query(cameraUtf8.constData(), event.in_ns, event.out_ns, &coverage) ||
+			    coverage.coverage == SR_REPLAY_COVERAGE_NONE ||
+			    (fullOnly && coverage.coverage != SR_REPLAY_COVERAGE_FULL))
+				return false;
+			uint64_t timestamp = event.in_ns + (event.out_ns - event.in_ns) / 2;
+			if (coverage.coverage == SR_REPLAY_COVERAGE_PARTIAL &&
+			    coverage.playable_out_ns > coverage.playable_in_ns)
+				timestamp = coverage.playable_in_ns +
+					    (coverage.playable_out_ns - coverage.playable_in_ns) / 2;
+			const int64_t offset = coverage.sync_offset_ns;
+			if (offset >= 0 && (uint64_t)offset <= UINT64_MAX - timestamp)
+				timestamp += (uint64_t)offset;
+			else if (offset < 0 && (uint64_t)(-offset) < timestamp)
+				timestamp -= (uint64_t)(-offset);
+			task->eventId = event.id;
+			task->inNs = event.in_ns;
+			task->outNs = event.out_ns;
+			task->camera = cameraUtf8.constData();
+			task->timestampNs = timestamp;
+			return true;
 		};
 
-		\t\tif(!preferred.isEmpty() && prepare(preferred, false))
-\t\t\treturn true;
-		\t\tfor(const QString &camera : cameras)
-		{
-			\t\t\tif(camera != preferred && prepare(camera, true))
-\t\t\t\treturn true;
-			\t\t
+		if (!preferred.isEmpty() && prepare(preferred, false))
+			return true;
+		for (const QString &camera : cameras) {
+			if (camera != preferred && prepare(camera, true))
+				return true;
 		}
-		\t\tfor(const QString &camera : cameras)
-		{
-			\t\t\tif(camera != preferred && prepare(camera, false))
-\t\t\t\treturn true;
-			\t\t
+		for (const QString &camera : cameras) {
+			if (camera != preferred && prepare(camera, false))
+				return true;
 		}
-		\t\treturn false;
-		\t
+		return false;
 	}
 
-	\tvoid refreshEventGallery()
-\t
-	{
-		\t\tif(!thumbnailList || !table || !controller)
-\t\t\treturn;
+	void refreshEventGallery()
 
-		\t\tstd::vector<uint64_t> ids;
-		\t\tids.reserve((size_t)table->rowCount());
-		\t\tfor(int row = 0; row < table->rowCount(); row++)
-		{
-			\t\t\tQTableWidgetItem *item = table->item(row, 0);
-			\t\t\tconst uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
-			\t\t\tif(id)
-\t\t\t\tids.push_back(id);
-			\t\t
+	{
+		if (!thumbnailList || !table || !controller)
+			return;
+
+		std::vector<uint64_t> ids;
+		ids.reserve((size_t)table->rowCount());
+		for (int row = 0; row < table->rowCount(); row++) {
+			QTableWidgetItem *item = table->item(row, 0);
+			const uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+			if (id)
+				ids.push_back(id);
 		}
 
-		\t\tconst bool structureChanged = galleryListId != currentList() || ids != galleryEventIds;
-		\t\tif(structureChanged)
-		{
-			\t\t\tgalleryListId = currentList();
-			\t\t\tgalleryEventIds = ids;
-			\t\t\tgalleryGeneration++;
-			\t\t\tconst QSignalBlocker blocker(thumbnailList);
-			\t\t\tthumbnailList->clear();
-			\t\t\tfor(uint64_t id : galleryEventIds)
-			{
-				\t\t\t\tauto *item = new QListWidgetItem(thumbnailList);
-				\t\t\t\titem->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(id));
-				\t\t\t\titem->setTextAlignment(Qt::AlignHCenter | Qt::AlignTop);
-				\t\t\t
+		const bool structureChanged = galleryListId != currentList() || ids != galleryEventIds;
+		if (structureChanged) {
+			galleryListId = currentList();
+			galleryEventIds = ids;
+			galleryGeneration++;
+			const QSignalBlocker blocker(thumbnailList);
+			thumbnailList->clear();
+			for (uint64_t id : galleryEventIds) {
+				auto *item = new QListWidgetItem(thumbnailList);
+				item->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(id));
+				item->setTextAlignment(Qt::AlignHCenter | Qt::AlignTop);
 			}
-			\t\t
 		}
 
-		\t\tfor(int i = 0; i < thumbnailList->count(); i++)
-		{
-			\t\t\tQListWidgetItem *item = thumbnailList->item(i);
-			\t\t\tconst uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
-			\t\t\tsr_event_record event = {};
-			\t\t\tif(!id || !sr_event_controller_get_event(controller, id, &event))
-\t\t\t\tcontinue;
-			\t\t\titem->setText(eventGalleryText(event));
-			\t\t\titem->setToolTip(QStringLiteral("#%1 · %2 · %3")
-\t\t\t\t\t\t.arg(event.id)
-\t\t\t\t\t\t.arg(stateText(event))
-\t\t\t\t\t\t.arg(QString::fromUtf8(event.tag ? event.tag : "")));
-			\t\t\titem->setData(Qt::UserRole + 1, QVariant::fromValue<qulonglong>(event.in_ns));
-			\t\t\titem->setData(Qt::UserRole + 2, QVariant::fromValue<qulonglong>(event.out_ns));
-			\t\t\tauto cached = eventThumbnailCache.find(id);
-			\t\t\tif(cached != eventThumbnailCache.end() && cached->second.inNs == event.in_ns &&
-\t\t\t cached->second.outNs == event.out_ns)
-\t\t\t\titem->setIcon(cached->second.icon);
-			\t\t\telse
-\t\t\t\titem->setIcon(QIcon());
-			\t\t\tsr_event_controller_free_event(&event);
-			\t\t
+		for (int i = 0; i < thumbnailList->count(); i++) {
+			QListWidgetItem *item = thumbnailList->item(i);
+			const uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+			sr_event_record event = {};
+			if (!id || !sr_event_controller_get_event(controller, id, &event))
+				continue;
+			item->setText(eventGalleryText(event));
+			item->setToolTip(QStringLiteral("#%1 · %2 · %3")
+						 .arg(event.id)
+						 .arg(stateText(event))
+						 .arg(QString::fromUtf8(event.tag ? event.tag : "")));
+			item->setData(Qt::UserRole + 1, QVariant::fromValue<qulonglong>(event.in_ns));
+			item->setData(Qt::UserRole + 2, QVariant::fromValue<qulonglong>(event.out_ns));
+			auto cached = eventThumbnailCache.find(id);
+			if (cached != eventThumbnailCache.end() && cached->second.inNs == event.in_ns &&
+			    cached->second.outNs == event.out_ns)
+				item->setIcon(cached->second.icon);
+			else
+				item->setIcon(QIcon());
+			sr_event_controller_free_event(&event);
 		}
 
-		\t\tif(structureChanged)
-\t\t\tsyncGallerySelectionFromTable();
-		\t\tif(thumbnailViewActive())
-\t\t\trequestEventThumbnails();
-		\t
+		if (structureChanged)
+			syncGallerySelectionFromTable();
+		if (thumbnailViewActive())
+			requestEventThumbnails();
 	}
 
-	\tvoid requestEventThumbnails()
-\t
-	{
-		\t\tif(!thumbnailViewActive() || eventThumbnailJob || !controller || !thumbnailList)
-\t\t\treturn;
-		\t\tconst QStringList cameras = captureCameraNames();
-		\t\tif(cameras.isEmpty())
-\t\t\treturn;
+	void requestEventThumbnails()
 
-		\t\tauto job = std::make_unique<EventThumbnailJob>();
-		\t\tjob->generation = galleryGeneration;
-		\t\tfor(int i = 0; i < thumbnailList->count() && job->tasks.size() < EVENT_THUMB_BATCH; i++)
-		{
-			\t\t\tQListWidgetItem *item = thumbnailList->item(i);
-			\t\t\tconst uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
-			\t\t\tconst uint64_t inNs = item ? item->data(Qt::UserRole + 1).toULongLong() : 0;
-			\t\t\tconst uint64_t outNs = item ? item->data(Qt::UserRole + 2).toULongLong() : 0;
-			\t\t\tauto cached = eventThumbnailCache.find(id);
-			\t\t\tif(cached != eventThumbnailCache.end() && cached->second.inNs == inNs &&
-\t\t\t cached->second.outNs == outNs && !cached->second.icon.isNull())
-\t\t\t\tcontinue;
-			\t\t\tsr_event_record event = {};
-			\t\t\tif(!id || !sr_event_controller_get_event(controller, id, &event))
-\t\t\t\tcontinue;
-			\t\t\tEventThumbnailTask task;
-			\t\t\tif(makeEventThumbnailTask(event, cameras, &task))
-\t\t\t\tjob->tasks.emplace_back(std::move(task));
-			\t\t\tsr_event_controller_free_event(&event);
-			\t\t
+	{
+		if (!thumbnailViewActive() || eventThumbnailJob || !controller || !thumbnailList)
+			return;
+		const QStringList cameras = captureCameraNames();
+		if (cameras.isEmpty())
+			return;
+
+		auto job = std::make_unique<EventThumbnailJob>();
+		job->generation = galleryGeneration;
+		for (int i = 0; i < thumbnailList->count() && job->tasks.size() < EVENT_THUMB_BATCH; i++) {
+			QListWidgetItem *item = thumbnailList->item(i);
+			const uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+			const uint64_t inNs = item ? item->data(Qt::UserRole + 1).toULongLong() : 0;
+			const uint64_t outNs = item ? item->data(Qt::UserRole + 2).toULongLong() : 0;
+			auto cached = eventThumbnailCache.find(id);
+			if (cached != eventThumbnailCache.end() && cached->second.inNs == inNs &&
+			    cached->second.outNs == outNs && !cached->second.icon.isNull())
+				continue;
+			sr_event_record event = {};
+			if (!id || !sr_event_controller_get_event(controller, id, &event))
+				continue;
+			EventThumbnailTask task;
+			if (makeEventThumbnailTask(event, cameras, &task))
+				job->tasks.emplace_back(std::move(task));
+			sr_event_controller_free_event(&event);
 		}
-		\t\tif(job->tasks.empty())
-\t\t\treturn;
-		\t\tchar *sessionPath = sr_session_get_or_create_path();
-		\t\tif(!sessionPath)
-\t\t\treturn;
-		\t\tjob->sessionDir = sessionPath;
-		\t\tbfree(sessionPath);
-		\t\teventThumbnailJob = std::move(job);
-		\t\tEventThumbnailJob *workerJob = eventThumbnailJob.get();
-		\t\tworkerJob->worker = std::thread([workerJob]() { runEventThumbnailJob(workerJob); });
-		\t
+		if (job->tasks.empty())
+			return;
+		char *sessionPath = sr_session_get_or_create_path();
+		if (!sessionPath)
+			return;
+		job->sessionDir = sessionPath;
+		bfree(sessionPath);
+		eventThumbnailJob = std::move(job);
+		EventThumbnailJob *workerJob = eventThumbnailJob.get();
+		workerJob->worker = std::thread([workerJob]() { runEventThumbnailJob(workerJob); });
 	}
 
-	\tvoid pollEventThumbnails()
-\t
+	void pollEventThumbnails()
+
 	{
-		\t\tif(!eventThumbnailJob || !eventThumbnailJob->done.load(std::memory_order_acquire))
-\t\t\treturn;
-		\t\tif(eventThumbnailJob->worker.joinable())
-\t\t\teventThumbnailJob->worker.join();
-		\t\tif(eventThumbnailJob->generation == galleryGeneration)
-		{
-			\t\t\tfor(const EventThumbnailResult &result : eventThumbnailJob->results)
-			{
-				\t\t\t\tif(result.rgba.empty())
-\t\t\t\t\tcontinue;
-				\t\t\t\tQListWidgetItem *item = galleryItemById(result.eventId);
-				\t\t\t\tif(!item || item->data(Qt::UserRole + 1).toULongLong() != result.inNs ||
-\t\t\t\t item->data(Qt::UserRole + 2).toULongLong() != result.outNs)
-\t\t\t\t\tcontinue;
-				\t\t\t\tconst QImage image(result.rgba.data(), EVENT_THUMB_WIDTH, EVENT_THUMB_HEIGHT,
-\t\t\t\t\t\t EVENT_THUMB_WIDTH * 4, QImage::Format_RGBA8888);
-				\t\t\t\tCachedEventThumbnail cached;
-				\t\t\t\tcached.inNs = result.inNs;
-				\t\t\t\tcached.outNs = result.outNs;
-				\t\t\t\tcached.icon = QIcon(QPixmap::fromImage(image.copy()));
-				\t\t\t\teventThumbnailCache[result.eventId] = cached;
-				\t\t\t\titem->setIcon(cached.icon);
-				\t\t\t
+		if (!eventThumbnailJob || !eventThumbnailJob->done.load(std::memory_order_acquire))
+			return;
+		if (eventThumbnailJob->worker.joinable())
+			eventThumbnailJob->worker.join();
+		if (eventThumbnailJob->generation == galleryGeneration) {
+			for (const EventThumbnailResult &result : eventThumbnailJob->results) {
+				if (result.rgba.empty())
+					continue;
+				QListWidgetItem *item = galleryItemById(result.eventId);
+				if (!item || item->data(Qt::UserRole + 1).toULongLong() != result.inNs ||
+				    item->data(Qt::UserRole + 2).toULongLong() != result.outNs)
+					continue;
+				const QImage image(result.rgba.data(), EVENT_THUMB_WIDTH, EVENT_THUMB_HEIGHT,
+						   EVENT_THUMB_WIDTH * 4, QImage::Format_RGBA8888);
+				CachedEventThumbnail cached;
+				cached.inNs = result.inNs;
+				cached.outNs = result.outNs;
+				cached.icon = QIcon(QPixmap::fromImage(image.copy()));
+				eventThumbnailCache[result.eventId] = cached;
+				item->setIcon(cached.icon);
 			}
-			\t\t
 		}
-		\t\teventThumbnailJob.reset();
-		\t\trequestEventThumbnails();
-		\t
+		eventThumbnailJob.reset();
+		requestEventThumbnails();
 	}
 
 	uint64_t selectedEventId() const
