@@ -1,0 +1,57 @@
+name: Fix flat playback button shadowing
+
+on:
+  push:
+    branches: [feature/hardware-zero-copy]
+    paths:
+      - '.github/workflows/fix-flat-buttons-shadow.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+      - name: Rename buttons and remove trigger
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/sr-event-dock.cpp')
+          text = p.read_text(encoding='utf-8')
+          replacements = {
+              'auto *playEachAngle = new QPushButton(T("EventDock.PlayEachAngle"), this);':
+                  'auto *playEachAngleButton = new QPushButton(T("EventDock.PlayEachAngle"), this);',
+              'auto *playById = new QPushButton(T("EventDock.PlayById"), this);':
+                  'auto *playByIdButton = new QPushButton(T("EventDock.PlayById"), this);',
+              '{playSelected, playAll, playEachAngle, playLast, playById, playlistA, playlistB, playlistNext,':
+                  '{playSelected, playAll, playEachAngleButton, playLast, playByIdButton, playlistA, playlistB, playlistNext,',
+              'takeBar->addWidget(playEachAngle);': 'takeBar->addWidget(playEachAngleButton);',
+              'takeBar->addWidget(playById);': 'takeBar->addWidget(playByIdButton);',
+              'connect(playEachAngle, &QPushButton::clicked, this, [this]() { playEachAngle(); });':
+                  'connect(playEachAngleButton, &QPushButton::clicked, this, [this]() { playEachAngle(); });',
+              'connect(playById, &QPushButton::clicked, this, [this]() { playById(); });':
+                  'connect(playByIdButton, &QPushButton::clicked, this, [this]() { playById(); });',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'anchor missing: {old}')
+              text = text.replace(old, new, 1)
+          p.write_text(text, encoding='utf-8')
+          Path('.ci-trigger-multiselect').unlink(missing_ok=True)
+      - name: Install clang-format 19
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-19
+      - name: Format, validate, commit and push
+        run: |
+          clang-format-19 -i src/sr-event-dock.cpp
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/sr-event-dock.cpp .ci-trigger-multiselect
+          git commit -m "fix: avoid playback button name shadowing"
+          git push origin HEAD:feature/hardware-zero-copy
