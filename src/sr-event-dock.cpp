@@ -826,9 +826,9 @@ public:
 		takeBar->setSpacing(3);
 		auto *playSelected = new QPushButton(T("EventDock.PlaySelected"), this);
 		auto *playAll = new QPushButton(T("EventDock.PlayAll"), this);
-		auto *playEachAngle = new QPushButton(T("EventDock.PlayEachAngle"), this);
+		auto *playEachAngleButton = new QPushButton(T("EventDock.PlayEachAngle"), this);
 		auto *playLast = new QPushButton(T("EventDock.PlayLast"), this);
-		auto *playById = new QPushButton(T("EventDock.PlayById"), this);
+		auto *playByIdButton = new QPushButton(T("EventDock.PlayById"), this);
 		auto *playlistA = new QPushButton(T("EventDock.PlaylistA"), this);
 		auto *playlistB = new QPushButton(T("EventDock.PlaylistB"), this);
 		auto *playlistNext = new QPushButton(T("EventDock.PlaylistNext"), this);
@@ -839,14 +839,14 @@ public:
 		auto *returnLive = new QPushButton(T("EventDock.ReturnLive"), this);
 		playSelected->setStyleSheet(QStringLiteral("font-weight: bold;"));
 		for (QPushButton *button :
-		     {playSelected, playAll, playEachAngle, playLast, playById, playlistA, playlistB, playlistNext,
-		      playlistStop, takeA, takeB, takeToggle, returnLive})
+		     {playSelected, playAll, playEachAngleButton, playLast, playByIdButton, playlistA, playlistB,
+		      playlistNext, playlistStop, takeA, takeB, takeToggle, returnLive})
 			button->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
 		takeBar->addWidget(playSelected);
 		takeBar->addWidget(playAll);
-		takeBar->addWidget(playEachAngle);
+		takeBar->addWidget(playEachAngleButton);
 		takeBar->addWidget(playLast);
-		takeBar->addWidget(playById);
+		takeBar->addWidget(playByIdButton);
 		takeBar->addSpacing(4);
 		takeBar->addWidget(playlistA);
 		takeBar->addWidget(playlistB);
@@ -984,9 +984,9 @@ public:
 		connect(shuttleSlider, &QSlider::valueChanged, this, [this](int value) { applyShuttle(value); });
 		connect(playSelected, &QPushButton::clicked, this, [this]() { playSelectedEvent(); });
 		connect(playAll, &QPushButton::clicked, this, [this]() { startPlaylist(transportBus()); });
-		connect(playEachAngle, &QPushButton::clicked, this, [this]() { playEachAngle(); });
+		connect(playEachAngleButton, &QPushButton::clicked, this, [this]() { playEachAngle(); });
 		connect(playLast, &QPushButton::clicked, this, [this]() { playLastEvent(); });
-		connect(playById, &QPushButton::clicked, this, [this]() { playById(); });
+		connect(playByIdButton, &QPushButton::clicked, this, [this]() { playById(); });
 		connect(playlistA, &QPushButton::clicked, this, [this]() { startPlaylist(SR_REPLAY_BUS_A); });
 		connect(playlistB, &QPushButton::clicked, this, [this]() { startPlaylist(SR_REPLAY_BUS_B); });
 		connect(playlistNext, &QPushButton::clicked, this, [this]() { nextPlaylist(); });
