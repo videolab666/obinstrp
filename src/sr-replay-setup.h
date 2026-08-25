@@ -64,6 +64,9 @@ struct sr_replay_setup_result {
 bool sr_replay_setup_get_snapshot(struct sr_replay_setup_snapshot *snapshot);
 void sr_replay_setup_free_snapshot(struct sr_replay_setup_snapshot *snapshot);
 
+/* Setup mutations are frontend operations: call them from the OBS/Qt UI thread,
+ * never from render, decode or encoder callbacks. */
+
 /* Add/enable or remove the Pitel Capture filter on one named OBS video source.
  * Other filters on that source are never modified. */
 bool sr_replay_setup_set_capture(const char *source_name, bool enabled);
