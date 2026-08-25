@@ -318,6 +318,10 @@ bool sr_replay_setup_set_capture(const char *source_name, bool enabled)
 			return false;
 		}
 		if (filter) {
+			/* A disabled filter can retain an old recording intent if it was
+			 * disabled outside the dock. Clear that intent before enabling it so
+			 * Replay Setup never starts disk recording implicitly. */
+			disable_capture_before_remove(filter);
 			obs_source_set_enabled(filter, true);
 			obs_source_release(filter);
 			obs_source_release(source);
@@ -379,9 +383,7 @@ static obs_source_t *get_or_create_scene_source(const char *base_name, bool *cre
 	obs_scene_t *scene = obs_scene_create(name);
 	if (!scene)
 		return NULL;
-	obs_source_t *scene_source = obs_scene_get_source(scene);
-	if (scene_source)
-		obs_source_addref(scene_source);
+	obs_source_t *scene_source = obs_source_get_ref(obs_scene_get_source(scene));
 	obs_scene_release(scene);
 	if (created)
 		*created = scene_source != NULL;
