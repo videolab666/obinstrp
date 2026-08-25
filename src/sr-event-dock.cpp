@@ -62,6 +62,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QPainter>
 #include <QPushButton>
 #include <QProgressBar>
+#include <QRubberBand>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStandardPaths>
@@ -535,6 +536,132 @@ private:
 	bool hasSelection = false;
 };
 
+class SrEventTable : public QTableWidget {
+public:
+	explicit SrEventTable(QWidget *parent = nullptr)
+		: QTableWidget(parent),
+		  rubberBand(new QRubberBand(QRubberBand::Rectangle, viewport()))
+	{
+	}
+
+	bool selectionGestureActive() const { return rubberCandidate; }
+
+protected:
+	void mousePressEvent(QMouseEvent *event) override
+	{
+		if (event->button() == Qt::LeftButton && !(event->modifiers() & Qt::AltModifier)) {
+			rubberCandidate = true;
+			rubberSelecting = false;
+			rubberOrigin = event->position().toPoint();
+			rubberAdditive = event->modifiers().testFlag(Qt::ControlModifier);
+			baseRows.clear();
+			if (rubberAdditive && selectionModel()) {
+				const QModelIndexList selected = selectionModel()->selectedRows();
+				baseRows.reserve(selected.size());
+				for (const QModelIndex &index : selected)
+					baseRows.push_back(index.row());
+			}
+			rubberBand->hide();
+		} else {
+			rubberCandidate = false;
+			rubberSelecting = false;
+			rubberBand->hide();
+		}
+		QTableWidget::mousePressEvent(event);
+	}
+
+	void mouseMoveEvent(QMouseEvent *event) override
+	{
+		if (!rubberCandidate || !(event->buttons() & Qt::LeftButton)) {
+			QTableWidget::mouseMoveEvent(event);
+			return;
+		}
+
+		const QPoint position = boundedViewportPoint(event->position().toPoint());
+		if (!rubberSelecting && (position - rubberOrigin).manhattanLength() < 4) {
+			event->accept();
+			return;
+		}
+
+		rubberSelecting = true;
+		const QRect rectangle = QRect(rubberOrigin, position).normalized().intersected(viewport()->rect());
+		rubberBand->setGeometry(rectangle);
+		rubberBand->show();
+		applyRubberSelection(rectangle);
+		event->accept();
+	}
+
+	void mouseReleaseEvent(QMouseEvent *event) override
+	{
+		if (!rubberCandidate || event->button() != Qt::LeftButton) {
+			QTableWidget::mouseReleaseEvent(event);
+			return;
+		}
+
+		if (rubberSelecting) {
+			const QPoint position = boundedViewportPoint(event->position().toPoint());
+			const QRect rectangle =
+				QRect(rubberOrigin, position).normalized().intersected(viewport()->rect());
+			applyRubberSelection(rectangle);
+			rubberBand->hide();
+			rubberCandidate = false;
+			rubberSelecting = false;
+			event->accept();
+			return;
+		}
+
+		rubberCandidate = false;
+		QTableWidget::mouseReleaseEvent(event);
+	}
+
+private:
+	QPoint boundedViewportPoint(const QPoint &position) const
+	{
+		const QRect bounds = viewport()->rect();
+		return QPoint(qBound(bounds.left(), position.x(), bounds.right()),
+			      qBound(bounds.top(), position.y(), bounds.bottom()));
+	}
+
+	void applyRubberSelection(const QRect &rectangle)
+	{
+		if (!selectionModel() || !model())
+			return;
+
+		selectionModel()->clearSelection();
+		if (rubberAdditive) {
+			for (int row : baseRows) {
+				if (row >= 0 && row < rowCount())
+					selectionModel()->select(model()->index(row, 0),
+								 QItemSelectionModel::Select |
+									 QItemSelectionModel::Rows);
+			}
+		}
+
+		for (int row = 0; row < rowCount(); row++) {
+			const QModelIndex index = model()->index(row, 0);
+			QRect rowRectangle = visualRect(index);
+			if (!rowRectangle.isValid())
+				continue;
+			rowRectangle.setLeft(0);
+			rowRectangle.setRight(viewport()->width() - 1);
+			if (rowRectangle.intersects(rectangle))
+				selectionModel()->select(index,
+							 QItemSelectionModel::Select | QItemSelectionModel::Rows);
+		}
+
+		const QModelIndexList selected = selectionModel()->selectedRows();
+		if (!selected.isEmpty() && !selectionModel()->isSelected(currentIndex()))
+			setCurrentIndex(selected.constFirst());
+	}
+
+	QRubberBand *rubberBand = nullptr;
+	QPoint rubberOrigin;
+	QVector<int> baseRows;
+	bool rubberCandidate = false;
+	bool rubberSelecting = false;
+	bool rubberAdditive = false;
+};
+
 class SrEventDock : public QWidget {
 public:
 	explicit SrEventDock(sr_event_controller *eventController, QWidget *parent = nullptr)
@@ -669,7 +796,7 @@ public:
 		markBar->addStretch(1);
 		root->addLayout(markBar);
 
-		table = new QTableWidget(this);
+		table = new SrEventTable(this);
 		table->setColumnCount(6);
 		table->setHorizontalHeaderLabels({T("EventDock.Column.Id"), T("EventDock.Column.Duration"),
 						  T("EventDock.Column.Speed"), T("EventDock.Column.State"),
@@ -2624,7 +2751,7 @@ private:
 
 	void refresh(uint64_t selectEventId = 0)
 	{
-		if (!controller || !table || tableEditing)
+		if (!controller || !table || tableEditing || table->selectionGestureActive())
 			return;
 		std::vector<uint64_t> preserveSelection;
 		if (selectEventId)
@@ -2902,7 +3029,7 @@ private:
 	QPushButton *loopButton = nullptr;
 	QPushButton *exportCancelButton = nullptr;
 	QProgressBar *exportProgressBar = nullptr;
-	QTableWidget *table = nullptr;
+	SrEventTable *table = nullptr;
 	QTableWidget *performanceTable = nullptr;
 	QWidget *performancePanel = nullptr;
 	QToolButton *performanceToggle = nullptr;
