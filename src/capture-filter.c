@@ -33,9 +33,11 @@ struct sr_capture {
 	obs_source_t *self;
 	struct sr_buffer buffer;
 	struct sr_encoder *encoder;
+	struct sr_gpu_encoder *gpu_encoder;
 	struct sr_segment_writer *writer;
 	struct sr_camera_audio_writer *camera_audio_writer;
 	pthread_mutex_t camera_audio_mutex;
+	pthread_mutex_t encode_mutex;
 
 	enum sr_encoder_backend backend;
 	int qp;
@@ -46,17 +48,40 @@ struct sr_capture {
 	bool writer_failed;
 	bool master_audio_acquired;
 
-	/* format the current encoder was opened with */
+	/* Format the current encoder was opened with. The GPU encoder is created
+	 * from the OBS render callback after filter_video has observed the source
+	 * dimensions at least once. */
 	uint32_t enc_width;
 	uint32_t enc_height;
 	bool encoder_failed;
 	bool reset_encoder;
+	bool gpu_reset;
+	bool gpu_failed;
+	bool gpu_fallback_logged;
+
+	/* The GPU path runs on the OBS video clock. Keep the most recent mapping
+	 * back into the asynchronous source/device clock so the legacy RAM ring
+	 * remains in the same timestamp domain as filter_audio. */
+	uint64_t latest_source_ts;
+	uint64_t latest_source_obs_ts;
 
 	uint64_t last_stats_log;
 	uint64_t last_status_publish;
 	pthread_mutex_t status_mutex;
 	struct sr_capture_recording_summary status;
 };
+
+static void sr_capture_gpu_render(void *data, uint32_t cx, uint32_t cy);
+
+static bool gpu_backend_candidate(enum sr_encoder_backend backend)
+{
+#ifdef _WIN32
+	return backend == SR_ENC_AUTO || backend == SR_ENC_NVENC || backend == SR_ENC_AMF;
+#else
+	UNUSED_PARAMETER(backend);
+	return false;
+#endif
+}
 
 static void set_parent_showing_hold(struct sr_capture *c, bool hold)
 {
@@ -143,9 +168,22 @@ static void destroy_writer(struct sr_capture *c)
 	publish_status(c, 0, true);
 }
 
+static void apply_recording_intent(struct sr_capture *c)
+{
+	if (c->restart_writer) {
+		destroy_writer(c);
+		c->restart_writer = false;
+	}
+	if (!c->disk_recording && c->writer)
+		destroy_writer(c);
+	if (!c->disk_recording)
+		set_parent_showing_hold(c, false);
+}
+
 static void sr_capture_update(void *data, obs_data_t *settings)
 {
 	struct sr_capture *c = data;
+	pthread_mutex_lock(&c->encode_mutex);
 
 	c->buffer.duration_ns = (uint64_t)obs_data_get_int(settings, S_DURATION) * 1000000ULL;
 
@@ -161,14 +199,17 @@ static void sr_capture_update(void *data, obs_data_t *settings)
 		c->qp = qp;
 		c->gop_ms = gop_ms;
 		c->reset_encoder = true;
+		c->gpu_reset = true;
+		c->gpu_failed = false;
+		c->gpu_fallback_logged = false;
 		c->encoder_failed = false;
 		c->writer_failed = false;
 	}
 
 	if (disk_recording != c->disk_recording) {
-		/* Only change intent here. The writer itself is created/destroyed in
-		 * filter_video so it cannot be freed by the UI update callback while
-		 * the video callback is queueing an encoded packet. */
+		/* Only change intent here. The writer itself is created/destroyed by
+		 * the serialized video/GPU callbacks so the UI cannot free it while
+		 * either path is queueing an encoded packet. */
 		if (!disk_recording)
 			c->restart_writer = true;
 		c->disk_recording = disk_recording;
@@ -176,6 +217,7 @@ static void sr_capture_update(void *data, obs_data_t *settings)
 		if (disk_recording)
 			set_parent_showing_hold(c, true);
 	}
+	pthread_mutex_unlock(&c->encode_mutex);
 	publish_recording_intent(c);
 }
 
@@ -185,23 +227,38 @@ static void *sr_capture_create(obs_data_t *settings, obs_source_t *source)
 	c->self = source;
 	pthread_mutex_init(&c->status_mutex, NULL);
 	pthread_mutex_init(&c->camera_audio_mutex, NULL);
+	pthread_mutex_init(&c->encode_mutex, NULL);
 	sr_buffer_init(&c->buffer);
 	c->backend = SR_ENC_AUTO;
 	c->qp = 23;
 	c->gop_ms = SR_GOP_500MS;
 	sr_capture_update(c, settings);
+	obs_add_main_render_callback(sr_capture_gpu_render, c);
 	return c;
 }
 
 static void sr_capture_destroy(void *data)
 {
 	struct sr_capture *c = data;
+	obs_remove_main_render_callback(sr_capture_gpu_render, c);
 	set_parent_showing_hold(c, false);
+
+	pthread_mutex_lock(&c->encode_mutex);
 	destroy_writer(c);
 	sr_encoder_destroy(c->encoder);
+	c->encoder = NULL;
+	struct sr_gpu_encoder *gpu_encoder = c->gpu_encoder;
+	c->gpu_encoder = NULL;
+	pthread_mutex_unlock(&c->encode_mutex);
+
+	/* No render callback can reference the GPU encoder after removal. Destroy
+	 * it outside encode_mutex because destruction enters the OBS graphics
+	 * context and must not invert the render-thread lock order. */
+	sr_gpu_encoder_destroy(gpu_encoder);
 	sr_buffer_free(&c->buffer);
 	pthread_mutex_destroy(&c->status_mutex);
 	pthread_mutex_destroy(&c->camera_audio_mutex);
+	pthread_mutex_destroy(&c->encode_mutex);
 	bfree(c);
 }
 
@@ -216,9 +273,43 @@ static const char *capture_camera_name(struct sr_capture *c)
 	return parent ? obs_source_get_name(parent) : obs_source_get_name(c->self);
 }
 
+static bool capture_encoder_ready(const struct sr_capture *c)
+{
+	return c && (c->gpu_encoder || c->encoder);
+}
+
+static enum AVCodecID capture_encoder_codec_id(const struct sr_capture *c)
+{
+	if (c->gpu_encoder)
+		return sr_gpu_encoder_codec_id(c->gpu_encoder);
+	return c->encoder ? sr_encoder_codec_id(c->encoder) : AV_CODEC_ID_NONE;
+}
+
+static void capture_encoder_get_extradata(const struct sr_capture *c, const uint8_t **data, int *size)
+{
+	if (c->gpu_encoder)
+		sr_gpu_encoder_get_extradata(c->gpu_encoder, data, size);
+	else
+		sr_encoder_get_extradata(c->encoder, data, size);
+}
+
+static void update_buffer_video_format(struct sr_capture *c)
+{
+	const uint8_t *extradata = NULL;
+	int extradata_size = 0;
+	capture_encoder_get_extradata(c, &extradata, &extradata_size);
+
+	pthread_mutex_lock(&c->buffer.mutex);
+	c->buffer.codec_id = capture_encoder_codec_id(c);
+	c->buffer.width = c->enc_width;
+	c->buffer.height = c->enc_height;
+	pthread_mutex_unlock(&c->buffer.mutex);
+	sr_buffer_set_extradata(&c->buffer, extradata, extradata_size);
+}
+
 static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi)
 {
-	if (!c->disk_recording || c->writer || c->writer_failed || !c->encoder)
+	if (!c->disk_recording || c->writer || c->writer_failed || !capture_encoder_ready(c))
 		return c->writer != NULL;
 
 	char *session_dir = sr_session_get_or_create_path();
@@ -229,7 +320,7 @@ static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi
 
 	const uint8_t *extradata = NULL;
 	int extradata_size = 0;
-	sr_encoder_get_extradata(c->encoder, &extradata, &extradata_size);
+	capture_encoder_get_extradata(c, &extradata, &extradata_size);
 
 	obs_source_t *camera_source = capture_camera_source(c);
 	char camera_key[SR_CAMERA_STABLE_KEY_MAX] = {0};
@@ -245,7 +336,7 @@ static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi
 		.session_dir = session_dir,
 		.camera_name = capture_camera_name(c),
 		.camera_key = camera_key,
-		.codec_id = sr_encoder_codec_id(c->encoder),
+		.codec_id = capture_encoder_codec_id(c),
 		.width = c->enc_width,
 		.height = c->enc_height,
 		.fps_num = ovi->fps_num,
@@ -316,35 +407,154 @@ static void log_buffer_stats(struct sr_capture *c, uint64_t now)
 		stats.write_failed ? ", WRITE ERROR" : "");
 }
 
-static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_source_frame *frame)
+static uint64_t mapped_source_timestamp(const struct sr_capture *c, uint64_t obs_timestamp)
 {
+	if (!c->latest_source_ts)
+		return obs_timestamp;
+	if (!c->latest_source_obs_ts || obs_timestamp <= c->latest_source_obs_ts)
+		return c->latest_source_ts;
+	return c->latest_source_ts + (obs_timestamp - c->latest_source_obs_ts);
+}
+
+static void sr_capture_gpu_render(void *data, uint32_t cx, uint32_t cy)
+{
+	UNUSED_PARAMETER(cx);
+	UNUSED_PARAMETER(cy);
 	struct sr_capture *c = data;
+	if (!c)
+		return;
 
-	/* Apply a recording toggle on the video callback rather than the UI
-	 * settings callback; see sr_capture_update. */
-	if (c->restart_writer) {
-		destroy_writer(c);
-		c->restart_writer = false;
-	}
-	if (!c->disk_recording && c->writer)
-		destroy_writer(c);
-	if (!c->disk_recording)
-		set_parent_showing_hold(c, false);
+	pthread_mutex_lock(&c->encode_mutex);
+	apply_recording_intent(c);
 
-	if (!frame || !frame->data[0] || c->encoder_failed)
-		return frame;
-
-	if (c->encoder && (c->reset_encoder || frame->width != c->enc_width || frame->height != c->enc_height)) {
+	if (c->gpu_reset) {
 		destroy_writer(c);
+		sr_gpu_encoder_destroy(c->gpu_encoder);
+		c->gpu_encoder = NULL;
 		sr_encoder_destroy(c->encoder);
 		c->encoder = NULL;
+		c->gpu_reset = false;
+		c->reset_encoder = false;
+		c->encoder_failed = false;
 		c->writer_failed = false;
 		sr_buffer_clear(&c->buffer);
 	}
 
+	if (!gpu_backend_candidate(c->backend) || c->gpu_failed || !c->enc_width || !c->enc_height) {
+		pthread_mutex_unlock(&c->encode_mutex);
+		return;
+	}
+
 	struct obs_video_info ovi;
-	if (!obs_get_video_info(&ovi))
+	if (!obs_get_video_info(&ovi)) {
+		pthread_mutex_unlock(&c->encode_mutex);
+		return;
+	}
+
+	if (!c->gpu_encoder) {
+		c->gpu_encoder = sr_gpu_encoder_create(c->enc_width, c->enc_height, ovi.fps_num, ovi.fps_den, c->backend,
+						       c->qp, c->gop_ms);
+		if (!c->gpu_encoder) {
+			c->gpu_failed = true;
+			if (!c->gpu_fallback_logged) {
+				obs_log(LOG_INFO,
+					"'%s': native D3D11 capture encoder unavailable; continuing with CPU-frame encoder path",
+					obs_source_get_name(c->self));
+				c->gpu_fallback_logged = true;
+			}
+			pthread_mutex_unlock(&c->encode_mutex);
+			return;
+		}
+		update_buffer_video_format(c);
+		obs_log(LOG_INFO, "'%s': capture path is GPU-resident through %s (D3D11 render -> NV12 hwframe)",
+			obs_source_get_name(c->self), sr_gpu_encoder_name(c->gpu_encoder));
+	}
+
+	obs_source_t *target = obs_filter_get_target(c->self);
+	AVPacket *pkt = NULL;
+	if (!sr_gpu_encoder_render_encode(c->gpu_encoder, target, &pkt)) {
+		obs_log(LOG_WARNING, "'%s': GPU capture encoder failed; switching to CPU-frame fallback at a new segment",
+			obs_source_get_name(c->self));
+		destroy_writer(c);
+		sr_gpu_encoder_destroy(c->gpu_encoder);
+		c->gpu_encoder = NULL;
+		c->gpu_failed = true;
+		c->writer_failed = false;
+		sr_buffer_clear(&c->buffer);
+		pthread_mutex_unlock(&c->encode_mutex);
+		return;
+	}
+
+	if (pkt) {
+		/* Hardware encoders may publish SPS/PPS only after the first submitted
+		 * frame. Refresh the RAM buffer header before storing the first packet. */
+		update_buffer_video_format(c);
+		const uint64_t replay_timestamp = obs_get_video_frame_time();
+		ensure_writer(c, &ovi);
+		if (c->writer)
+			sr_segment_writer_push_video(c->writer, pkt, replay_timestamp);
+		sr_buffer_push_video(&c->buffer, pkt, mapped_source_timestamp(c, replay_timestamp));
+	}
+
+	publish_status(c, obs_get_video_frame_time(), false);
+	pthread_mutex_unlock(&c->encode_mutex);
+}
+
+static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_source_frame *frame)
+{
+	struct sr_capture *c = data;
+	if (!c)
 		return frame;
+
+	pthread_mutex_lock(&c->encode_mutex);
+	apply_recording_intent(c);
+
+	if (!frame || !frame->data[0]) {
+		pthread_mutex_unlock(&c->encode_mutex);
+		return frame;
+	}
+
+	c->latest_source_ts = frame->timestamp;
+	c->latest_source_obs_ts = obs_get_video_frame_time();
+
+	struct obs_video_info ovi;
+	if (!obs_get_video_info(&ovi)) {
+		pthread_mutex_unlock(&c->encode_mutex);
+		return frame;
+	}
+
+	const bool size_changed = c->enc_width && c->enc_height &&
+				  (frame->width != c->enc_width || frame->height != c->enc_height);
+	if (c->reset_encoder || size_changed) {
+		destroy_writer(c);
+		sr_encoder_destroy(c->encoder);
+		c->encoder = NULL;
+		if (c->gpu_encoder)
+			c->gpu_reset = true;
+		c->reset_encoder = false;
+		c->encoder_failed = false;
+		c->gpu_failed = false;
+		c->gpu_fallback_logged = false;
+		c->writer_failed = false;
+		sr_buffer_clear(&c->buffer);
+	}
+	c->enc_width = frame->width;
+	c->enc_height = frame->height;
+
+	/* A live GPU encoder, or one waiting for render-thread creation/reset,
+	 * owns video encoding. Do not run the CPU encoder in parallel: that would
+	 * defeat the optimization and mix codec headers at the writer boundary. */
+	if (c->gpu_encoder || c->gpu_reset || (gpu_backend_candidate(c->backend) && !c->gpu_failed)) {
+		log_buffer_stats(c, frame->timestamp);
+		publish_status(c, frame->timestamp, false);
+		pthread_mutex_unlock(&c->encode_mutex);
+		return frame;
+	}
+
+	if (c->encoder_failed) {
+		pthread_mutex_unlock(&c->encode_mutex);
+		return frame;
+	}
 
 	if (!c->encoder) {
 		c->encoder = sr_encoder_create(frame->width, frame->height, ovi.fps_num, ovi.fps_den, c->backend, c->qp,
@@ -354,22 +564,10 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 				obs_source_get_name(c->self));
 			c->encoder_failed = true;
 			publish_status(c, frame->timestamp, true);
+			pthread_mutex_unlock(&c->encode_mutex);
 			return frame;
 		}
-		c->reset_encoder = false;
-		c->enc_width = frame->width;
-		c->enc_height = frame->height;
-
-		pthread_mutex_lock(&c->buffer.mutex);
-		c->buffer.codec_id = sr_encoder_codec_id(c->encoder);
-		c->buffer.width = frame->width;
-		c->buffer.height = frame->height;
-		pthread_mutex_unlock(&c->buffer.mutex);
-
-		const uint8_t *extradata = NULL;
-		int extradata_size = 0;
-		sr_encoder_get_extradata(c->encoder, &extradata, &extradata_size);
-		sr_buffer_set_extradata(&c->buffer, extradata, extradata_size);
+		update_buffer_video_format(c);
 	}
 
 	AVPacket *pkt = sr_encoder_encode(c->encoder, frame);
@@ -378,9 +576,7 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 		 * those frames onto its own video clock when selecting them for the
 		 * current render tick, but that private timing adjustment is not
 		 * reflected in frame->timestamp. Event IN/OUT markers use the OBS
-		 * video clock, so persist disk packets in that same global timebase.
-		 * Keeping the source timestamp here makes valid camera media appear
-		 * unrelated to every Event on devices with a local capture clock. */
+		 * video clock, so persist disk packets in that same global timebase. */
 		const uint64_t replay_timestamp = obs_get_video_frame_time();
 
 		/* Delay session/writer creation until the encoder has actually emitted
@@ -389,8 +585,7 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 		ensure_writer(c, &ovi);
 
 		/* The disk writer clones the packet. The original remains owned by
-		 * the legacy RAM ring buffer, so current replay behavior stays intact
-		 * while the new continuous storage engine is developed. */
+		 * the legacy RAM ring buffer. */
 		if (c->writer)
 			sr_segment_writer_push_video(c->writer, pkt,
 						     replay_timestamp ? replay_timestamp : frame->timestamp);
@@ -399,6 +594,7 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 
 	log_buffer_stats(c, frame->timestamp);
 	publish_status(c, frame->timestamp, false);
+	pthread_mutex_unlock(&c->encode_mutex);
 	return frame;
 }
 
@@ -537,7 +733,6 @@ static obs_properties_t *sr_capture_properties(void *unused)
 
 	char credit[256];
 	obs_properties_add_text(props, "sr_credit", sr_plugin_credit_html(credit, sizeof(credit)), OBS_TEXT_INFO);
-
 	return props;
 }
 
