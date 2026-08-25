@@ -47,6 +47,13 @@ bool sr_replay_playlist_start(enum sr_replay_bus bus, unsigned list_id, const ch
 bool sr_replay_playlist_start_with_transitions(enum sr_replay_bus bus, unsigned list_id, const char *preferred_camera,
 					       bool cross_bus_transitions);
 
+/* Plays only the supplied Event ids, preserving their caller-provided order.
+ * The ids are snapshotted by the playlist, so the caller may release its
+ * selection immediately after this function returns. */
+bool sr_replay_playlist_start_events_with_transitions(enum sr_replay_bus bus, unsigned list_id,
+						      const uint64_t *event_ids, size_t count,
+						      const char *preferred_camera, bool cross_bus_transitions);
+
 /* Plays every usable camera angle of one selected Event in camera order. Full
  * coverage angles are preferred; PARTIAL angles are used only when no camera
  * has FULL coverage. The same cross-bus Event Transition mechanism is used

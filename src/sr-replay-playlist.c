@@ -247,6 +247,56 @@ bool sr_replay_playlist_start_with_transitions(enum sr_replay_bus bus, unsigned 
 	return true;
 }
 
+bool sr_replay_playlist_start_events_with_transitions(enum sr_replay_bus bus, unsigned list_id,
+						      const uint64_t *event_ids, size_t count,
+						      const char *preferred_camera, bool cross_bus_transitions)
+{
+	struct sr_playlist_bus *playlist = get_bus(bus);
+	if (!g_started || !playlist || !g_events || !event_ids || !count)
+		return false;
+
+	uint64_t *snapshot = bzalloc(count * sizeof(*snapshot));
+	if (!snapshot)
+		return false;
+	memcpy(snapshot, event_ids, count * sizeof(*snapshot));
+
+	pthread_mutex_lock(&g_mutex);
+	clear_all_locked();
+	playlist = get_bus(bus);
+	playlist->active = true;
+	playlist->list_id = list_id;
+	playlist->event_ids = snapshot;
+	playlist->count = count;
+	playlist->preferred_camera = bstrdup(preferred_camera ? preferred_camera : "");
+	playlist->cross_bus_transitions = cross_bus_transitions;
+
+	size_t first = 0;
+	bool cued = false;
+	for (; first < count; first++) {
+		if (cue_item_locked(bus, playlist, first) && sr_replay_channel_play(bus)) {
+			cued = true;
+			break;
+		}
+	}
+
+	if (!cued) {
+		clear_bus_locked(playlist);
+		pthread_mutex_unlock(&g_mutex);
+		return false;
+	}
+
+	playlist->position = first;
+	playlist->event_id = snapshot[first];
+	const uint64_t first_event_id = playlist->event_id;
+	pthread_mutex_unlock(&g_mutex);
+
+	blog(LOG_INFO,
+	     "Pitel Instant Replay: started selected Event sequence from List %u on bus %c at item %zu/%zu (Event %llu)%s",
+	     list_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', first + 1, count, (unsigned long long)first_event_id,
+	     cross_bus_transitions ? " with A/B Event Transitions" : "");
+	return true;
+}
+
 static bool collect_event_angles(uint64_t event_id, uint64_t **event_ids_out, char ***cameras_out, size_t *count_out)
 {
 	*event_ids_out = NULL;

@@ -29,6 +29,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-module.h>
 #include <util/bmem.h>
 
+#include <algorithm>
 #include <cstring>
 #include <atomic>
 #include <functional>
@@ -52,6 +53,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -673,7 +675,7 @@ public:
 						  T("EventDock.Column.Speed"), T("EventDock.Column.State"),
 						  T("EventDock.Column.Name"), T("EventDock.Column.Tag")});
 		table->setSelectionBehavior(QAbstractItemView::SelectRows);
-		table->setSelectionMode(QAbstractItemView::SingleSelection);
+		table->setSelectionMode(QAbstractItemView::ExtendedSelection);
 		table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
 		table->verticalHeader()->setVisible(false);
 		table->verticalHeader()->setMinimumSectionSize(16);
@@ -715,25 +717,6 @@ public:
 		actionBar->addWidget(move);
 		actionBar->addWidget(duplicate);
 		root->addLayout(actionBar);
-
-		auto *exportBar = new QHBoxLayout();
-		exportBar->setSpacing(3);
-		exportBar->addWidget(new QLabel(T("EventDock.Export"), this));
-		exportModeCombo = new QComboBox(this);
-		exportModeCombo->addItem(T("EventDock.ExportPreferred"), 0);
-		exportModeCombo->addItem(T("EventDock.ExportAll"), 1);
-		exportBar->addWidget(exportModeCombo);
-		auto *exportFast = new QPushButton(T("EventDock.ExportFast"), this);
-		exportCancelButton = new QPushButton(T("EventDock.ExportCancel"), this);
-		exportCancelButton->setEnabled(false);
-		exportProgressBar = new QProgressBar(this);
-		exportProgressBar->setRange(0, 100);
-		exportProgressBar->setValue(0);
-		exportProgressBar->setMinimumWidth(120);
-		exportBar->addWidget(exportFast);
-		exportBar->addWidget(exportCancelButton);
-		exportBar->addWidget(exportProgressBar, 1);
-		root->addLayout(exportBar);
 
 		auto *cueBar = new QHBoxLayout();
 		cueBar->setSpacing(3);
@@ -841,36 +824,59 @@ public:
 
 		auto *takeBar = new QHBoxLayout();
 		takeBar->setSpacing(3);
-		takeBar->addStretch(1);
+		auto *playSelected = new QPushButton(T("EventDock.PlaySelected"), this);
+		auto *playAll = new QPushButton(T("EventDock.PlayAll"), this);
+		auto *playEachAngle = new QPushButton(T("EventDock.PlayEachAngle"), this);
+		auto *playLast = new QPushButton(T("EventDock.PlayLast"), this);
+		auto *playById = new QPushButton(T("EventDock.PlayById"), this);
+		auto *playlistA = new QPushButton(T("EventDock.PlaylistA"), this);
+		auto *playlistB = new QPushButton(T("EventDock.PlaylistB"), this);
+		auto *playlistNext = new QPushButton(T("EventDock.PlaylistNext"), this);
+		auto *playlistStop = new QPushButton(T("EventDock.PlaylistStop"), this);
 		auto *takeA = new QPushButton(T("EventDock.TakeA"), this);
 		auto *takeB = new QPushButton(T("EventDock.TakeB"), this);
 		auto *takeToggle = new QPushButton(T("EventDock.TakeToggle"), this);
 		auto *returnLive = new QPushButton(T("EventDock.ReturnLive"), this);
-
-		playEventsButton = new QToolButton(this);
-		playEventsButton->setText(T("EventDock.PlayMenu"));
-		playEventsButton->setPopupMode(QToolButton::MenuButtonPopup);
-		playEventsButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-		playEventsButton->setStyleSheet(QStringLiteral("font-weight: bold;"));
-		auto *playMenu = new QMenu(playEventsButton);
-		auto *playAllAction = playMenu->addAction(T("EventDock.PlayAll"));
-		auto *playSelectedAction = playMenu->addAction(T("EventDock.PlaySelected"));
-		auto *playEachAngleAction = playMenu->addAction(T("EventDock.PlayEachAngle"));
-		auto *playLastAction = playMenu->addAction(T("EventDock.PlayLast"));
-		auto *playByIdAction = playMenu->addAction(T("EventDock.PlayById"));
-		playMenu->addSeparator();
-		auto *playlistAAction = playMenu->addAction(T("EventDock.PlaylistA"));
-		auto *playlistBAction = playMenu->addAction(T("EventDock.PlaylistB"));
-		auto *playlistNextAction = playMenu->addAction(T("EventDock.PlaylistNext"));
-		auto *playlistStopAction = playMenu->addAction(T("EventDock.PlaylistStop"));
-		playEventsButton->setMenu(playMenu);
-
-		takeBar->addWidget(playEventsButton);
+		playSelected->setStyleSheet(QStringLiteral("font-weight: bold;"));
+		for (QPushButton *button :
+		     {playSelected, playAll, playEachAngle, playLast, playById, playlistA, playlistB, playlistNext,
+		      playlistStop, takeA, takeB, takeToggle, returnLive})
+			button->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+		takeBar->addWidget(playSelected);
+		takeBar->addWidget(playAll);
+		takeBar->addWidget(playEachAngle);
+		takeBar->addWidget(playLast);
+		takeBar->addWidget(playById);
+		takeBar->addSpacing(4);
+		takeBar->addWidget(playlistA);
+		takeBar->addWidget(playlistB);
+		takeBar->addWidget(playlistNext);
+		takeBar->addWidget(playlistStop);
+		takeBar->addSpacing(4);
 		takeBar->addWidget(takeA);
 		takeBar->addWidget(takeB);
 		takeBar->addWidget(takeToggle);
 		takeBar->addWidget(returnLive);
 		root->addLayout(takeBar);
+
+		auto *exportBar = new QHBoxLayout();
+		exportBar->setSpacing(3);
+		exportBar->addWidget(new QLabel(T("EventDock.Export"), this));
+		exportModeCombo = new QComboBox(this);
+		exportModeCombo->addItem(T("EventDock.ExportPreferred"), 0);
+		exportModeCombo->addItem(T("EventDock.ExportAll"), 1);
+		exportBar->addWidget(exportModeCombo);
+		auto *exportFast = new QPushButton(T("EventDock.ExportFast"), this);
+		exportCancelButton = new QPushButton(T("EventDock.ExportCancel"), this);
+		exportCancelButton->setEnabled(false);
+		exportProgressBar = new QProgressBar(this);
+		exportProgressBar->setRange(0, 100);
+		exportProgressBar->setValue(0);
+		exportProgressBar->setMinimumWidth(120);
+		exportBar->addWidget(exportFast);
+		exportBar->addWidget(exportCancelButton);
+		exportBar->addWidget(exportProgressBar, 1);
+		root->addLayout(exportBar);
 
 		transportStatus = new QLabel(this);
 		transportStatus->setStyleSheet(QStringLiteral("color: gray;"));
@@ -976,16 +982,15 @@ public:
 			jogLastValue = 0;
 		});
 		connect(shuttleSlider, &QSlider::valueChanged, this, [this](int value) { applyShuttle(value); });
-		connect(playEventsButton, &QToolButton::clicked, this, [this]() { playSelectedEvent(); });
-		connect(playAllAction, &QAction::triggered, this, [this]() { startPlaylist(transportBus()); });
-		connect(playSelectedAction, &QAction::triggered, this, [this]() { playSelectedEvent(); });
-		connect(playEachAngleAction, &QAction::triggered, this, [this]() { playEachAngle(); });
-		connect(playLastAction, &QAction::triggered, this, [this]() { playLastEvent(); });
-		connect(playByIdAction, &QAction::triggered, this, [this]() { playById(); });
-		connect(playlistAAction, &QAction::triggered, this, [this]() { startPlaylist(SR_REPLAY_BUS_A); });
-		connect(playlistBAction, &QAction::triggered, this, [this]() { startPlaylist(SR_REPLAY_BUS_B); });
-		connect(playlistNextAction, &QAction::triggered, this, [this]() { nextPlaylist(); });
-		connect(playlistStopAction, &QAction::triggered, this, [this]() { stopPlaylist(); });
+		connect(playSelected, &QPushButton::clicked, this, [this]() { playSelectedEvent(); });
+		connect(playAll, &QPushButton::clicked, this, [this]() { startPlaylist(transportBus()); });
+		connect(playEachAngle, &QPushButton::clicked, this, [this]() { playEachAngle(); });
+		connect(playLast, &QPushButton::clicked, this, [this]() { playLastEvent(); });
+		connect(playById, &QPushButton::clicked, this, [this]() { playById(); });
+		connect(playlistA, &QPushButton::clicked, this, [this]() { startPlaylist(SR_REPLAY_BUS_A); });
+		connect(playlistB, &QPushButton::clicked, this, [this]() { startPlaylist(SR_REPLAY_BUS_B); });
+		connect(playlistNext, &QPushButton::clicked, this, [this]() { nextPlaylist(); });
+		connect(playlistStop, &QPushButton::clicked, this, [this]() { stopPlaylist(); });
 		connect(performanceToggle, &QToolButton::toggled, this, [this](bool expanded) {
 			performanceToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
 			performancePanel->setVisible(expanded);
@@ -1081,6 +1086,22 @@ private:
 			return 0;
 		QTableWidgetItem *item = table->item(row, 0);
 		return item ? item->data(Qt::UserRole).toULongLong() : 0;
+	}
+
+	std::vector<uint64_t> selectedEventIds() const
+	{
+		std::vector<uint64_t> ids;
+		if (!table || !table->selectionModel())
+			return ids;
+		for (int row = 0; row < table->rowCount(); row++) {
+			if (!table->selectionModel()->isRowSelected(row, QModelIndex()))
+				continue;
+			QTableWidgetItem *item = table->item(row, 0);
+			const uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+			if (id)
+				ids.push_back(id);
+		}
+		return ids;
 	}
 
 	void setStatus(const char *key) { status->setText(T(key)); }
@@ -2161,10 +2182,45 @@ private:
 
 	void playSelectedEvent()
 	{
-		const enum sr_replay_bus bus = transportBus();
-		if (!cueSelected(bus))
+		const std::vector<uint64_t> eventIds = selectedEventIds();
+		if (eventIds.empty()) {
+			setStatus("EventDock.NoEventSelected");
 			return;
-		takeBus(bus);
+		}
+
+		const enum sr_replay_bus bus = transportBus();
+		if (eventIds.size() == 1) {
+			if (!cueSelected(bus))
+				return;
+			takeBus(bus);
+			return;
+		}
+
+		const QString camera = selectedCamera();
+		const QByteArray cameraUtf8 = camera.toUtf8();
+		const char *preferred = camera.isEmpty() ? nullptr : cameraUtf8.constData();
+		bool transitionRequested = false;
+		const bool crossBus = eventTransitionCrossBus(&transitionRequested);
+		if (!controller || !sr_replay_playlist_start_events_with_transitions(
+					   bus, currentList(), eventIds.data(), eventIds.size(), preferred, crossBus)) {
+			setStatus("EventDock.PlaylistFailed");
+			return;
+		}
+		if (!sr_replay_take_bus(controller, bus)) {
+			sr_replay_playlist_stop(bus);
+			sr_replay_channel_stop(bus);
+			setStatus("EventDock.TakeFailed");
+			return;
+		}
+
+		QString message = T("EventDock.PlaySelected") +
+				  QStringLiteral(": %1 Events · %2")
+					  .arg(eventIds.size())
+					  .arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"));
+		if (transitionRequested && !crossBus)
+			message += QStringLiteral(" · ") + T("EventDock.EventTransitionFallback");
+		status->setText(message);
+		refreshTransportStatus();
 	}
 
 	void playEachAngle()
@@ -2570,8 +2626,12 @@ private:
 	{
 		if (!controller || !table || tableEditing)
 			return;
-		if (!selectEventId)
-			selectEventId = selectedEventId();
+		std::vector<uint64_t> preserveSelection;
+		if (selectEventId)
+			preserveSelection.push_back(selectEventId);
+		else
+			preserveSelection = selectedEventIds();
+		const uint64_t currentEventId = selectEventId ? selectEventId : selectedEventId();
 
 		uint64_t *eventIds = nullptr;
 		size_t count = 0;
@@ -2581,9 +2641,11 @@ private:
 		}
 
 		tableRefreshing = true;
+		const QSignalBlocker tableSignals(table);
 		table->setUpdatesEnabled(false);
 		table->setRowCount((int)count);
-		int selectedRow = -1;
+		std::vector<int> selectedRows;
+		int currentRow = -1;
 		for (size_t i = 0; i < count; i++) {
 			sr_event_record event = {};
 			if (!sr_event_controller_get_event(controller, eventIds[i], &event))
@@ -2605,15 +2667,23 @@ private:
 			table->setItem((int)i, 4,
 				       new QTableWidgetItem(QString::fromUtf8(event.name ? event.name : "")));
 			table->setItem((int)i, 5, new QTableWidgetItem(QString::fromUtf8(event.tag ? event.tag : "")));
-			if (event.id == selectEventId)
-				selectedRow = (int)i;
+			if (std::find(preserveSelection.begin(), preserveSelection.end(), event.id) !=
+			    preserveSelection.end())
+				selectedRows.push_back((int)i);
+			if (event.id == currentEventId)
+				currentRow = (int)i;
 			sr_event_controller_free_event(&event);
 		}
 		bfree(eventIds);
+		table->clearSelection();
+		for (int row : selectedRows)
+			table->selectionModel()->select(table->model()->index(row, 0),
+							QItemSelectionModel::Select | QItemSelectionModel::Rows);
+		if (currentRow >= 0)
+			table->setCurrentCell(currentRow, 0, QItemSelectionModel::NoUpdate);
 		table->setUpdatesEnabled(true);
 		tableRefreshing = false;
-		if (selectedRow >= 0)
-			table->selectRow(selectedRow);
+		refreshAngleCoverage();
 	}
 
 	void editEvent(QTableWidgetItem *item)
@@ -2836,7 +2906,6 @@ private:
 	QTableWidget *performanceTable = nullptr;
 	QWidget *performancePanel = nullptr;
 	QToolButton *performanceToggle = nullptr;
-	QToolButton *playEventsButton = nullptr;
 	QToolButton *recordToggle = nullptr;
 	QToolButton *setupButton = nullptr;
 	QLabel *recordStatus = nullptr;
