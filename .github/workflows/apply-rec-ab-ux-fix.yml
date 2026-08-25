@@ -1,0 +1,64 @@
+name: Apply REC A/B UX fix
+
+on:
+  push:
+    branches: [feature/hardware-zero-copy]
+    paths:
+      - '.github/workflows/apply-rec-ab-ux-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+      - name: Patch Replay Operator REC and A/B controls
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('src/sr-event-dock.cpp')
+          text = path.read_text(encoding='utf-8')
+
+          old = 'recordToggle->setMinimumWidth(58);'
+          new = '''recordToggle->setMinimumSize(116, 36);\n\t\tauto recordFont = recordToggle->font();\n\t\trecordFont.setPointSizeF(recordFont.pointSizeF() * 1.35);\n\t\trecordFont.setBold(true);\n\t\trecordToggle->setFont(recordFont);'''
+          if old not in text:
+              raise SystemExit('REC size anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''\t\tsetupButton->setMinimumWidth(82);\n\t\trecordBar->addWidget(recordToggle);\n\t\trecordBar->addWidget(settingsGear);'''
+          new = '''\t\tsetupButton->setMinimumWidth(82);\n\t\tauto *repairABButton = new QToolButton(this);\n\t\trepairABButton->setText(T("EventDock.Setup.CreateAB"));\n\t\trepairABButton->setToolButtonStyle(Qt::ToolButtonTextOnly);\n\t\trepairABButton->setAutoRaise(true);\n\t\trepairABButton->setToolTip(T("EventDock.Setup.CreateAB"));\n\t\trecordBar->addWidget(recordToggle);\n\t\trecordBar->addWidget(repairABButton);\n\t\trecordBar->addWidget(settingsGear);'''
+          if old not in text:
+              raise SystemExit('record bar anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''\t\tconnect(recordToggle, &QToolButton::clicked, this, [this]() { toggleAllRecording(); });\n\t\tconnect(settingsGear, &QToolButton::clicked, this, []() { sr_dock_open_settings(); });'''
+          new = '''\t\tconnect(recordToggle, &QToolButton::clicked, this, [this]() { toggleAllRecording(); });\n\t\tconnect(repairABButton, &QToolButton::clicked, this, [this]() {\n\t\t\tsr_replay_setup_result result = {};\n\t\t\tif (!sr_replay_setup_ensure_event_scenes(&result)) {\n\t\t\t\tQMessageBox::warning(this, T("EventDock.Setup.Title"), T("EventDock.Setup.ABFailed"));\n\t\t\t} else {\n\t\t\t\tstatus->setText(T("EventDock.Setup.ABReady")\n\t\t\t\t\t\t\t.arg(QString::fromUtf8(result.scene_a))\n\t\t\t\t\t\t\t.arg(QString::fromUtf8(result.scene_b)));\n\t\t\t}\n\t\t\trefreshSetupStatus();\n\t\t});\n\t\tconnect(settingsGear, &QToolButton::clicked, this, []() { sr_dock_open_settings(); });'''
+          if old not in text:
+              raise SystemExit('record connect anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''\t\tif (eventTransitionConfigured() && !abReady) {\n\t\t\tQMessageBox prompt(QMessageBox::Warning, T("EventDock.Setup.PreflightTitle"),\n\t\t\t\t\t   T("EventDock.Setup.NoABPreflight"), QMessageBox::NoButton, this);\n\t\t\tQPushButton *repair = prompt.addButton(T("EventDock.Setup.CreateAB"), QMessageBox::AcceptRole);\n\t\t\tQPushButton *cuts = prompt.addButton(T("EventDock.Setup.StartCuts"), QMessageBox::ActionRole);\n\t\t\tprompt.addButton(QMessageBox::Cancel);\n\t\t\tprompt.exec();\n\t\t\tif (prompt.clickedButton() == repair) {\n\t\t\t\tsr_replay_setup_result result = {};\n\t\t\t\tif (!sr_replay_setup_ensure_event_scenes(&result)) {\n\t\t\t\t\tQMessageBox::warning(this, T("EventDock.Setup.PreflightTitle"),\n\t\t\t\t\t\t\t     T("EventDock.Setup.ABFailed"));\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t\tabReady = result.event_transition_ready;\n\t\t\t\trefreshSetupStatus();\n\t\t\t\tif (!abReady)\n\t\t\t\t\treturn false;\n\t\t\t} else if (prompt.clickedButton() != cuts) {\n\t\t\t\treturn false;\n\t\t\t}\n\t\t}\n\t\treturn haveCapture;'''
+          new = '''\t\tif (!haveCapture)\n\t\t\treturn false;\n\n\t\t/* Replay A/B is part of the normal recording topology, not only an\n\t\t * Event-Transition feature. Prepare it automatically before REC so a\n\t\t * fresh OBS scene collection is one-click ready for replay. */\n\t\tsr_replay_setup_snapshot current = {};\n\t\tif (sr_replay_setup_get_snapshot(&current))\n\t\t\tabReady = current.event_transition_ready;\n\t\tsr_replay_setup_free_snapshot(&current);\n\n\t\tif (!abReady) {\n\t\t\tsr_replay_setup_result result = {};\n\t\t\tif (sr_replay_setup_ensure_event_scenes(&result)) {\n\t\t\t\tabReady = result.event_transition_ready;\n\t\t\t\trefreshSetupStatus();\n\t\t\t\tstatus->setText(T("EventDock.Setup.ABReady")\n\t\t\t\t\t\t\t.arg(QString::fromUtf8(result.scene_a))\n\t\t\t\t\t\t\t.arg(QString::fromUtf8(result.scene_b)));\n\t\t\t} else {\n\t\t\t\tQMessageBox prompt(QMessageBox::Warning, T("EventDock.Setup.PreflightTitle"),\n\t\t\t\t\t\t   T("EventDock.Setup.ABFailed"), QMessageBox::NoButton, this);\n\t\t\t\tQPushButton *openSetup =\n\t\t\t\t\tprompt.addButton(T("EventDock.Setup.Open"), QMessageBox::AcceptRole);\n\t\t\t\tQPushButton *cuts =\n\t\t\t\t\tprompt.addButton(T("EventDock.Setup.StartCuts"), QMessageBox::ActionRole);\n\t\t\t\tprompt.addButton(QMessageBox::Cancel);\n\t\t\t\tprompt.exec();\n\t\t\t\tif (prompt.clickedButton() == openSetup) {\n\t\t\t\t\tif (!openReplaySetup())\n\t\t\t\t\t\treturn false;\n\t\t\t\t\tsr_replay_setup_snapshot repaired = {};\n\t\t\t\t\tconst bool repairedReady = sr_replay_setup_get_snapshot(&repaired) &&\n\t\t\t\t\t\t\t\t   repaired.event_transition_ready;\n\t\t\t\t\tsr_replay_setup_free_snapshot(&repaired);\n\t\t\t\t\tif (!repairedReady)\n\t\t\t\t\t\treturn false;\n\t\t\t\t} else if (prompt.clickedButton() != cuts) {\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\treturn haveCapture;'''
+          if old not in text:
+              raise SystemExit('recording preflight anchor not found')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+      - name: Install clang-format 19
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-19
+      - name: Format, commit and push
+        run: |
+          clang-format-19 -i src/sr-event-dock.cpp
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/sr-event-dock.cpp
+          git diff --cached --check
+          git commit -m "fix: auto-prepare replay A/B before REC"
+          git push origin HEAD:feature/hardware-zero-copy
