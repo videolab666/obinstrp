@@ -184,7 +184,10 @@ Replay Setup can create or repair separate `Pitel Replay A` / `Pitel Replay B`
 scenes with Event Output A/B, fit the output scene items to the OBS base canvas,
 and attach/remove only the Pitel Capture filter on operator-selected compatible
 asynchronous video sources. Existing valid user A/B topology remains usable and
-unrelated scenes, scene items and filters are not deleted or renamed.
+unrelated scenes, scene items and filters are not deleted or renamed. Setup
+mutations are initiated from the Qt frontend thread and persisted through the OBS
+frontend save API rather than touching scene/source topology from render or
+encoder callbacks.
 
 REC start performs a lightweight preflight. With no enabled Capture filters it
 offers Replay Setup first. If an Event Transition is configured but separate A/B
