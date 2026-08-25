@@ -59,13 +59,14 @@ struct sr_replay_setup_result {
 	char scene_b[SR_REPLAY_SETUP_NAME_MAX];
 };
 
+/* Replay Setup enumerates and may mutate OBS frontend source/scene topology.
+ * These APIs are frontend-thread operations; never call them from render,
+ * decode or encoder callbacks. */
+
 /* Snapshot of replay topology plus compatible asynchronous video sources.
  * Storage in snapshot->sources belongs to the caller. */
 bool sr_replay_setup_get_snapshot(struct sr_replay_setup_snapshot *snapshot);
 void sr_replay_setup_free_snapshot(struct sr_replay_setup_snapshot *snapshot);
-
-/* Setup mutations are frontend operations: call them from the OBS/Qt UI thread,
- * never from render, decode or encoder callbacks. */
 
 /* Add/enable or remove the Pitel Capture filter on one named OBS video source.
  * Other filters on that source are never modified. */
