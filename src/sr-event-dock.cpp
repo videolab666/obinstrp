@@ -19,6 +19,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-replay-channel.h"
 #include "sr-replay-coverage.h"
 #include "sr-replay-playlist.h"
+#include "sr-replay-setup.h"
 #include "sr-replay-take.h"
 #include "sr-storage-cleanup.h"
 #include "sr-session.h"
@@ -42,6 +43,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QAction>
 #include <QComboBox>
 #include <QDir>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -567,8 +570,14 @@ public:
 		settingsGear->setFixedWidth(28);
 		recordStatus = new QLabel(this);
 		recordStatus->setWordWrap(true);
+		setupButton = new QToolButton(this);
+		setupButton->setText(T("EventDock.Setup.Button"));
+		setupButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+		setupButton->setAutoRaise(true);
+		setupButton->setMinimumWidth(82);
 		recordBar->addWidget(recordToggle);
 		recordBar->addWidget(settingsGear);
+		recordBar->addWidget(setupButton);
 		recordBar->addWidget(recordStatus, 1);
 		root->addLayout(recordBar);
 
@@ -885,6 +894,7 @@ public:
 		connect(mark20, &QPushButton::clicked, this, [this]() { quickMark(20); });
 		connect(recordToggle, &QToolButton::clicked, this, [this]() { toggleAllRecording(); });
 		connect(settingsGear, &QToolButton::clicked, this, []() { sr_dock_open_settings(); });
+		connect(setupButton, &QToolButton::clicked, this, [this]() { openReplaySetup(); });
 		connect(up, &QPushButton::clicked, this, [this]() { moveRow(-1); });
 		connect(down, &QPushButton::clicked, this, [this]() { moveRow(1); });
 		connect(played, &QPushButton::clicked, this, [this]() { togglePlayed(); });
@@ -986,6 +996,7 @@ public:
 			if (++cameraRefreshTicks >= 4) {
 				cameraRefreshTicks = 0;
 				refreshCameras();
+				refreshSetupStatus();
 			}
 		});
 		refreshTimer->start();
@@ -1009,6 +1020,7 @@ public:
 		refreshTransportStatus();
 		refreshProgramState();
 		refreshRecordingStatus();
+		refreshSetupStatus();
 		refreshHardwareStatus();
 		syncTransportControls();
 	}
@@ -1054,6 +1066,287 @@ private:
 
 	void setCreatedStatus(uint64_t eventId) { status->setText(T("EventDock.Created").arg(eventId)); }
 
+	bool eventTransitionConfigured() const
+	{
+		char *raw = sr_config_get_event_transition();
+		const bool configured = raw && *raw;
+		bfree(raw);
+		return configured;
+	}
+
+	void refreshSetupStatus()
+	{
+		if (!setupButton)
+			return;
+		sr_replay_setup_snapshot snapshot = {};
+		if (!sr_replay_setup_get_snapshot(&snapshot)) {
+			setupButton->setText(T("EventDock.Setup.Button"));
+			return;
+		}
+
+		const bool needsAB = eventTransitionConfigured();
+		const bool healthy = snapshot.enabled_capture_source_count > 0 &&
+				     (!needsAB || snapshot.event_transition_ready);
+		if (!snapshot.enabled_capture_source_count) {
+			setupButton->setText(QStringLiteral("⚠ ") + T("EventDock.Setup.Button"));
+		} else {
+			const QString mode = snapshot.event_transition_ready ? QStringLiteral("A/B")
+									     : QStringLiteral("CUT");
+			setupButton->setText(QStringLiteral("%1 %2 cam · %3")
+						     .arg(healthy ? QStringLiteral("✓") : QStringLiteral("⚠"))
+						     .arg(snapshot.enabled_capture_source_count)
+						     .arg(mode));
+		}
+		setupButton->setStyleSheet(
+			healthy ? QStringLiteral("QToolButton { color: #30c85a; font-weight: bold; }")
+				: QStringLiteral("QToolButton { color: #d8a000; font-weight: bold; }"));
+		const QString sceneA = snapshot.bus_a_ready ? QString::fromUtf8(snapshot.scene_a)
+							    : T("EventDock.Setup.Missing");
+		const QString sceneB = snapshot.bus_b_ready ? QString::fromUtf8(snapshot.scene_b)
+							    : T("EventDock.Setup.Missing");
+		setupButton->setToolTip(T("EventDock.Setup.Tooltip")
+						.arg(snapshot.enabled_capture_source_count)
+						.arg(snapshot.compatible_source_count)
+						.arg(sceneA)
+						.arg(sceneB));
+		sr_replay_setup_free_snapshot(&snapshot);
+	}
+
+	bool openReplaySetup()
+	{
+		QDialog dialog(this);
+		dialog.setWindowTitle(T("EventDock.Setup.Title"));
+		dialog.resize(820, 500);
+		auto *layout = new QVBoxLayout(&dialog);
+		layout->setContentsMargins(8, 8, 8, 8);
+		layout->setSpacing(5);
+
+		auto *summary = new QLabel(&dialog);
+		summary->setWordWrap(true);
+		layout->addWidget(summary);
+		auto *topologyBar = new QHBoxLayout();
+		auto *ensureAB = new QPushButton(T("EventDock.Setup.CreateAB"), &dialog);
+		topologyBar->addWidget(ensureAB);
+		topologyBar->addStretch(1);
+		layout->addLayout(topologyBar);
+
+		auto *hint = new QLabel(T("EventDock.Setup.CameraHint"), &dialog);
+		hint->setWordWrap(true);
+		hint->setStyleSheet(QStringLiteral("color: gray;"));
+		layout->addWidget(hint);
+
+		auto *sources = new QTableWidget(&dialog);
+		sources->setColumnCount(5);
+		sources->setHorizontalHeaderLabels({T("EventDock.Setup.Use"), T("EventDock.Setup.Source"),
+						    T("EventDock.Setup.Capture"), T("EventDock.Setup.Compatible"),
+						    T("EventDock.Setup.Type")});
+		sources->setEditTriggers(QAbstractItemView::NoEditTriggers);
+		sources->setSelectionBehavior(QAbstractItemView::SelectRows);
+		sources->setAlternatingRowColors(true);
+		sources->verticalHeader()->setVisible(false);
+		sources->verticalHeader()->setDefaultSectionSize(20);
+		sources->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+		sources->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+		for (int column = 2; column < 5; column++)
+			sources->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
+		layout->addWidget(sources, 1);
+
+		auto refreshSummary = [&]() {
+			sr_replay_setup_snapshot snapshot = {};
+			if (!sr_replay_setup_get_snapshot(&snapshot)) {
+				summary->setText(T("EventDock.Setup.Unavailable"));
+				return;
+			}
+			const QString sceneA = snapshot.bus_a_ready ? QString::fromUtf8(snapshot.scene_a)
+								    : T("EventDock.Setup.Missing");
+			const QString sceneB = snapshot.bus_b_ready ? QString::fromUtf8(snapshot.scene_b)
+								    : T("EventDock.Setup.Missing");
+			summary->setText(T("EventDock.Setup.Summary")
+						 .arg(snapshot.enabled_capture_source_count)
+						 .arg(snapshot.compatible_source_count)
+						 .arg(sceneA)
+						 .arg(sceneB)
+						 .arg(snapshot.event_transition_ready ? T("EventDock.Setup.ReadyAB")
+										      : T("EventDock.Setup.CutOnly")));
+			sr_replay_setup_free_snapshot(&snapshot);
+		};
+
+		auto populateSources = [&](bool firstOpen) {
+			sr_replay_setup_snapshot snapshot = {};
+			if (!sr_replay_setup_get_snapshot(&snapshot)) {
+				sources->setRowCount(0);
+				return;
+			}
+			const bool firstSetup = firstOpen && snapshot.capture_source_count == 0;
+			sources->setRowCount((int)snapshot.source_count);
+			for (size_t i = 0; i < snapshot.source_count; i++) {
+				const sr_replay_setup_source &entry = snapshot.sources[i];
+				const int row = (int)i;
+				auto *use = new QTableWidgetItem();
+				Qt::ItemFlags useFlags = Qt::ItemIsSelectable | Qt::ItemIsUserCheckable;
+				if (entry.compatible || entry.has_capture)
+					useFlags |= Qt::ItemIsEnabled;
+				use->setFlags(useFlags);
+				use->setCheckState(entry.has_capture || (firstSetup && entry.compatible)
+							   ? Qt::Checked
+							   : Qt::Unchecked);
+				sources->setItem(row, 0, use);
+				sources->setItem(row, 1, new QTableWidgetItem(QString::fromUtf8(entry.name)));
+				QString captureState = T("EventDock.Setup.CaptureMissing");
+				if (entry.has_capture)
+					captureState = entry.capture_enabled ? T("EventDock.Setup.CaptureEnabled")
+									     : T("EventDock.Setup.CaptureDisabled");
+				auto *capture = new QTableWidgetItem(captureState);
+				capture->setData(Qt::UserRole, entry.has_capture);
+				capture->setData(Qt::UserRole + 1, entry.capture_enabled);
+				sources->setItem(row, 2, capture);
+				sources->setItem(row, 3,
+						 new QTableWidgetItem(entry.compatible ? T("EventDock.Setup.Yes")
+										       : T("EventDock.Setup.No")));
+				sources->setItem(row, 4, new QTableWidgetItem(QString::fromUtf8(entry.type_id)));
+			}
+			sr_replay_setup_free_snapshot(&snapshot);
+		};
+
+		refreshSummary();
+		populateSources(true);
+
+		auto *cameraBar = new QHBoxLayout();
+		auto *selectAll = new QPushButton(T("EventDock.Setup.SelectAll"), &dialog);
+		auto *selectNone = new QPushButton(T("EventDock.Setup.SelectNone"), &dialog);
+		auto *applyCameras = new QPushButton(T("EventDock.Setup.ApplyCameras"), &dialog);
+		cameraBar->addWidget(selectAll);
+		cameraBar->addWidget(selectNone);
+		cameraBar->addStretch(1);
+		cameraBar->addWidget(applyCameras);
+		layout->addLayout(cameraBar);
+
+		connect(selectAll, &QPushButton::clicked, &dialog, [sources]() {
+			for (int row = 0; row < sources->rowCount(); row++) {
+				QTableWidgetItem *use = sources->item(row, 0);
+				QTableWidgetItem *compatible = sources->item(row, 3);
+				if (use && compatible && compatible->text() == T("EventDock.Setup.Yes"))
+					use->setCheckState(Qt::Checked);
+			}
+		});
+		connect(selectNone, &QPushButton::clicked, &dialog, [sources]() {
+			for (int row = 0; row < sources->rowCount(); row++) {
+				if (QTableWidgetItem *use = sources->item(row, 0))
+					use->setCheckState(Qt::Unchecked);
+			}
+		});
+		connect(ensureAB, &QPushButton::clicked, &dialog, [&, this]() {
+			sr_replay_setup_result result = {};
+			if (!sr_replay_setup_ensure_event_scenes(&result)) {
+				QMessageBox::warning(&dialog, T("EventDock.Setup.Title"),
+						     T("EventDock.Setup.ABFailed"));
+			} else {
+				status->setText(T("EventDock.Setup.ABReady")
+							.arg(QString::fromUtf8(result.scene_a))
+							.arg(QString::fromUtf8(result.scene_b)));
+			}
+			refreshSummary();
+			refreshSetupStatus();
+		});
+		connect(applyCameras, &QPushButton::clicked, &dialog, [&, this]() {
+			sr_capture_recording_summary recording = {};
+			if (sr_capture_get_recording_summary(&recording) && recording.requested_count) {
+				if (QMessageBox::question(&dialog, T("EventDock.Setup.Title"),
+							  T("EventDock.Setup.StopRecordingFirst")) != QMessageBox::Yes)
+					return;
+				setAllRecording(false);
+			}
+
+			int changes = 0;
+			int failures = 0;
+			for (int row = 0; row < sources->rowCount(); row++) {
+				QTableWidgetItem *use = sources->item(row, 0);
+				QTableWidgetItem *name = sources->item(row, 1);
+				QTableWidgetItem *capture = sources->item(row, 2);
+				if (!use || !name || !capture)
+					continue;
+				const bool desired = use->checkState() == Qt::Checked;
+				const bool installed = capture->data(Qt::UserRole).toBool();
+				const bool enabled = capture->data(Qt::UserRole + 1).toBool();
+				if (desired == installed && (!desired || enabled))
+					continue;
+				const QByteArray sourceName = name->text().toUtf8();
+				if (sr_replay_setup_set_capture(sourceName.constData(), desired))
+					changes++;
+				else
+					failures++;
+			}
+			populateSources(false);
+			refreshSummary();
+			refreshSetupStatus();
+			refreshRecordingStatus();
+			refreshCameras();
+			status->setText(T("EventDock.Setup.Applied").arg(changes).arg(failures));
+			if (failures)
+				QMessageBox::warning(&dialog, T("EventDock.Setup.Title"),
+						     T("EventDock.Setup.ApplyFailed").arg(failures));
+		});
+
+		auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+		connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+		connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+		layout->addWidget(buttons);
+		dialog.exec();
+
+		refreshSetupStatus();
+		refreshRecordingStatus();
+		sr_replay_setup_snapshot finalSnapshot = {};
+		const bool ready = sr_replay_setup_get_snapshot(&finalSnapshot) &&
+				   finalSnapshot.enabled_capture_source_count > 0;
+		sr_replay_setup_free_snapshot(&finalSnapshot);
+		return ready;
+	}
+
+	bool recordingPreflight()
+	{
+		sr_replay_setup_snapshot snapshot = {};
+		if (!sr_replay_setup_get_snapshot(&snapshot))
+			return false;
+		bool haveCapture = snapshot.enabled_capture_source_count > 0;
+		bool abReady = snapshot.event_transition_ready;
+		sr_replay_setup_free_snapshot(&snapshot);
+
+		if (!haveCapture) {
+			QMessageBox prompt(QMessageBox::Warning, T("EventDock.Setup.PreflightTitle"),
+					   T("EventDock.Setup.NoCapturePreflight"), QMessageBox::NoButton, this);
+			QPushButton *openSetup = prompt.addButton(T("EventDock.Setup.Open"), QMessageBox::AcceptRole);
+			prompt.addButton(QMessageBox::Cancel);
+			prompt.exec();
+			if (prompt.clickedButton() != openSetup || !openReplaySetup())
+				return false;
+			haveCapture = true;
+		}
+
+		if (eventTransitionConfigured() && !abReady) {
+			QMessageBox prompt(QMessageBox::Warning, T("EventDock.Setup.PreflightTitle"),
+					   T("EventDock.Setup.NoABPreflight"), QMessageBox::NoButton, this);
+			QPushButton *repair = prompt.addButton(T("EventDock.Setup.CreateAB"), QMessageBox::AcceptRole);
+			QPushButton *cuts = prompt.addButton(T("EventDock.Setup.StartCuts"), QMessageBox::ActionRole);
+			prompt.addButton(QMessageBox::Cancel);
+			prompt.exec();
+			if (prompt.clickedButton() == repair) {
+				sr_replay_setup_result result = {};
+				if (!sr_replay_setup_ensure_event_scenes(&result)) {
+					QMessageBox::warning(this, T("EventDock.Setup.PreflightTitle"),
+							     T("EventDock.Setup.ABFailed"));
+					return false;
+				}
+				abReady = result.event_transition_ready;
+				refreshSetupStatus();
+				if (!abReady)
+					return false;
+			} else if (prompt.clickedButton() != cuts) {
+				return false;
+			}
+		}
+		return haveCapture;
+	}
+
 	void updateRecordToggle(const sr_capture_recording_summary *summary)
 	{
 		if (!recordToggle)
@@ -1077,7 +1370,12 @@ private:
 	{
 		sr_capture_recording_summary summary = {};
 		const bool requested = sr_capture_get_recording_summary(&summary) && summary.requested_count > 0;
-		setAllRecording(!requested);
+		if (requested) {
+			setAllRecording(false);
+			return;
+		}
+		if (recordingPreflight())
+			setAllRecording(true);
 	}
 
 	void setAllRecording(bool enabled)
@@ -2499,6 +2797,7 @@ private:
 	QToolButton *performanceToggle = nullptr;
 	QToolButton *playEventsButton = nullptr;
 	QToolButton *recordToggle = nullptr;
+	QToolButton *setupButton = nullptr;
 	QLabel *recordStatus = nullptr;
 	QLabel *performanceSummary = nullptr;
 	QLabel *programStatus = nullptr;

@@ -30,6 +30,7 @@ extern "C" {
 
 #define SR_CAPTURE_ID "sports_replay_capture"
 #define SR_PLAYBACK_ID "sports_replay"
+#define SR_CAPTURE_SETTING_DISK_RECORDING "disk_recording"
 
 /* Settings key on a playback source naming the camera source it captures
  * from. Shared with the dock, which needs it to route a saved replay file

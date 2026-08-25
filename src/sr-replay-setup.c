@@ -203,8 +203,8 @@ static bool source_is_candidate(obs_source_t *source, bool has_capture, bool *co
 		return false;
 
 	const char *id = obs_source_get_unversioned_id(source);
-	if (!id || strcmp(id, SR_EVENT_OUTPUT_ID) == 0 || strcmp(id, SR_PLAYBACK_ID) == 0 ||
-	    strcmp(id, "scene") == 0 || strcmp(id, "group") == 0)
+	if (!id || strcmp(id, SR_EVENT_OUTPUT_ID) == 0 || strcmp(id, SR_PLAYBACK_ID) == 0 || strcmp(id, "scene") == 0 ||
+	    strcmp(id, "group") == 0)
 		return false;
 
 	const uint32_t flags = obs_source_get_output_flags(source);
@@ -274,7 +274,7 @@ bool sr_replay_setup_get_snapshot(struct sr_replay_setup_snapshot *snapshot)
 	snapshot->bus_a_ready = scene_a && *scene_a;
 	snapshot->bus_b_ready = scene_b && *scene_b;
 	snapshot->event_transition_ready = snapshot->bus_a_ready && snapshot->bus_b_ready &&
-						   strcmp(scene_a, scene_b) != 0;
+					   strcmp(scene_a, scene_b) != 0;
 	bfree(scene_a);
 	bfree(scene_b);
 	return true;
@@ -327,10 +327,11 @@ bool sr_replay_setup_set_capture(const char *source_name, bool enabled)
 
 		char filter_name[SR_REPLAY_SETUP_NAME_MAX];
 		copy_name(filter_name, sizeof(filter_name), "Pitel Instant Replay Capture");
-		for (unsigned suffix = 2; obs_source_get_filter_by_name(source, filter_name); suffix++) {
+		for (unsigned suffix = 2;; suffix++) {
 			obs_source_t *collision = obs_source_get_filter_by_name(source, filter_name);
-			if (collision)
-				obs_source_release(collision);
+			if (!collision)
+				break;
+			obs_source_release(collision);
 			snprintf(filter_name, sizeof(filter_name), "Pitel Instant Replay Capture %u", suffix);
 		}
 		obs_source_t *created = obs_source_create(SR_CAPTURE_ID, filter_name, NULL, NULL);

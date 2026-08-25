@@ -14,6 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-event-controller.h"
 #include "sr-event-output.h"
 #include "sr-replay-playlist.h"
+#include "sr-replay-setup.h"
 #include "sr-scene-tracker.h"
 
 #include <obs-frontend-api.h>
@@ -115,44 +116,14 @@ static void get_live_audio_settings(enum sr_replay_bus bus, enum sr_live_audio_p
 	obs_source_release(source);
 }
 
-struct find_output_ctx {
-	enum sr_replay_bus bus;
-	char *source_name;
-};
-
-static bool find_output_source(void *param, obs_source_t *source)
-{
-	struct find_output_ctx *ctx = param;
-	if (!ctx || ctx->source_name)
-		return false;
-	if (strcmp(obs_source_get_unversioned_id(source), SR_EVENT_OUTPUT_ID) != 0)
-		return true;
-
-	obs_data_t *settings = obs_source_get_settings(source);
-	const int bus = (int)obs_data_get_int(settings, SR_EVENT_OUTPUT_SETTING_BUS);
-	obs_data_release(settings);
-	if (bus != (int)ctx->bus)
-		return true;
-
-	ctx->source_name = bstrdup(obs_source_get_name(source));
-	return false;
-}
-
 static char *output_source_name(enum sr_replay_bus bus)
 {
-	struct find_output_ctx ctx = {.bus = bus};
-	obs_enum_sources(find_output_source, &ctx);
-	return ctx.source_name;
+	return sr_replay_setup_find_output_source_name(bus);
 }
 
 static char *output_scene_name(enum sr_replay_bus bus)
 {
-	char *source_name = output_source_name(bus);
-	if (!source_name)
-		return NULL;
-	char *scene_name = sr_find_scene_with_source(source_name);
-	bfree(source_name);
-	return scene_name;
+	return sr_replay_setup_find_output_scene_name(bus);
 }
 
 bool sr_replay_take_event_transition_ready(void)

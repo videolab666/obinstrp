@@ -29,7 +29,7 @@ the Free Software Foundation; either version 2 of the License, or
 #define S_ENCODER "encoder"
 #define S_QUALITY "quality"
 #define S_GOP "gop_ms"
-#define S_DISK_RECORDING "disk_recording"
+#define S_DISK_RECORDING SR_CAPTURE_SETTING_DISK_RECORDING
 
 struct sr_capture {
 	obs_source_t *self;
@@ -804,7 +804,11 @@ static void capture_control_filter(obs_source_t *parent, obs_source_t *child, vo
 	if (!ctx || strcmp(obs_source_get_unversioned_id(child), SR_CAPTURE_ID) != 0)
 		return;
 
-	ctx->camera_count++;
+	const bool filter_enabled = obs_source_enabled(child);
+	if (ctx->update_setting && ctx->enabled && !filter_enabled)
+		return;
+	if (filter_enabled)
+		ctx->camera_count++;
 	if (ctx->update_setting) {
 		obs_data_t *settings = obs_source_get_settings(child);
 		if (ctx->enabled && obs_data_get_bool(settings, S_DISK_RECORDING)) {
@@ -816,7 +820,7 @@ static void capture_control_filter(obs_source_t *parent, obs_source_t *child, vo
 		obs_data_release(settings);
 	}
 
-	if (!ctx->summary && !ctx->performance)
+	if (!filter_enabled || (!ctx->summary && !ctx->performance))
 		return;
 	struct sr_capture *capture = obs_obj_get_data(child);
 	if (!capture)
