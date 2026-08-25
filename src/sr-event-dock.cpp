@@ -2118,7 +2118,7 @@ private:
 			button->setProperty("coverage", (int)SR_REPLAY_COVERAGE_NONE);
 			button->setProperty("playableInNs", QVariant::fromValue<qulonglong>(0));
 			button->setProperty("playableOutNs", QVariant::fromValue<qulonglong>(0));
-			connect(button, &QPushButton::clicked, this, [this, camera]() { selectAngle(camera); });
+			connect(button, &QToolButton::clicked, this, [this, camera]() { selectAngle(camera); });
 			angleGrid->addWidget(button, i / 4, i % 4);
 			angleButtons.append(button);
 		}
