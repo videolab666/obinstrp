@@ -112,7 +112,7 @@ static bool init_video_processor(sr_gpu_encoder *enc)
 		if (!device_context)
 			return false;
 		const HRESULT hr = device_context->QueryInterface(__uuidof(ID3D11VideoContext),
-							 reinterpret_cast<void **>(&enc->video_context));
+								  reinterpret_cast<void **>(&enc->video_context));
 		device_context->Release();
 		if (FAILED(hr))
 			return false;
@@ -200,8 +200,8 @@ static bool open_gpu_codec(sr_gpu_encoder *enc, const char *name, int qp, uint32
 
 	enc->ctx = ctx;
 	enc->codec = codec;
-	const double actual_gop_ms =
-		1000.0 * static_cast<double>(gop_size) * static_cast<double>(enc->fps_den) / static_cast<double>(enc->fps_num);
+	const double actual_gop_ms = 1000.0 * static_cast<double>(gop_size) * static_cast<double>(enc->fps_den) /
+				     static_cast<double>(enc->fps_num);
 	blog(LOG_INFO,
 	     "Pitel Instant Replay: opened GPU replay encoder '%s' (%ux%u, qp %d, GOP %d frames / %.1f ms, D3D11 NV12, B=0)",
 	     codec->name, enc->width, enc->height, qp, gop_size, actual_gop_ms);
@@ -286,14 +286,13 @@ static bool convert_bgra_to_hw_nv12(sr_gpu_encoder *enc, ID3D11Texture2D *input,
 
 	ID3D11VideoProcessorOutputView *output_view = nullptr;
 	if (FAILED(enc->video_device->CreateVideoProcessorOutputView(output_texture, enc->enumerator, &output_desc,
-								   &output_view))) {
+								     &output_view))) {
 		input_view->Release();
 		return false;
 	}
 
 	RECT rect = {0, 0, static_cast<LONG>(enc->width), static_cast<LONG>(enc->height)};
-	enc->video_context->VideoProcessorSetStreamFrameFormat(enc->processor, 0,
-							       D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+	enc->video_context->VideoProcessorSetStreamFrameFormat(enc->processor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
 	enc->video_context->VideoProcessorSetStreamSourceRect(enc->processor, 0, TRUE, &rect);
 	enc->video_context->VideoProcessorSetStreamDestRect(enc->processor, 0, TRUE, &rect);
 	enc->video_context->VideoProcessorSetOutputTargetRect(enc->processor, TRUE, &rect);
@@ -362,8 +361,7 @@ static sr_gpu_encoder *create_for_name(uint32_t width, uint32_t height, uint32_t
 #endif
 
 extern "C" sr_gpu_encoder *sr_gpu_encoder_create(uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den,
-						  enum sr_encoder_backend backend, int qp,
-						  uint32_t gop_interval_ms)
+						 enum sr_encoder_backend backend, int qp, uint32_t gop_interval_ms)
 {
 #ifdef _WIN32
 	const char *names[2] = {nullptr, nullptr};
