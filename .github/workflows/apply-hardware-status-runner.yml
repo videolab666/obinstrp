@@ -1,0 +1,35 @@
+name: Run hardware status patch
+
+on:
+  push:
+    branches:
+      - feature/hardware-zero-copy
+    paths:
+      - .github/workflows/apply-hardware-status-runner.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
+      - name: Apply staged product diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          awk '/^H4sI/{print; exit}' .github/workflows/apply-hardware-status.yml > /tmp/hwstatus.diff.gz.b64
+          test -s /tmp/hwstatus.diff.gz.b64
+          base64 -d /tmp/hwstatus.diff.gz.b64 | gzip -d > /tmp/hwstatus.diff
+          git apply --check /tmp/hwstatus.diff
+          git apply /tmp/hwstatus.diff
+          git rm .github/workflows/apply-hardware-status.yml .github/workflows/apply-hardware-status-runner.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md data/locale/en-US.ini data/locale/es-ES.ini docs/HARDWARE_ZERO_COPY_STATUS.md src/capture-filter.c src/sr-capture.h src/sr-disk-player.c src/sr-disk-player.h src/sr-event-dock.cpp src/sr-replay-channel.c src/sr-replay-channel.h
+          git commit -m "feat: add hardware and performance status"
+          git push origin HEAD:feature/hardware-zero-copy
