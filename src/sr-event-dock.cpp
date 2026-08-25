@@ -38,6 +38,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <QAbstractItemView>
 #include <QAbstractItemDelegate>
+#include <QAction>
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
@@ -46,7 +47,10 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -59,6 +63,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QStyleOptionSlider>
 #include <QStringList>
 #include <QTableWidget>
+#include <QTabBar>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -533,16 +538,18 @@ public:
 		auto *root = new QVBoxLayout(this);
 		root->setContentsMargins(2, 2, 2, 2);
 		root->setSpacing(2);
-		setStyleSheet(QStringLiteral("QPushButton { padding: 1px 5px; min-height: 20px; }"
-					     "QToolButton { padding: 1px 4px; min-height: 20px; }"
-					     "QComboBox { padding: 1px 4px; min-height: 20px; }"
-					     "QTableWidget::item { padding-top: 0px; padding-bottom: 0px; }"));
+		setStyleSheet(QStringLiteral("QPushButton { padding: 0px 4px; min-height: 18px; }"
+					     "QToolButton { padding: 0px 4px; min-height: 18px; }"
+					     "QComboBox { padding: 0px 3px; min-height: 18px; }"
+					     "QTableWidget::item { padding: 0px 2px; }"
+					     "QHeaderView::section { padding: 1px 4px; }"
+					     "QTabBar::tab { padding: 2px 9px; min-width: 24px; min-height: 18px; }"));
 
 		auto *operatorHint = new QLabel(T("EventDock.OperatorHint"), this);
 		operatorHint->setWordWrap(true);
 		operatorHint->setStyleSheet(
-			QStringLiteral("QLabel { color: palette(text); background: palette(alternate-base); "
-				       "border: 1px solid palette(mid); border-radius: 3px; padding: 3px; }"));
+			QStringLiteral("QLabel { color: palette(text); background: transparent; "
+				       "border: 1px solid palette(mid); border-radius: 3px; padding: 2px; }"));
 		root->addWidget(operatorHint);
 
 		auto *recordBar = new QHBoxLayout();
@@ -564,15 +571,15 @@ public:
 		recordBar->addWidget(recordStatus, 1);
 		root->addLayout(recordBar);
 
-		auto *performanceBox = new QGroupBox(T("EventDock.Performance.Title"), this);
-		auto *performanceLayout = new QVBoxLayout(performanceBox);
-		performanceLayout->setContentsMargins(3, 3, 3, 3);
+		performancePanel = new QWidget(this);
+		auto *performanceLayout = new QVBoxLayout(performancePanel);
+		performanceLayout->setContentsMargins(0, 0, 0, 0);
 		performanceLayout->setSpacing(1);
-		performanceSummary = new QLabel(performanceBox);
+		performanceSummary = new QLabel(performancePanel);
 		performanceSummary->setWordWrap(true);
 		performanceSummary->setStyleSheet(QStringLiteral("color: gray;"));
 		performanceLayout->addWidget(performanceSummary);
-		performanceTable = new QTableWidget(performanceBox);
+		performanceTable = new QTableWidget(performancePanel);
 		performanceTable->setColumnCount(7);
 		performanceTable->setHorizontalHeaderLabels(
 			{T("EventDock.Performance.Camera"), T("EventDock.Performance.Path"),
@@ -584,16 +591,17 @@ public:
 		performanceTable->setFocusPolicy(Qt::NoFocus);
 		performanceTable->setAlternatingRowColors(true);
 		performanceTable->verticalHeader()->setVisible(false);
+		performanceTable->verticalHeader()->setMinimumSectionSize(16);
 		performanceTable->horizontalHeader()->setStretchLastSection(false);
 		performanceTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
 		for (int column = 1; column < performanceTable->columnCount(); column++)
 			performanceTable->horizontalHeader()->setSectionResizeMode(column,
 										   QHeaderView::ResizeToContents);
-		performanceTable->verticalHeader()->setDefaultSectionSize(20);
-		performanceTable->setMinimumHeight(72);
-		performanceTable->setMaximumHeight(120);
+		performanceTable->verticalHeader()->setDefaultSectionSize(18);
+		performanceTable->setMinimumHeight(58);
+		performanceTable->setMaximumHeight(108);
 		performanceLayout->addWidget(performanceTable);
-		root->addWidget(performanceBox);
+		performancePanel->setVisible(false);
 
 		auto *programBar = new QHBoxLayout();
 		programBar->setSpacing(3);
@@ -602,19 +610,24 @@ public:
 		cueBStatus = new QLabel(this);
 		for (QLabel *label : {programStatus, cueAStatus, cueBStatus}) {
 			label->setAlignment(Qt::AlignCenter);
-			label->setMinimumHeight(22);
+			label->setMinimumHeight(20);
 			programBar->addWidget(label, 1);
 		}
 		root->addLayout(programBar);
 
+		listTabs = new QTabBar(this);
+		listTabs->setExpanding(false);
+		listTabs->setUsesScrollButtons(true);
+		listTabs->setElideMode(Qt::ElideNone);
+		for (unsigned i = 1; i <= SR_EVENT_LIST_COUNT; i++) {
+			const int index = listTabs->addTab(QString::number(i));
+			listTabs->setTabData(index, i);
+		}
+		listTabs->setCurrentIndex(0);
+		root->addWidget(listTabs);
+
 		auto *markBar = new QHBoxLayout();
 		markBar->setSpacing(3);
-		markBar->addWidget(new QLabel(T("EventDock.List"), this));
-		listCombo = new QComboBox(this);
-		for (unsigned i = 1; i <= SR_EVENT_LIST_COUNT; i++)
-			listCombo->addItem(QString::number(i), i);
-		listCombo->setCurrentIndex(0);
-		markBar->addWidget(listCombo);
 
 		auto *markIn = new QPushButton(QStringLiteral("IN"), this);
 		auto *markOut = new QPushButton(QStringLiteral("OUT"), this);
@@ -643,7 +656,9 @@ public:
 		table->setSelectionMode(QAbstractItemView::SingleSelection);
 		table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
 		table->verticalHeader()->setVisible(false);
-		table->verticalHeader()->setDefaultSectionSize(22);
+		table->verticalHeader()->setMinimumSectionSize(16);
+		table->verticalHeader()->setDefaultSectionSize(18);
+		table->horizontalHeader()->setFixedHeight(21);
 		table->horizontalHeader()->setStretchLastSection(true);
 		table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 		table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
@@ -811,18 +826,25 @@ public:
 		auto *takeB = new QPushButton(T("EventDock.TakeB"), this);
 		auto *takeToggle = new QPushButton(T("EventDock.TakeToggle"), this);
 		auto *returnLive = new QPushButton(T("EventDock.ReturnLive"), this);
-		auto *playlistA = new QPushButton(T("EventDock.PlaylistA"), this);
-		auto *playlistB = new QPushButton(T("EventDock.PlaylistB"), this);
-		auto *playlistNext = new QPushButton(T("EventDock.PlaylistNext"), this);
-		auto *playlistStop = new QPushButton(T("EventDock.PlaylistStop"), this);
-		auto *playSelected = new QPushButton(T("EventDock.PlaySelected"), this);
-		playSelected->setStyleSheet(QStringLiteral("font-weight: bold;"));
-		takeBar->addWidget(playlistA);
-		takeBar->addWidget(playlistB);
-		takeBar->addWidget(playlistNext);
-		takeBar->addWidget(playlistStop);
-		takeBar->addSpacing(5);
-		takeBar->addWidget(playSelected);
+
+		playEventsButton = new QToolButton(this);
+		playEventsButton->setText(T("EventDock.PlayMenu"));
+		playEventsButton->setPopupMode(QToolButton::MenuButtonPopup);
+		playEventsButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+		playEventsButton->setStyleSheet(QStringLiteral("font-weight: bold;"));
+		auto *playMenu = new QMenu(playEventsButton);
+		auto *playAllAction = playMenu->addAction(T("EventDock.PlayAll"));
+		auto *playSelectedAction = playMenu->addAction(T("EventDock.PlaySelected"));
+		auto *playLastAction = playMenu->addAction(T("EventDock.PlayLast"));
+		auto *playByIdAction = playMenu->addAction(T("EventDock.PlayById"));
+		playMenu->addSeparator();
+		auto *playlistAAction = playMenu->addAction(T("EventDock.PlaylistA"));
+		auto *playlistBAction = playMenu->addAction(T("EventDock.PlaylistB"));
+		auto *playlistNextAction = playMenu->addAction(T("EventDock.PlaylistNext"));
+		auto *playlistStopAction = playMenu->addAction(T("EventDock.PlaylistStop"));
+		playEventsButton->setMenu(playMenu);
+
+		takeBar->addWidget(playEventsButton);
 		takeBar->addWidget(takeA);
 		takeBar->addWidget(takeB);
 		takeBar->addWidget(takeToggle);
@@ -838,7 +860,17 @@ public:
 		status->setStyleSheet(QStringLiteral("color: gray;"));
 		root->addWidget(status);
 
-		connect(listCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+		performanceToggle = new QToolButton(this);
+		performanceToggle->setText(T("EventDock.Performance.Title"));
+		performanceToggle->setCheckable(true);
+		performanceToggle->setChecked(false);
+		performanceToggle->setArrowType(Qt::RightArrow);
+		performanceToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+		performanceToggle->setAutoRaise(true);
+		root->addWidget(performanceToggle);
+		root->addWidget(performancePanel);
+
+		connect(listTabs, &QTabBar::currentChanged, this, [this](int index) {
 			if (!controller || index < 0)
 				return;
 			sr_event_controller_set_current_list(controller, currentList());
@@ -911,11 +943,21 @@ public:
 			jogLastValue = 0;
 		});
 		connect(shuttleSlider, &QSlider::valueChanged, this, [this](int value) { applyShuttle(value); });
-		connect(playlistA, &QPushButton::clicked, this, [this]() { startPlaylist(SR_REPLAY_BUS_A); });
-		connect(playlistB, &QPushButton::clicked, this, [this]() { startPlaylist(SR_REPLAY_BUS_B); });
-		connect(playlistNext, &QPushButton::clicked, this, [this]() { nextPlaylist(); });
-		connect(playlistStop, &QPushButton::clicked, this, [this]() { stopPlaylist(); });
-		connect(playSelected, &QPushButton::clicked, this, [this]() { playSelectedEvent(); });
+		connect(playEventsButton, &QToolButton::clicked, this, [this]() { playSelectedEvent(); });
+		connect(playAllAction, &QAction::triggered, this, [this]() { startPlaylist(transportBus()); });
+		connect(playSelectedAction, &QAction::triggered, this, [this]() { playSelectedEvent(); });
+		connect(playLastAction, &QAction::triggered, this, [this]() { playLastEvent(); });
+		connect(playByIdAction, &QAction::triggered, this, [this]() { playById(); });
+		connect(playlistAAction, &QAction::triggered, this, [this]() { startPlaylist(SR_REPLAY_BUS_A); });
+		connect(playlistBAction, &QAction::triggered, this, [this]() { startPlaylist(SR_REPLAY_BUS_B); });
+		connect(playlistNextAction, &QAction::triggered, this, [this]() { nextPlaylist(); });
+		connect(playlistStopAction, &QAction::triggered, this, [this]() { stopPlaylist(); });
+		connect(performanceToggle, &QToolButton::toggled, this, [this](bool expanded) {
+			performanceToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+			performancePanel->setVisible(expanded);
+			if (expanded)
+				refreshHardwareStatus();
+		});
 		connect(takeA, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_A); });
 		connect(takeB, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_B); });
 		connect(takeToggle, &QPushButton::clicked, this, [this]() { takeToggleBus(); });
@@ -980,7 +1022,11 @@ public:
 	}
 
 private:
-	unsigned currentList() const { return listCombo ? listCombo->currentData().toUInt() : 1; }
+	unsigned currentList() const
+	{
+		return listTabs && listTabs->currentIndex() >= 0 ? listTabs->tabData(listTabs->currentIndex()).toUInt()
+								 : 1;
+	}
 
 	unsigned targetList() const { return targetCombo ? targetCombo->currentData().toUInt() : 1; }
 
@@ -1086,7 +1132,7 @@ private:
 
 	void refreshHardwareStatus()
 	{
-		if (!performanceSummary || !performanceTable)
+		if (!performanceSummary || !performanceTable || (performancePanel && !performancePanel->isVisible()))
 			return;
 
 		sr_capture_performance_snapshot snapshot = {};
@@ -1509,7 +1555,7 @@ private:
 		cueAStatus->setStyleSheet(QStringLiteral(
 			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #3f78c5; border-radius: 3px; padding: 2px;"));
 		cueBStatus->setStyleSheet(QStringLiteral(
-			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #d49a2a; border-radius: 3px; padding: 4px;"));
+			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #d49a2a; border-radius: 3px; padding: 2px;"));
 	}
 
 	void syncTransportControls()
@@ -1748,6 +1794,49 @@ private:
 		if (!cueSelected(bus))
 			return;
 		takeBus(bus);
+	}
+
+	bool selectEventRowById(uint64_t eventId)
+	{
+		if (!table || !eventId)
+			return false;
+		for (int row = 0; row < table->rowCount(); row++) {
+			QTableWidgetItem *item = table->item(row, 0);
+			if (item && item->data(Qt::UserRole).toULongLong() == eventId) {
+				table->setCurrentCell(row, 0);
+				table->selectRow(row);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void playLastEvent()
+	{
+		if (!table || table->rowCount() <= 0) {
+			setStatus("EventDock.NoEventSelected");
+			return;
+		}
+		table->setCurrentCell(table->rowCount() - 1, 0);
+		table->selectRow(table->rowCount() - 1);
+		playSelectedEvent();
+	}
+
+	void playById()
+	{
+		bool accepted = false;
+		const QString text = QInputDialog::getText(this, T("EventDock.PlayByIdTitle"),
+							   T("EventDock.PlayByIdPrompt"), QLineEdit::Normal, QString(),
+							   &accepted);
+		if (!accepted)
+			return;
+		bool valid = false;
+		const uint64_t eventId = text.trimmed().toULongLong(&valid);
+		if (!valid || !eventId || !selectEventRowById(eventId)) {
+			status->setText(T("EventDock.PlayByIdNotFound").arg(text.trimmed()).arg(currentList()));
+			return;
+		}
+		playSelectedEvent();
 	}
 
 	void startPlaylist(enum sr_replay_bus bus)
@@ -2319,7 +2408,7 @@ private:
 	}
 
 	sr_event_controller *controller = nullptr;
-	QComboBox *listCombo = nullptr;
+	QTabBar *listTabs = nullptr;
 	QComboBox *targetCombo = nullptr;
 	QComboBox *cameraCombo = nullptr;
 	QComboBox *busCombo = nullptr;
@@ -2339,6 +2428,9 @@ private:
 	QProgressBar *exportProgressBar = nullptr;
 	QTableWidget *table = nullptr;
 	QTableWidget *performanceTable = nullptr;
+	QWidget *performancePanel = nullptr;
+	QToolButton *performanceToggle = nullptr;
+	QToolButton *playEventsButton = nullptr;
 	QToolButton *recordToggle = nullptr;
 	QLabel *recordStatus = nullptr;
 	QLabel *performanceSummary = nullptr;
