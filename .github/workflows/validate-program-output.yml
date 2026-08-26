@@ -1,30 +1,46 @@
-name: Validate Program Output replay
-run-name: Program Output replay full validation
+name: Replay Development CI
+run-name: Replay Development CI — ${{ github.ref_name }} — ${{ github.event_name }}
+
 on:
+  workflow_dispatch:
   push:
-    branches: [feature/hardware-zero-copy]
+    branches:
+      - feature/hardware-zero-copy
     paths:
+      - 'src/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'buildspec.json'
       - '.github/workflows/validate-program-output.yml'
-      - 'src/sr-program-recorder.c'
-      - 'src/sr-program-recorder.h'
-      - 'src/sr-gpu-encoder.cpp'
-      - 'src/sr-codec.h'
-      - 'src/sr-camera-identity.c'
-      - 'src/sr-camera-identity.h'
-      - 'src/sr-camera-list.c'
-      - 'src/sr-replay-setup.c'
-      - 'src/sr-replay-setup.h'
-      - 'src/capture-filter.c'
-      - 'src/sr-event-output.c'
-      - 'src/sr-replay-playlist.c'
-      - 'src/sr-event-dock.cpp'
-      - 'cmake/linux/defaults.cmake'
+      - '.github/workflows/build-project.yaml'
+      - '.github/workflows/check-format.yaml'
+  pull_request:
+    branches:
+      - feature/disk-replay-core
+      - main
+      - master
+    paths:
+      - 'src/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'buildspec.json'
+      - '.github/workflows/validate-program-output.yml'
+      - '.github/workflows/build-project.yaml'
+      - '.github/workflows/check-format.yaml'
 
 permissions:
   contents: read
 
-# Keep this validation independent of the PR base branch so feature-branch
-# checkpoints can be built before the PR targets main.
+concurrency:
+  group: replay-development-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Full development validation for the replay feature branch. Keeping
+# workflow_dispatch here allows the same build to be started manually, while
+# push and pull_request cover normal development without relying on ad-hoc CI
+# branches or narrow per-file filters.
 jobs:
   check-format:
     name: Check Formatting 🔍
