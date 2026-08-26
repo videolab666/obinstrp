@@ -28,8 +28,12 @@ jobs:
           python -m py_compile .github/scripts/patch-program-ui.py
       - name: Apply Program core
         run: python .github/scripts/patch-program-core.py
-      - name: Apply Program integration
-        run: python .github/scripts/patch-program-integration.py
+      - name: Apply Program capture integration
+        run: python .github/scripts/patch-program-integration.py capture
+      - name: Apply Program camera integration
+        run: python .github/scripts/patch-program-integration.py camera
+      - name: Apply Program setup integration
+        run: python .github/scripts/patch-program-integration.py setup
       - name: Apply Program playback
         run: python .github/scripts/patch-program-playback.py
       - name: Apply Program UI
