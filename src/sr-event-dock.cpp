@@ -1074,6 +1074,7 @@ public:
 		for (int speed : speeds)
 			speedCombo->addItem(QStringLiteral("%1%").arg(speed), speed);
 		speedCombo->setCurrentIndex(speedCombo->findData(100));
+		speedCombo->setToolTip(T("EventDock.Speed.Tooltip"));
 		cueBar->addWidget(speedCombo);
 		cueBar->addWidget(new QLabel(T("EventDock.Audio"), this));
 		audioCombo = new QComboBox(this);
@@ -1262,7 +1263,7 @@ public:
 			[this](bool checked) { sr_replay_channel_set_loop(transportBus(), checked); });
 		connect(speedCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
 			if (index >= 0)
-				sr_replay_channel_set_speed(transportBus(), speedCombo->itemData(index).toDouble());
+				setOperatorSpeed(speedCombo->itemData(index).toDouble());
 		});
 		connect(audioCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
 			if (index >= 0)
@@ -2610,6 +2611,15 @@ private:
 			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #d49a2a; border-radius: 3px; padding: 2px;"));
 	}
 
+	void setOperatorSpeed(double speed)
+	{
+		if (!sr_replay_channel_set_controller_speed(speed))
+			return;
+		if (sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_EVENT)
+			sr_replay_channel_set_speed(transportBus(), speed);
+		syncTimeline();
+	}
+
 	void syncTransportControls()
 	{
 		sr_replay_channel_state state = {};
@@ -2617,9 +2627,14 @@ private:
 			return;
 		reverseButton->setChecked(state.backward);
 		loopButton->setChecked(state.loop);
-		const int speedIndex = speedCombo->findData((int)state.speed_percent);
-		if (speedIndex >= 0)
+		const double displayedSpeed = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL
+						      ? sr_replay_channel_get_controller_speed()
+						      : state.speed_percent;
+		const int speedIndex = speedCombo->findData((int)displayedSpeed);
+		if (speedIndex >= 0) {
+			const QSignalBlocker blocker(speedCombo);
 			speedCombo->setCurrentIndex(speedIndex);
+		}
 		const int audioIndex = audioCombo->findData((int)state.audio_mode);
 		if (audioIndex >= 0)
 			audioCombo->setCurrentIndex(audioIndex);
@@ -2692,8 +2707,13 @@ private:
 			uint64_t runtime = 0;
 			sr_event_record event = {};
 			if (sr_event_controller_get_event(controller, eventIds[i], &event)) {
-				if (!event.pending && event.out_ns > event.in_ns)
-					runtime = playbackRuntimeNs(event.out_ns - event.in_ns, event.speed_percent);
+				if (!event.pending && event.out_ns > event.in_ns) {
+					const double plannedSpeed = sr_config_get_replay_speed_policy() ==
+										    SR_REPLAY_SPEED_GLOBAL
+									    ? sr_replay_channel_get_controller_speed()
+									    : event.speed_percent;
+					runtime = playbackRuntimeNs(event.out_ns - event.in_ns, plannedSpeed);
+				}
 				sr_event_controller_free_event(&event);
 			}
 
@@ -2907,7 +2927,7 @@ private:
 		if (!speed)
 			return;
 		sr_replay_channel_set_backward(transportBus(), position < 0);
-		sr_replay_channel_set_speed(transportBus(), speed);
+		setOperatorSpeed(speed);
 		if (state.paused)
 			sr_replay_channel_pause(transportBus(), false);
 		else if (!state.playing)

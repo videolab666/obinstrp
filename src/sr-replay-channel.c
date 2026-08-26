@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-replay-channel.h"
 
 #include "sr-disk-player.h"
+#include "sr-config.h"
 #include "sr-event-controller.h"
 #include "sr-replay-coverage.h"
 #include "sr-session.h"
@@ -52,6 +53,8 @@ struct sr_replay_channel {
 
 struct sr_replay_channels {
 	struct sr_event_controller *events;
+	pthread_mutex_t controller_speed_mutex;
+	double controller_speed_percent;
 	struct sr_replay_channel buses[SR_REPLAY_BUS_COUNT];
 };
 
@@ -162,6 +165,8 @@ bool sr_replay_channels_init(struct sr_event_controller *events)
 
 	struct sr_replay_channels *channels = bzalloc(sizeof(*channels));
 	channels->events = events;
+	pthread_mutex_init(&channels->controller_speed_mutex, NULL);
+	channels->controller_speed_percent = 100.0;
 	for (size_t i = 0; i < SR_REPLAY_BUS_COUNT; i++) {
 		pthread_mutex_init(&channels->buses[i].mutex, NULL);
 		channels->buses[i].speed_percent = 100.0;
@@ -184,6 +189,7 @@ void sr_replay_channels_shutdown(void)
 		pthread_mutex_unlock(&channels->buses[i].mutex);
 		pthread_mutex_destroy(&channels->buses[i].mutex);
 	}
+	pthread_mutex_destroy(&channels->controller_speed_mutex);
 	bfree(channels);
 }
 
@@ -228,7 +234,9 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	const uint64_t in_ns = coverage.playable_in_ns;
 	const uint64_t out_ns = coverage.playable_out_ns;
 	const bool partial = coverage.coverage != SR_REPLAY_COVERAGE_FULL;
-	const double speed = event.speed_percent;
+	const double speed = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL
+				     ? sr_replay_channel_get_controller_speed()
+				     : event.speed_percent;
 	const uint64_t event_in_ns = event.in_ns;
 	const uint64_t event_out_ns = event.out_ns;
 	sr_event_controller_free_event(&event);
@@ -492,6 +500,38 @@ bool sr_replay_channel_set_speed(enum sr_replay_bus bus, double speed_percent)
 	channel->last_clock_ns = 0;
 	pthread_mutex_unlock(&channel->mutex);
 	return true;
+}
+
+bool sr_replay_channel_set_controller_speed(double speed_percent)
+{
+	struct sr_replay_channels *channels = g_channels;
+	if (!channels || !isfinite(speed_percent))
+		return false;
+	if (speed_percent < 10.0)
+		speed_percent = 10.0;
+	if (speed_percent > 400.0)
+		speed_percent = 400.0;
+
+	pthread_mutex_lock(&channels->controller_speed_mutex);
+	channels->controller_speed_percent = speed_percent;
+	pthread_mutex_unlock(&channels->controller_speed_mutex);
+
+	if (sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL) {
+		sr_replay_channel_set_speed(SR_REPLAY_BUS_A, speed_percent);
+		sr_replay_channel_set_speed(SR_REPLAY_BUS_B, speed_percent);
+	}
+	return true;
+}
+
+double sr_replay_channel_get_controller_speed(void)
+{
+	struct sr_replay_channels *channels = g_channels;
+	if (!channels)
+		return 100.0;
+	pthread_mutex_lock(&channels->controller_speed_mutex);
+	const double speed = channels->controller_speed_percent;
+	pthread_mutex_unlock(&channels->controller_speed_mutex);
+	return speed;
 }
 
 bool sr_replay_channel_set_audio_mode(enum sr_replay_bus bus, enum sr_replay_audio_mode audio_mode)

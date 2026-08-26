@@ -242,7 +242,16 @@ static void event_advance_task(void *param)
 	apply_live_audio(request->bus, live_audio_policy, live_duck_db);
 
 	char *event_transition = sr_config_get_event_transition();
-	const uint32_t duration_ms = sr_config_get_event_transition_duration_ms();
+	uint32_t duration_ms = sr_config_get_event_transition_duration_ms();
+	if (event_transition && *event_transition && sr_config_get_event_transition_match_replay_speed() &&
+	    state.speed_percent > 0.0) {
+		double scaled_ms = (double)duration_ms * 100.0 / state.speed_percent;
+		if (scaled_ms < 50.0)
+			scaled_ms = 50.0;
+		if (scaled_ms > 10000.0)
+			scaled_ms = 10000.0;
+		duration_ms = (uint32_t)llround(scaled_ms);
+	}
 	if (event_transition && *event_transition)
 		sr_switch_to_scene_with_transition_duration(target_scene, event_transition, duration_ms);
 	else

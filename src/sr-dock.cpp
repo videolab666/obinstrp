@@ -37,6 +37,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDateTime>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -405,6 +406,20 @@ private:
 		populateStingerCombo(stingerOut, stingers, takeOut);
 		lay->addWidget(stingerOut);
 
+		auto *replaySpeedPolicyRow = new QHBoxLayout();
+		replaySpeedPolicyRow->addWidget(new QLabel(T("Dock.ReplaySpeedPolicy"), &dlg));
+		auto *replaySpeedPolicy = new QComboBox(&dlg);
+		replaySpeedPolicy->addItem(T("Dock.ReplaySpeedPolicy.Global"), SR_REPLAY_SPEED_GLOBAL);
+		replaySpeedPolicy->addItem(T("Dock.ReplaySpeedPolicy.Event"), SR_REPLAY_SPEED_EVENT);
+		replaySpeedPolicy->setCurrentIndex(
+			replaySpeedPolicy->findData((int)sr_config_get_replay_speed_policy()));
+		replaySpeedPolicyRow->addWidget(replaySpeedPolicy, 1);
+		lay->addLayout(replaySpeedPolicyRow);
+		auto *replaySpeedPolicyHint = new QLabel(T("Dock.ReplaySpeedPolicyHint"), &dlg);
+		replaySpeedPolicyHint->setWordWrap(true);
+		replaySpeedPolicyHint->setStyleSheet(QStringLiteral("color: gray;"));
+		lay->addWidget(replaySpeedPolicyHint);
+
 		char *eventTransitionRaw = sr_config_get_event_transition();
 		const QString eventTransition = QString::fromUtf8(eventTransitionRaw ? eventTransitionRaw : "");
 		bfree(eventTransitionRaw);
@@ -421,11 +436,18 @@ private:
 		eventTransitionRow->addWidget(eventTransitionMs);
 		eventTransitionRow->addWidget(new QLabel(T("Dock.EventTransitionMilliseconds"), &dlg));
 		lay->addLayout(eventTransitionRow);
-		eventTransitionMs->setEnabled(!eventTransitionCombo->currentData().toString().isEmpty());
+		auto *eventTransitionMatchSpeed = new QCheckBox(T("Dock.EventTransitionMatchReplaySpeed"), &dlg);
+		eventTransitionMatchSpeed->setChecked(sr_config_get_event_transition_match_replay_speed());
+		eventTransitionMatchSpeed->setToolTip(T("Dock.EventTransitionMatchReplaySpeedHint"));
+		lay->addWidget(eventTransitionMatchSpeed);
+		const bool haveEventTransition = !eventTransitionCombo->currentData().toString().isEmpty();
+		eventTransitionMs->setEnabled(haveEventTransition);
+		eventTransitionMatchSpeed->setEnabled(haveEventTransition);
 		connect(eventTransitionCombo, &QComboBox::currentIndexChanged, &dlg,
-			[eventTransitionCombo, eventTransitionMs](int) {
-				eventTransitionMs->setEnabled(
-					!eventTransitionCombo->currentData().toString().isEmpty());
+			[eventTransitionCombo, eventTransitionMs, eventTransitionMatchSpeed](int) {
+				const bool enabled = !eventTransitionCombo->currentData().toString().isEmpty();
+				eventTransitionMs->setEnabled(enabled);
+				eventTransitionMatchSpeed->setEnabled(enabled);
 			});
 		auto *eventTransitionHint = new QLabel(T("Dock.EventTransitionHint"), &dlg);
 		eventTransitionHint->setWordWrap(true);
@@ -493,6 +515,9 @@ private:
 			const QByteArray eventTransitionName = eventTransitionCombo->currentData().toString().toUtf8();
 			sr_config_set_event_transition(eventTransitionName.constData());
 			sr_config_set_event_transition_duration_ms((uint32_t)eventTransitionMs->value());
+			sr_config_set_event_transition_match_replay_speed(eventTransitionMatchSpeed->isChecked());
+			sr_config_set_replay_speed_policy(
+				static_cast<sr_replay_speed_policy>(replaySpeedPolicy->currentData().toInt()));
 
 			watchFolder();
 			refreshList();

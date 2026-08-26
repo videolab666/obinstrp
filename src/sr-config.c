@@ -34,6 +34,8 @@ static char *g_take_in_transition;
 static char *g_take_out_transition;
 static char *g_event_transition;
 static uint32_t g_event_transition_duration_ms;
+static bool g_event_transition_match_replay_speed;
+static enum sr_replay_speed_policy g_replay_speed_policy;
 
 /* Default location when the user hasn't chosen one: <Videos>/Pitel Instant Replay/Recorder,
  * created if needed. Falls back to the plugin config dir. */
@@ -90,6 +92,8 @@ static void save_locked(void)
 	obs_data_set_string(data, "take_out_transition", g_take_out_transition ? g_take_out_transition : "");
 	obs_data_set_string(data, "event_transition", g_event_transition ? g_event_transition : "");
 	obs_data_set_int(data, "event_transition_duration_ms", g_event_transition_duration_ms);
+	obs_data_set_bool(data, "event_transition_match_replay_speed", g_event_transition_match_replay_speed);
+	obs_data_set_int(data, "replay_speed_policy", (long long)g_replay_speed_policy);
 
 	char *path = obs_module_config_path("standalone-v1/config.json");
 	if (path)
@@ -136,12 +140,17 @@ void sr_config_init(void)
 	const char *take_out = data ? obs_data_get_string(data, "take_out_transition") : "";
 	const char *event_transition = data ? obs_data_get_string(data, "event_transition") : "";
 	const int64_t event_transition_ms = data ? obs_data_get_int(data, "event_transition_duration_ms") : 0;
+	const int64_t replay_speed_policy = data ? obs_data_get_int(data, "replay_speed_policy") : 0;
 	g_take_in_transition = bstrdup(take_in ? take_in : "");
 	g_take_out_transition = bstrdup(take_out ? take_out : "");
 	g_event_transition = bstrdup(event_transition ? event_transition : "");
 	g_event_transition_duration_ms = event_transition_ms >= 50 && event_transition_ms <= 10000
 						 ? (uint32_t)event_transition_ms
 						 : DEFAULT_EVENT_TRANSITION_DURATION_MS;
+	g_event_transition_match_replay_speed = data ? obs_data_get_bool(data, "event_transition_match_replay_speed")
+						     : false;
+	g_replay_speed_policy = replay_speed_policy == SR_REPLAY_SPEED_EVENT ? SR_REPLAY_SPEED_EVENT
+									     : SR_REPLAY_SPEED_GLOBAL;
 
 	os_mkdirs(g_save_dir);
 	os_mkdirs(g_session_root);
@@ -362,6 +371,40 @@ void sr_config_set_event_transition_duration_ms(uint32_t milliseconds)
 		milliseconds = 10000;
 	pthread_mutex_lock(&g_mutex);
 	g_event_transition_duration_ms = milliseconds;
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+bool sr_config_get_event_transition_match_replay_speed(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const bool value = g_event_transition_match_replay_speed;
+	pthread_mutex_unlock(&g_mutex);
+	return value;
+}
+
+void sr_config_set_event_transition_match_replay_speed(bool enabled)
+{
+	pthread_mutex_lock(&g_mutex);
+	g_event_transition_match_replay_speed = enabled;
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+enum sr_replay_speed_policy sr_config_get_replay_speed_policy(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const enum sr_replay_speed_policy value = g_replay_speed_policy;
+	pthread_mutex_unlock(&g_mutex);
+	return value;
+}
+
+void sr_config_set_replay_speed_policy(enum sr_replay_speed_policy policy)
+{
+	if (policy != SR_REPLAY_SPEED_EVENT)
+		policy = SR_REPLAY_SPEED_GLOBAL;
+	pthread_mutex_lock(&g_mutex);
+	g_replay_speed_policy = policy;
 	save_locked();
 	pthread_mutex_unlock(&g_mutex);
 }

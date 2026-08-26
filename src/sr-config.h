@@ -10,18 +10,24 @@ the Free Software Foundation; either version 2 of the License, or
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SR_CONFIG_SCHEMA_VERSION 5
+#define SR_CONFIG_SCHEMA_VERSION 6
 
 enum sr_storage_low_space_action {
 	SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED = 0,
 	SR_STORAGE_LOW_SPACE_STOP_RECORDING = 1,
 	SR_STORAGE_LOW_SPACE_WARN_ONLY = 2,
+};
+
+enum sr_replay_speed_policy {
+	SR_REPLAY_SPEED_GLOBAL = 0,
+	SR_REPLAY_SPEED_EVENT = 1,
 };
 
 void sr_config_init(void);
@@ -65,6 +71,14 @@ char *sr_config_get_event_transition(void);
 void sr_config_set_event_transition(const char *transition_name);
 uint32_t sr_config_get_event_transition_duration_ms(void);
 void sr_config_set_event_transition_duration_ms(uint32_t milliseconds);
+bool sr_config_get_event_transition_match_replay_speed(void);
+void sr_config_set_event_transition_match_replay_speed(bool enabled);
+
+/* Replay transport speed policy. Global is the production default: the operator
+ * speed controller drives every current/future replay bus. Event mode restores
+ * each Event's saved speed whenever that Event is cued. */
+enum sr_replay_speed_policy sr_config_get_replay_speed_policy(void);
+void sr_config_set_replay_speed_policy(enum sr_replay_speed_policy policy);
 
 #ifdef __cplusplus
 }

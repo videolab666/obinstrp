@@ -80,6 +80,11 @@ void sr_replay_channel_stop(enum sr_replay_bus bus);
 void sr_replay_channel_restart(enum sr_replay_bus bus);
 
 bool sr_replay_channel_set_speed(enum sr_replay_bus bus, double speed_percent);
+
+/* Process-wide operator speed controller. In Global policy it is applied to
+ * both buses immediately and is inherited by every newly cued Event/angle. */
+bool sr_replay_channel_set_controller_speed(double speed_percent);
+double sr_replay_channel_get_controller_speed(void);
 bool sr_replay_channel_set_audio_mode(enum sr_replay_bus bus, enum sr_replay_audio_mode audio_mode);
 bool sr_replay_channel_set_backward(enum sr_replay_bus bus, bool backward);
 bool sr_replay_channel_set_loop(enum sr_replay_bus bus, bool loop);
