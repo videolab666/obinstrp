@@ -5,6 +5,19 @@ on:
     branches: [feature/hardware-zero-copy]
     paths:
       - '.github/workflows/validate-program-output.yml'
+      - 'src/sr-program-recorder.c'
+      - 'src/sr-program-recorder.h'
+      - 'src/sr-gpu-encoder.cpp'
+      - 'src/sr-codec.h'
+      - 'src/sr-camera-identity.c'
+      - 'src/sr-camera-identity.h'
+      - 'src/sr-camera-list.c'
+      - 'src/sr-replay-setup.c'
+      - 'src/sr-replay-setup.h'
+      - 'src/capture-filter.c'
+      - 'src/sr-event-output.c'
+      - 'src/sr-replay-playlist.c'
+      - 'src/sr-event-dock.cpp'
 
 permissions:
   contents: read
