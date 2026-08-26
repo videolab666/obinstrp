@@ -498,6 +498,12 @@ static bool normalize_program_texture(sr_gpu_encoder *enc, gs_texture_t *texture
 	 * it into the same known BGRA render target used by the proven ISO-camera
 	 * GPU path. This is a GPU-only shader blit; there is no GPU->CPU readback. */
 	gs_texrender_reset(enc->render);
+	/* obs_get_main_texture() is sampled as sRGB below. Match OBS's own main
+	 * texture presentation path by enabling sRGB framebuffer encoding while
+	 * writing the normalized BGRA target, otherwise linearized values are
+	 * stored as UNORM and the recorded PROGRAM image becomes too dark. */
+	const bool previous_srgb = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(true);
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
 
@@ -519,6 +525,7 @@ static bool normalize_program_texture(sr_gpu_encoder *enc, gs_texture_t *texture
 		gs_texrender_end(enc->render);
 	}
 	gs_blend_state_pop();
+	gs_enable_framebuffer_srgb(previous_srgb);
 
 	if (!rendered)
 		return false;
