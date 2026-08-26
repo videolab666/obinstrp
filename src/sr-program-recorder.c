@@ -316,6 +316,8 @@ void sr_program_recorder_add_recording_summary(struct sr_capture_recording_summa
 	if (g_program.encoder_failed || g_program.writer_failed)
 		summary->failed_count++;
 	if (g_program.recording_requested && g_program.recording_start_ns) {
+		if (!summary->recording_start_ns || g_program.recording_start_ns < summary->recording_start_ns)
+			summary->recording_start_ns = g_program.recording_start_ns;
 		const uint64_t now = obs_get_video_frame_time();
 		if (now >= g_program.recording_start_ns) {
 			const uint64_t duration = now - g_program.recording_start_ns;

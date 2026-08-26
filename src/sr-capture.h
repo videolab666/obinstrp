@@ -65,6 +65,10 @@ struct sr_capture_recording_summary {
 	size_t reserve_blocked_count;
 	uint64_t packets_written;
 	uint64_t bytes_written;
+	/* Video-clock timestamp when the current REC run began. Zero while REC is
+	 * off. Consumers use this stable boundary instead of a periodically
+	 * published duration when an Event must not extend before recording began. */
+	uint64_t recording_start_ns;
 	uint64_t recording_duration_ns;
 };
 

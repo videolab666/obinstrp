@@ -194,6 +194,7 @@ static void publish_status(struct sr_capture *c, uint64_t now, bool force)
 		.requested_count = c->disk_recording ? 1 : 0,
 		.active_count = c->writer ? 1 : 0,
 		.failed_count = (c->writer_failed || c->encoder_failed) ? 1 : 0,
+		.recording_start_ns = c->disk_recording ? c->recording_start_ns : 0,
 		.recording_duration_ns = c->disk_recording && c->recording_start_ns &&
 							 video_now >= c->recording_start_ns
 						 ? video_now - c->recording_start_ns
@@ -264,6 +265,9 @@ static void publish_recording_intent(struct sr_capture *c)
 	pthread_mutex_lock(&c->status_mutex);
 	c->status.camera_count = 1;
 	c->status.requested_count = c->disk_recording ? 1 : 0;
+	c->status.recording_start_ns = c->disk_recording ? c->recording_start_ns : 0;
+	if (!c->disk_recording)
+		c->status.recording_duration_ns = 0;
 	c->performance_status.disk_requested = c->disk_recording;
 	if (!c->disk_recording) {
 		c->status.failed_count = 0;
@@ -855,6 +859,9 @@ static void capture_control_filter(obs_source_t *parent, obs_source_t *child, vo
 		ctx->summary->reserve_blocked_count += status.reserve_blocked_count;
 		ctx->summary->packets_written += status.packets_written;
 		ctx->summary->bytes_written += status.bytes_written;
+		if (status.recording_start_ns &&
+		    (!ctx->summary->recording_start_ns || status.recording_start_ns < ctx->summary->recording_start_ns))
+			ctx->summary->recording_start_ns = status.recording_start_ns;
 		if (status.recording_duration_ns > ctx->summary->recording_duration_ns)
 			ctx->summary->recording_duration_ns = status.recording_duration_ns;
 	}
