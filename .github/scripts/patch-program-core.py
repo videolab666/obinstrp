@@ -177,3 +177,4 @@ s = insert_before(s, 'extern "C" enum AVCodecID sr_gpu_encoder_codec_id', new_fn
 save(p, s)
 
 print('Program core patch OK')
+# retrigger diagnostics
