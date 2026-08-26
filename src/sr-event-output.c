@@ -433,7 +433,8 @@ static uint32_t sr_event_output_height(void *data)
 struct obs_source_info sr_event_output_info = {
 	.id = SR_EVENT_OUTPUT_ID,
 	.type = OBS_SOURCE_TYPE_INPUT,
-	.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE,
+	.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CUSTOM_DRAW |
+			OBS_SOURCE_SRGB,
 	.get_name = sr_event_output_get_name,
 	.create = sr_event_output_create,
 	.destroy = sr_event_output_destroy,
