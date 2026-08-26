@@ -40,6 +40,11 @@ static bool copy_key(const char *value, char *key, size_t key_size)
 	return true;
 }
 
+bool sr_camera_is_program_name(const char *camera_name)
+{
+	return camera_name && strcmp(camera_name, SR_PROGRAM_CAMERA_NAME) == 0;
+}
+
 bool sr_camera_key_from_source(const obs_source_t *source, char *key, size_t key_size)
 {
 	if (!source)
@@ -51,6 +56,8 @@ bool sr_camera_key_from_name(const char *camera_name, char *key, size_t key_size
 {
 	if (!camera_name || !*camera_name)
 		return false;
+	if (sr_camera_is_program_name(camera_name))
+		return copy_key(SR_PROGRAM_CAMERA_KEY, key, key_size);
 
 	obs_source_t *source = obs_get_source_by_name(camera_name);
 	if (!source)
@@ -65,6 +72,8 @@ char *sr_camera_name_from_key(const char *key)
 	char checked[SR_CAMERA_STABLE_KEY_MAX] = {0};
 	if (!copy_key(key, checked, sizeof(checked)))
 		return NULL;
+	if (strcmp(checked, SR_PROGRAM_CAMERA_KEY) == 0)
+		return bstrdup(SR_PROGRAM_CAMERA_NAME);
 
 	obs_source_t *source = obs_get_source_by_uuid(checked);
 	if (!source)
@@ -106,6 +115,8 @@ bool sr_camera_sync_offset_ns(const char *camera_name, int64_t *offset_ns)
 	if (!camera_name || !*camera_name || !offset_ns)
 		return false;
 	*offset_ns = 0;
+	if (sr_camera_is_program_name(camera_name))
+		return true;
 
 	obs_source_t *source = obs_get_source_by_name(camera_name);
 	if (!source)

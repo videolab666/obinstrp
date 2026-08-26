@@ -485,6 +485,71 @@ extern "C" bool sr_gpu_encoder_render_encode(sr_gpu_encoder *enc, obs_source_t *
 #endif
 }
 
+extern "C" bool sr_gpu_encoder_texture_encode(sr_gpu_encoder *enc, gs_texture_t *texture, AVPacket **packet)
+{
+	if (packet)
+		*packet = nullptr;
+#ifdef _WIN32
+	if (!enc || !enc->ctx || !packet || !texture)
+		return false;
+
+	ID3D11Texture2D *source_texture = static_cast<ID3D11Texture2D *>(gs_texture_get_obj(texture));
+	if (!source_texture)
+		return false;
+	ID3D11Device *texture_device = nullptr;
+	source_texture->GetDevice(&texture_device);
+	const bool same_device = texture_device == enc->device;
+	if (texture_device)
+		texture_device->Release();
+	if (!same_device)
+		return false;
+
+	AVFrame *frame = av_frame_alloc();
+	if (!frame)
+		return false;
+	if (av_hwframe_get_buffer(enc->hw_frames, frame, 0) < 0) {
+		av_frame_free(&frame);
+		return false;
+	}
+	frame->pts = enc->next_pts++;
+	frame->color_range = AVCOL_RANGE_MPEG;
+	frame->colorspace = AVCOL_SPC_BT709;
+	frame->color_primaries = AVCOL_PRI_BT709;
+	frame->color_trc = AVCOL_TRC_BT709;
+	if (!convert_bgra_to_hw_nv12(enc, source_texture, frame)) {
+		av_frame_free(&frame);
+		if (!enc->render_failure_logged) {
+			blog(LOG_WARNING,
+			     "Pitel Instant Replay: D3D11 Program texture-to-NV12 conversion failed; disabling Program encoder");
+			enc->render_failure_logged = true;
+		}
+		return false;
+	}
+	const int send_ret = avcodec_send_frame(enc->ctx, frame);
+	av_frame_free(&frame);
+	if (send_ret < 0)
+		return false;
+	AVPacket *pkt = av_packet_alloc();
+	if (!pkt)
+		return false;
+	const int receive_ret = avcodec_receive_packet(enc->ctx, pkt);
+	if (receive_ret == AVERROR(EAGAIN) || receive_ret == AVERROR_EOF) {
+		av_packet_free(&pkt);
+		return true;
+	}
+	if (receive_ret < 0) {
+		av_packet_free(&pkt);
+		return false;
+	}
+	*packet = pkt;
+	return true;
+#else
+	(void)enc;
+	(void)texture;
+	return false;
+#endif
+}
+
 extern "C" enum AVCodecID sr_gpu_encoder_codec_id(const sr_gpu_encoder *enc)
 {
 #ifdef _WIN32

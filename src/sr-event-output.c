@@ -78,9 +78,11 @@ static void reset_audio_transport(struct sr_event_output *output)
 
 static bool ensure_audio_player(struct sr_event_output *output, const struct sr_replay_channel_state *state)
 {
-	const bool camera_audio =
+	const bool requested_camera_audio =
 		output->audio_mode == SR_EVENT_OUTPUT_AUDIO_CAMERA ||
 		(output->audio_mode == SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS && state->audio_mode == SR_REPLAY_AUDIO_CAMERA);
+	/* PROGRAM has no separate ISO audio track: its native audio is the final OBS mix. */
+	const bool camera_audio = requested_camera_audio && !sr_camera_is_program_name(state->camera_name);
 	if (output->audio_player && output->audio_player_camera_mode == camera_audio &&
 	    (!camera_audio || strcmp(output->audio_camera, state->camera_name) == 0))
 		return true;

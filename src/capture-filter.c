@@ -20,6 +20,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-credit.h"
 #include "sr-config.h"
 #include "sr-master-audio.h"
+#include "sr-program-recorder.h"
 #include "sr-session.h"
 #include "sr-segment-writer.h"
 
@@ -868,6 +869,10 @@ bool sr_capture_set_all_disk_recording(bool enabled, size_t *camera_count)
 {
 	struct capture_control_context ctx = {.update_setting = true, .enabled = enabled};
 	obs_enum_sources(capture_control_source, &ctx);
+	if (sr_program_recorder_selected()) {
+		ctx.camera_count++;
+		sr_program_recorder_set_recording(enabled);
+	}
 	if (camera_count)
 		*camera_count = ctx.camera_count;
 	return true;
@@ -880,6 +885,7 @@ bool sr_capture_get_recording_summary(struct sr_capture_recording_summary *summa
 	memset(summary, 0, sizeof(*summary));
 	struct capture_control_context ctx = {.summary = summary};
 	obs_enum_sources(capture_control_source, &ctx);
+	sr_program_recorder_add_recording_summary(summary);
 	return true;
 }
 
@@ -890,6 +896,17 @@ bool sr_capture_get_performance_snapshot(struct sr_capture_performance_snapshot 
 	memset(snapshot, 0, sizeof(*snapshot));
 	struct capture_control_context ctx = {.performance = snapshot};
 	obs_enum_sources(capture_control_source, &ctx);
+	struct sr_capture_performance_entry program = {0};
+	if (sr_program_recorder_get_performance_entry(&program)) {
+		const size_t next_count = snapshot->count + 1;
+		struct sr_capture_performance_entry *entries =
+			brealloc(snapshot->entries, next_count * sizeof(*entries));
+		if (entries) {
+			snapshot->entries = entries;
+			snapshot->entries[snapshot->count] = program;
+			snapshot->count = next_count;
+		}
+	}
 	return true;
 }
 

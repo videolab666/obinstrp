@@ -16,6 +16,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-dock.h"
 #include "sr-event-controller.h"
 #include "sr-master-audio.h"
+#include "sr-program-recorder.h"
 #include "sr-replay-channel.h"
 #include "sr-replay-playlist.h"
 #include "sr-replay-take.h"
@@ -371,7 +372,15 @@ bool obs_module_load(void)
 		obs_log(LOG_ERROR, "Pitel Instant Replay: could not initialize master replay audio capture");
 		return false;
 	}
+	if (!sr_program_recorder_init()) {
+		sr_master_audio_free();
+		sr_session_free();
+		sr_config_free();
+		obs_log(LOG_ERROR, "Pitel Instant Replay: could not initialize PROGRAM replay recorder");
+		return false;
+	}
 	if (!sr_storage_cleanup_init()) {
+		sr_program_recorder_free();
 		sr_master_audio_free();
 		sr_session_free();
 		sr_config_free();
@@ -387,6 +396,7 @@ bool obs_module_load(void)
 		sr_event_controller_destroy(event_controller);
 		event_controller = NULL;
 		sr_storage_cleanup_free();
+		sr_program_recorder_free();
 		sr_master_audio_free();
 		sr_session_free();
 		sr_config_free();
@@ -419,6 +429,7 @@ void obs_module_unload(void)
 	sr_event_controller_destroy(event_controller);
 	event_controller = NULL;
 	sr_storage_cleanup_free();
+	sr_program_recorder_free();
 	sr_master_audio_free();
 	sr_session_free();
 	sr_config_free();

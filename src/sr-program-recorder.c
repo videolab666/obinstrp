@@ -184,8 +184,8 @@ static void program_rendered(void *param)
 	state->fps_den = video.fps_den;
 
 	if (!state->encoder && !state->encoder_failed) {
-		state->encoder = sr_gpu_encoder_create(width, height, video.fps_num, video.fps_den, SR_ENC_AUTO, PROGRAM_QP,
-						       PROGRAM_GOP_MS);
+		state->encoder = sr_gpu_encoder_create(width, height, video.fps_num, video.fps_den, SR_ENC_AUTO,
+						       PROGRAM_QP, PROGRAM_GOP_MS);
 		if (!state->encoder) {
 			state->encoder_failed = true;
 			blog(LOG_ERROR,
@@ -334,7 +334,8 @@ bool sr_program_recorder_get_performance_entry(struct sr_capture_performance_ent
 	if (encoder_name)
 		strncpy(entry->encoder_name, encoder_name, sizeof(entry->encoder_name) - 1);
 	entry->path = g_program.encoder_failed ? SR_CAPTURE_PERF_ERROR
-					       : g_program.encoder ? SR_CAPTURE_PERF_GPU_D3D11 : SR_CAPTURE_PERF_WAITING;
+		      : g_program.encoder      ? SR_CAPTURE_PERF_GPU_D3D11
+					       : SR_CAPTURE_PERF_WAITING;
 	entry->gpu_fallback_reason = SR_CAPTURE_GPU_FALLBACK_NONE;
 	entry->width = g_program.width;
 	entry->height = g_program.height;

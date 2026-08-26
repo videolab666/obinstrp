@@ -81,6 +81,8 @@ void sr_gpu_encoder_destroy(struct sr_gpu_encoder *enc);
  * return marks a capability/runtime failure and the caller should switch back
  * to the CPU path at a clean writer boundary. */
 bool sr_gpu_encoder_render_encode(struct sr_gpu_encoder *enc, obs_source_t *target, AVPacket **packet);
+/* Program/PGM path: encode an existing OBS GPU texture without source re-render. */
+bool sr_gpu_encoder_texture_encode(struct sr_gpu_encoder *enc, gs_texture_t *texture, AVPacket **packet);
 
 enum AVCodecID sr_gpu_encoder_codec_id(const struct sr_gpu_encoder *enc);
 const char *sr_gpu_encoder_name(const struct sr_gpu_encoder *enc);

@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-replay-playlist.h"
 
 #include "sr-camera-list.h"
+#include "sr-camera-identity.h"
 #include "sr-event-controller.h"
 #include "sr-replay-coverage.h"
 #include "sr-replay-take.h"
@@ -319,6 +320,8 @@ static bool collect_event_angles(uint64_t event_id, uint64_t **event_ids_out, ch
 	size_t full_count = 0;
 	size_t partial_count = 0;
 	for (size_t i = 0; i < cameras.count; i++) {
+		if (sr_camera_is_program_name(cameras.names[i]))
+			continue;
 		struct sr_replay_coverage_info coverage = {0};
 		if (!sr_replay_coverage_query(cameras.names[i], event.in_ns, event.out_ns, &coverage))
 			continue;
@@ -340,6 +343,8 @@ static bool collect_event_angles(uint64_t event_id, uint64_t **event_ids_out, ch
 	char **angle_cameras = bzalloc(wanted_count * sizeof(*angle_cameras));
 	size_t actual = 0;
 	for (size_t i = 0; i < cameras.count && actual < wanted_count; i++) {
+		if (sr_camera_is_program_name(cameras.names[i]))
+			continue;
 		struct sr_replay_coverage_info coverage = {0};
 		if (!sr_replay_coverage_query(cameras.names[i], event.in_ns, event.out_ns, &coverage) ||
 		    coverage.coverage != wanted)

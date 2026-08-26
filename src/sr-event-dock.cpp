@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-event-dock.h"
 
 #include "sr-camera-list.h"
+#include "sr-camera-identity.h"
 #include "sr-capture.h"
 #include "sr-config.h"
 #include "sr-event-controller.h"
@@ -19,6 +20,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-replay-channel.h"
 #include "sr-replay-coverage.h"
 #include "sr-replay-playlist.h"
+#include "sr-program-recorder.h"
 #include "sr-replay-setup.h"
 #include "sr-replay-take.h"
 #include "sr-storage-cleanup.h"
@@ -45,6 +47,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QAction>
 #include <QApplication>
 #include <QColor>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
 #include <QDialog>
@@ -1733,16 +1736,17 @@ private:
 		}
 
 		const bool needsAB = eventTransitionConfigured();
-		const bool healthy = snapshot.enabled_capture_source_count > 0 &&
-				     (!needsAB || snapshot.event_transition_ready);
-		if (!snapshot.enabled_capture_source_count) {
+		const size_t selectedSources =
+			snapshot.enabled_capture_source_count + (snapshot.program_output_enabled ? 1 : 0);
+		const bool healthy = selectedSources > 0 && (!needsAB || snapshot.event_transition_ready);
+		if (!selectedSources) {
 			setupButton->setText(QStringLiteral("⚠ ") + T("EventDock.Setup.Button"));
 		} else {
 			const QString mode = snapshot.event_transition_ready ? QStringLiteral("A/B")
 									     : QStringLiteral("CUT");
-			setupButton->setText(QStringLiteral("%1 %2 cam · %3")
+			setupButton->setText(QStringLiteral("%1 %2 src · %3")
 						     .arg(healthy ? QStringLiteral("✓") : QStringLiteral("⚠"))
-						     .arg(snapshot.enabled_capture_source_count)
+						     .arg(selectedSources)
 						     .arg(mode));
 		}
 		setupButton->setStyleSheet(
@@ -1783,6 +1787,14 @@ private:
 		hint->setStyleSheet(QStringLiteral("color: gray;"));
 		layout->addWidget(hint);
 
+		auto *programOutput = new QCheckBox(T("EventDock.Setup.ProgramOutput"), &dialog);
+		programOutput->setChecked(sr_program_recorder_selected());
+		programOutput->setEnabled(sr_program_recorder_supported());
+		programOutput->setToolTip(sr_program_recorder_supported()
+						  ? T("EventDock.Setup.ProgramOutput.Tooltip")
+						  : T("EventDock.Setup.ProgramOutput.Unsupported"));
+		layout->addWidget(programOutput);
+
 		auto *sources = new QTableWidget(&dialog);
 		sources->setColumnCount(5);
 		sources->setHorizontalHeaderLabels({T("EventDock.Setup.Use"), T("EventDock.Setup.Source"),
@@ -1809,13 +1821,18 @@ private:
 								    : T("EventDock.Setup.Missing");
 			const QString sceneB = snapshot.bus_b_ready ? QString::fromUtf8(snapshot.scene_b)
 								    : T("EventDock.Setup.Missing");
+			const QString programState =
+				!snapshot.program_output_supported ? T("EventDock.Setup.ProgramUnsupportedShort")
+				: snapshot.program_output_enabled  ? T("EventDock.Setup.ProgramOn")
+								   : T("EventDock.Setup.ProgramOff");
 			summary->setText(T("EventDock.Setup.Summary")
 						 .arg(snapshot.enabled_capture_source_count)
 						 .arg(snapshot.compatible_source_count)
 						 .arg(sceneA)
 						 .arg(sceneB)
 						 .arg(snapshot.event_transition_ready ? T("EventDock.Setup.ReadyAB")
-										      : T("EventDock.Setup.CutOnly")));
+										      : T("EventDock.Setup.CutOnly")) +
+					 QStringLiteral(" · PROGRAM: ") + programState);
 			sr_replay_setup_free_snapshot(&snapshot);
 		};
 
@@ -1907,6 +1924,13 @@ private:
 
 			int changes = 0;
 			int failures = 0;
+			const bool desiredProgram = programOutput->isChecked();
+			if (desiredProgram != sr_program_recorder_selected()) {
+				if (sr_replay_setup_set_program_output(desiredProgram))
+					changes++;
+				else
+					failures++;
+			}
 			for (int row = 0; row < sources->rowCount(); row++) {
 				QTableWidgetItem *use = sources->item(row, 0);
 				QTableWidgetItem *name = sources->item(row, 1);
@@ -1944,8 +1968,9 @@ private:
 		refreshSetupStatus();
 		refreshRecordingStatus();
 		sr_replay_setup_snapshot finalSnapshot = {};
-		const bool ready = sr_replay_setup_get_snapshot(&finalSnapshot) &&
-				   finalSnapshot.enabled_capture_source_count > 0;
+		const bool ready =
+			sr_replay_setup_get_snapshot(&finalSnapshot) &&
+			(finalSnapshot.enabled_capture_source_count > 0 || finalSnapshot.program_output_enabled);
 		sr_replay_setup_free_snapshot(&finalSnapshot);
 		return ready;
 	}
@@ -1955,7 +1980,7 @@ private:
 		sr_replay_setup_snapshot snapshot = {};
 		if (!sr_replay_setup_get_snapshot(&snapshot))
 			return false;
-		bool haveCapture = snapshot.enabled_capture_source_count > 0;
+		bool haveCapture = snapshot.enabled_capture_source_count > 0 || snapshot.program_output_enabled;
 		bool abReady = snapshot.event_transition_ready;
 		sr_replay_setup_free_snapshot(&snapshot);
 
@@ -1967,7 +1992,11 @@ private:
 			prompt.exec();
 			if (prompt.clickedButton() != openSetup || !openReplaySetup())
 				return false;
-			haveCapture = true;
+			sr_replay_setup_snapshot configured = {};
+			haveCapture =
+				sr_replay_setup_get_snapshot(&configured) &&
+				(configured.enabled_capture_source_count > 0 || configured.program_output_enabled);
+			sr_replay_setup_free_snapshot(&configured);
 		}
 
 		if (!haveCapture)
@@ -3228,7 +3257,8 @@ private:
 		task.eventInNs = event.in_ns;
 		task.eventOutNs = event.out_ns;
 		task.syncOffsetNs = button->property("syncOffsetNs").toLongLong();
-		task.includeMasterAudio = event.audio_mode == SR_EVENT_AUDIO_MASTER;
+		task.includeMasterAudio = event.audio_mode == SR_EVENT_AUDIO_MASTER ||
+					  sr_camera_is_program_name(task.camera.c_str());
 		tasks.emplace_back(std::move(task));
 		return true;
 	}

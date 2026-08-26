@@ -92,6 +92,7 @@ second tab. Development artifacts are unsigned and require OBS Studio 31+.
 8. Open the **Storage** tab to see every replay session and its size, inspect the
    last automatic-cleanup result, or permanently delete a closed session. The
    active session is protected from manual deletion.
+9. Replay Setup can also record **PROGRAM**: the final composited OBS Program/PGM output becomes a manual replay angle alongside ISO cameras. On Windows/D3D11 it stays GPU-resident through NVENC/AMF; PROGRAM is intentionally skipped by automatic **Play Each Angle** tours.
 
 Continuous recording keeps its camera sources showing internally even when
 they are not in the current OBS scene. **STOP RECORD** releases those holds and

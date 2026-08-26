@@ -36,6 +36,7 @@ static char *g_event_transition;
 static uint32_t g_event_transition_duration_ms;
 static bool g_event_transition_match_replay_speed;
 static enum sr_replay_speed_policy g_replay_speed_policy;
+static bool g_program_output_enabled;
 
 /* Default location when the user hasn't chosen one: <Videos>/Pitel Instant Replay/Recorder,
  * created if needed. Falls back to the plugin config dir. */
@@ -94,6 +95,7 @@ static void save_locked(void)
 	obs_data_set_int(data, "event_transition_duration_ms", g_event_transition_duration_ms);
 	obs_data_set_bool(data, "event_transition_match_replay_speed", g_event_transition_match_replay_speed);
 	obs_data_set_int(data, "replay_speed_policy", (long long)g_replay_speed_policy);
+	obs_data_set_bool(data, "program_output_enabled", g_program_output_enabled);
 
 	char *path = obs_module_config_path("standalone-v1/config.json");
 	if (path)
@@ -151,6 +153,7 @@ void sr_config_init(void)
 						     : false;
 	g_replay_speed_policy = replay_speed_policy == SR_REPLAY_SPEED_EVENT ? SR_REPLAY_SPEED_EVENT
 									     : SR_REPLAY_SPEED_GLOBAL;
+	g_program_output_enabled = data ? obs_data_get_bool(data, "program_output_enabled") : false;
 
 	os_mkdirs(g_save_dir);
 	os_mkdirs(g_session_root);
@@ -405,6 +408,22 @@ void sr_config_set_replay_speed_policy(enum sr_replay_speed_policy policy)
 		policy = SR_REPLAY_SPEED_GLOBAL;
 	pthread_mutex_lock(&g_mutex);
 	g_replay_speed_policy = policy;
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+bool sr_config_get_program_output_enabled(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const bool value = g_program_output_enabled;
+	pthread_mutex_unlock(&g_mutex);
+	return value;
+}
+
+void sr_config_set_program_output_enabled(bool enabled)
+{
+	pthread_mutex_lock(&g_mutex);
+	g_program_output_enabled = enabled;
 	save_locked();
 	pthread_mutex_unlock(&g_mutex);
 }

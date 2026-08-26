@@ -12,6 +12,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-capture.h"
 #include "sr-event-output.h"
+#include "sr-program-recorder.h"
 #include "sr-scene-tracker.h"
 
 #include <graphics/vec2.h>
@@ -266,6 +267,8 @@ bool sr_replay_setup_get_snapshot(struct sr_replay_setup_snapshot *snapshot)
 	memset(snapshot, 0, sizeof(*snapshot));
 	struct setup_snapshot_ctx ctx = {.snapshot = snapshot};
 	obs_enum_sources(collect_setup_source, &ctx);
+	snapshot->program_output_supported = sr_program_recorder_supported();
+	snapshot->program_output_enabled = sr_program_recorder_selected();
 
 	char *scene_a = sr_replay_setup_find_output_scene_name(SR_REPLAY_BUS_A);
 	char *scene_b = sr_replay_setup_find_output_scene_name(SR_REPLAY_BUS_B);
@@ -362,6 +365,15 @@ bool sr_replay_setup_set_capture(const char *source_name, bool enabled)
 	obs_source_release(source);
 	obs_frontend_save();
 	return true;
+}
+
+bool sr_replay_setup_set_program_output(bool enabled)
+{
+	if (enabled && !sr_program_recorder_supported())
+		return false;
+	sr_program_recorder_set_selected(enabled);
+	obs_frontend_save();
+	return sr_program_recorder_selected() == enabled;
 }
 
 static obs_source_t *get_or_create_scene_source(const char *base_name, bool *created)

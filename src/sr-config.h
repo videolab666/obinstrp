@@ -17,7 +17,7 @@ the Free Software Foundation; either version 2 of the License, or
 extern "C" {
 #endif
 
-#define SR_CONFIG_SCHEMA_VERSION 6
+#define SR_CONFIG_SCHEMA_VERSION 7
 
 enum sr_storage_low_space_action {
 	SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED = 0,
@@ -79,6 +79,10 @@ void sr_config_set_event_transition_match_replay_speed(bool enabled);
  * each Event's saved speed whenever that Event is cued. */
 enum sr_replay_speed_policy sr_config_get_replay_speed_policy(void);
 void sr_config_set_replay_speed_policy(enum sr_replay_speed_policy policy);
+
+/* Persistent Replay Setup selection for final OBS Program/PGM recording. */
+bool sr_config_get_program_output_enabled(void);
+void sr_config_set_program_output_enabled(bool enabled);
 
 #ifdef __cplusplus
 }

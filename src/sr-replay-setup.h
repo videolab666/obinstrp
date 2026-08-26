@@ -44,6 +44,8 @@ struct sr_replay_setup_snapshot {
 	bool bus_a_ready;
 	bool bus_b_ready;
 	bool event_transition_ready;
+	bool program_output_supported;
+	bool program_output_enabled;
 	char scene_a[SR_REPLAY_SETUP_NAME_MAX];
 	char scene_b[SR_REPLAY_SETUP_NAME_MAX];
 };
@@ -71,6 +73,9 @@ void sr_replay_setup_free_snapshot(struct sr_replay_setup_snapshot *snapshot);
 /* Add/enable or remove the Pitel Capture filter on one named OBS video source.
  * Other filters on that source are never modified. */
 bool sr_replay_setup_set_capture(const char *source_name, bool enabled);
+
+/* Select/deselect final OBS Program/PGM as a persistent replay pseudo-angle. */
+bool sr_replay_setup_set_program_output(bool enabled);
 
 /* Create/repair two scene-backed Event Outputs for A/B playback. Existing
  * valid user topology is preserved. If A and B currently resolve to one scene,

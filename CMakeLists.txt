@@ -87,6 +87,7 @@ target_sources(
     src/sr-codec.c
     src/sr-gpu-video.cpp
     src/sr-gpu-encoder.cpp
+    src/sr-program-recorder.c
     src/sr-frame-cache.c
     src/sr-replay-decode.c
     src/capture-filter.c
