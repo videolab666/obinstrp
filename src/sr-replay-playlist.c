@@ -529,3 +529,33 @@ bool sr_replay_playlist_get_state(enum sr_replay_bus bus, struct sr_replay_playl
 	pthread_mutex_unlock(&g_mutex);
 	return true;
 }
+
+bool sr_replay_playlist_snapshot_items(enum sr_replay_bus bus, uint64_t **event_ids_out, size_t *count_out,
+				       size_t *position_out, bool *angle_sequence_out)
+{
+	struct sr_playlist_bus *playlist = get_bus(bus);
+	if (!g_started || !playlist || !event_ids_out || !count_out || !position_out || !angle_sequence_out)
+		return false;
+	*event_ids_out = NULL;
+	*count_out = 0;
+	*position_out = 0;
+	*angle_sequence_out = false;
+
+	pthread_mutex_lock(&g_mutex);
+	if (!playlist->active || !playlist->event_ids || !playlist->count) {
+		pthread_mutex_unlock(&g_mutex);
+		return false;
+	}
+	uint64_t *copy = bmalloc(playlist->count * sizeof(*copy));
+	if (!copy) {
+		pthread_mutex_unlock(&g_mutex);
+		return false;
+	}
+	memcpy(copy, playlist->event_ids, playlist->count * sizeof(*copy));
+	*event_ids_out = copy;
+	*count_out = playlist->count;
+	*position_out = playlist->position;
+	*angle_sequence_out = playlist->angle_sequence;
+	pthread_mutex_unlock(&g_mutex);
+	return true;
+}

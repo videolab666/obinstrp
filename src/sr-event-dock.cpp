@@ -44,6 +44,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QAbstractItemDelegate>
 #include <QAction>
 #include <QApplication>
+#include <QColor>
 #include <QComboBox>
 #include <QDir>
 #include <QDialog>
@@ -518,6 +519,22 @@ public:
 
 	void setRangeHandler(RangeHandler handler) { rangeHandler = std::move(handler); }
 	void setClickHandler(ClickHandler handler) { clickHandler = std::move(handler); }
+	void setSequenceProgress(bool active)
+	{
+		sequenceProgress = active;
+		if (active)
+			clearSelection();
+	}
+	void setProgressTint(const QColor &color)
+	{
+		progressTint = color;
+		update();
+	}
+	void clearProgressTint()
+	{
+		progressTint = QColor();
+		update();
+	}
 
 	void clearSelection()
 	{
@@ -529,6 +546,10 @@ public:
 protected:
 	void mousePressEvent(QMouseEvent *event) override
 	{
+		if (sequenceProgress) {
+			event->accept();
+			return;
+		}
 		if (!isEnabled() || event->button() != Qt::LeftButton) {
 			QSlider::mousePressEvent(event);
 			return;
@@ -595,6 +616,24 @@ protected:
 	void paintEvent(QPaintEvent *event) override
 	{
 		QSlider::paintEvent(event);
+
+		QStyleOptionSlider option;
+		initStyleOption(&option);
+		const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+		if (progressTint.isValid()) {
+			const int left = pixelForValue(minimum());
+			const int right = pixelForValue(value());
+			if (right > left) {
+				QColor tint = progressTint;
+				tint.setAlpha(210);
+				QPainter progressPainter(this);
+				progressPainter.setPen(Qt::NoPen);
+				progressPainter.setBrush(tint);
+				progressPainter.drawRoundedRect(QRect(left, groove.center().y() - 4, right - left, 8),
+								3, 3);
+			}
+		}
+
 		if (!selecting && !hasSelection)
 			return;
 
@@ -605,9 +644,6 @@ protected:
 		if (right <= left)
 			return;
 
-		QStyleOptionSlider option;
-		initStyleOption(&option);
-		const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
 		QColor highlight = palette().color(QPalette::Highlight);
 		highlight.setAlpha(115);
 		QPainter painter(this);
@@ -648,6 +684,8 @@ private:
 	bool selecting = false;
 	bool selectionMoved = false;
 	bool hasSelection = false;
+	bool sequenceProgress = false;
+	QColor progressTint;
 };
 
 class SrEventTable : public QTableWidget {
@@ -969,6 +1007,7 @@ public:
 		auto *down = new QPushButton(QStringLiteral("↓"), this);
 		auto *played = new QPushButton(T("EventDock.Played"), this);
 		auto *protect = new QPushButton(T("EventDock.Protect"), this);
+		protect->setToolTip(T("EventDock.Protect.Tooltip"));
 		auto *remove = new QPushButton(T("EventDock.Delete"), this);
 		auto *removeMedia = new QPushButton(T("EventDock.DeleteMedia"), this);
 		actionBar->addWidget(up);
@@ -2229,6 +2268,12 @@ private:
 		sr_event_record event = {};
 		const bool haveEvent = controller && eventId &&
 				       sr_event_controller_get_event(controller, eventId, &event);
+		if (!haveEvent) {
+			previewTargetEventId = 0;
+			previewLoadedEventId = 0;
+			for (QToolButton *button : angleButtons)
+				button->setIcon(QIcon());
+		}
 
 		QString preferredCamera;
 		if (haveEvent && event.preferred_camera_id) {
@@ -2366,17 +2411,25 @@ private:
 			anglePreviewJob->worker.join();
 
 		const uint64_t completedEventId = anglePreviewJob->eventId;
-		auto &cache = anglePreviewCache[completedEventId];
-		for (const AnglePreviewResult &result : anglePreviewJob->results) {
-			if (result.rgba.empty())
-				continue;
-			const QImage image(result.rgba.data(), ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT,
-					   ANGLE_PREVIEW_WIDTH * 4, QImage::Format_RGBA8888);
-			QIcon icon(QPixmap::fromImage(image.copy()));
-			cache[result.camera] = icon;
-			if (completedEventId == previewTargetEventId && angleEventId() == previewTargetEventId) {
-				if (QToolButton *button = angleButton(QString::fromUtf8(result.camera.c_str())))
-					button->setIcon(icon);
+		sr_event_record completedEvent = {};
+		const bool completedEventExists =
+			controller && completedEventId &&
+			sr_event_controller_get_event(controller, completedEventId, &completedEvent);
+		if (completedEventExists) {
+			sr_event_controller_free_event(&completedEvent);
+			auto &cache = anglePreviewCache[completedEventId];
+			for (const AnglePreviewResult &result : anglePreviewJob->results) {
+				if (result.rgba.empty())
+					continue;
+				const QImage image(result.rgba.data(), ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT,
+						   ANGLE_PREVIEW_WIDTH * 4, QImage::Format_RGBA8888);
+				QIcon icon(QPixmap::fromImage(image.copy()));
+				cache[result.camera] = icon;
+				if (completedEventId == previewTargetEventId &&
+				    angleEventId() == previewTargetEventId) {
+					if (QToolButton *button = angleButton(QString::fromUtf8(result.camera.c_str())))
+						button->setIcon(icon);
+				}
 			}
 		}
 		while (anglePreviewCache.size() > ANGLE_PREVIEW_CACHE_EVENTS)
@@ -2601,11 +2654,119 @@ private:
 		refreshTransportStatus();
 	}
 
+	uint64_t playbackRuntimeNs(uint64_t mediaNs, double speedPercent) const
+	{
+		const double speed = speedPercent > 0.0 ? speedPercent : 100.0;
+		const long double runtime = (long double)mediaNs * 100.0L / (long double)speed;
+		return runtime >= (long double)UINT64_MAX ? UINT64_MAX : (uint64_t)runtime;
+	}
+
+	bool playlistTimelineProgress(uint64_t *elapsedNs, uint64_t *totalNs, uint64_t *remainingNs) const
+	{
+		if (!elapsedNs || !totalNs || !remainingNs || !controller)
+			return false;
+		*elapsedNs = 0;
+		*totalNs = 0;
+		*remainingNs = 0;
+
+		const enum sr_replay_bus bus = activePlaylistBus();
+		sr_replay_playlist_state playlist = {};
+		if (!sr_replay_playlist_get_state(bus, &playlist) || !playlist.active)
+			return false;
+
+		uint64_t *eventIds = nullptr;
+		size_t count = 0;
+		size_t position = 0;
+		bool angleSequence = false;
+		if (!sr_replay_playlist_snapshot_items(bus, &eventIds, &count, &position, &angleSequence) ||
+		    !eventIds || !count) {
+			bfree(eventIds);
+			return false;
+		}
+
+		sr_replay_channel_state current = {};
+		const bool haveCurrent = sr_replay_channel_get_state(bus, &current) && current.cued;
+		uint64_t total = 0;
+		uint64_t elapsed = 0;
+		for (size_t i = 0; i < count; i++) {
+			uint64_t runtime = 0;
+			sr_event_record event = {};
+			if (sr_event_controller_get_event(controller, eventIds[i], &event)) {
+				if (!event.pending && event.out_ns > event.in_ns)
+					runtime = playbackRuntimeNs(event.out_ns - event.in_ns, event.speed_percent);
+				sr_event_controller_free_event(&event);
+			}
+
+			uint64_t currentElapsed = 0;
+			if (i == position && haveCurrent && current.event_id == eventIds[i] &&
+			    current.out_ns > current.in_ns) {
+				runtime = playbackRuntimeNs(current.out_ns - current.in_ns, current.speed_percent);
+				const uint64_t mediaPosition = current.playhead_ns <= current.in_ns ? 0
+							       : current.playhead_ns >= current.out_ns
+								       ? current.out_ns - current.in_ns
+								       : current.playhead_ns - current.in_ns;
+				currentElapsed = playbackRuntimeNs(mediaPosition, current.speed_percent);
+				if (currentElapsed > runtime)
+					currentElapsed = runtime;
+			}
+
+			if (UINT64_MAX - total < runtime)
+				total = UINT64_MAX;
+			else
+				total += runtime;
+			if (i < position) {
+				if (UINT64_MAX - elapsed < runtime)
+					elapsed = UINT64_MAX;
+				else
+					elapsed += runtime;
+			} else if (i == position) {
+				if (UINT64_MAX - elapsed < currentElapsed)
+					elapsed = UINT64_MAX;
+				else
+					elapsed += currentElapsed;
+			}
+		}
+		bfree(eventIds);
+		if (!total)
+			return false;
+		if (elapsed > total)
+			elapsed = total;
+		*elapsedNs = elapsed;
+		*totalNs = total;
+		*remainingNs = total - elapsed;
+		return true;
+	}
+
 	void syncTimeline()
 	{
 		if (!timelineSlider || !timelineTime)
 			return;
 
+		uint64_t sequenceElapsed = 0;
+		uint64_t sequenceTotal = 0;
+		uint64_t sequenceRemaining = 0;
+		if (playlistTimelineProgress(&sequenceElapsed, &sequenceTotal, &sequenceRemaining)) {
+			timelineEventId = 0;
+			timelineSlider->setSequenceProgress(true);
+			timelineSlider->setEnabled(true);
+			timelineSlider->setToolTip(T("EventDock.Timeline.PlaylistTooltip"));
+			const int value = (int)((long double)sequenceElapsed * 10000.0L / (long double)sequenceTotal);
+			timelineSlider->setValue(qBound(0, value, 10000));
+			if (sequenceRemaining > 15ULL * NS_PER_SECOND)
+				timelineSlider->setProgressTint(QColor(QStringLiteral("#2fb34a")));
+			else if (sequenceRemaining > 10ULL * NS_PER_SECOND)
+				timelineSlider->setProgressTint(QColor(QStringLiteral("#d2a216")));
+			else
+				timelineSlider->setProgressTint(QColor(QStringLiteral("#d33b3b")));
+			timelineTime->setText(replayClockText(sequenceElapsed) + QStringLiteral(" / ") +
+					      replayClockText(sequenceTotal) + QStringLiteral("   −") +
+					      replayClockText(sequenceRemaining));
+			return;
+		}
+
+		timelineSlider->setSequenceProgress(false);
+		timelineSlider->clearProgressTint();
+		timelineSlider->setToolTip(T("EventDock.Timeline.Tooltip"));
 		sr_replay_channel_state state = {};
 		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued ||
 		    state.out_ns <= state.in_ns) {
@@ -3421,74 +3582,94 @@ private:
 
 	void toggleProtected()
 	{
-		const uint64_t eventId = selectedEventId();
-		if (!eventId)
+		const std::vector<uint64_t> ids = selectedEventIds();
+		if (ids.empty())
 			return;
-		sr_event_record event = {};
-		if (!sr_event_controller_get_event(controller, eventId, &event)) {
+		sr_event_record first = {};
+		if (!sr_event_controller_get_event(controller, ids.front(), &first)) {
 			setStatus("EventDock.Failed");
 			return;
 		}
-		const bool value = !event.protected_event;
-		sr_event_controller_free_event(&event);
-		if (!sr_event_controller_set_protected(controller, eventId, value)) {
+		const bool value = !first.protected_event;
+		sr_event_controller_free_event(&first);
+		bool ok = true;
+		for (uint64_t id : ids)
+			ok = sr_event_controller_set_protected(controller, id, value) && ok;
+		if (!ok)
 			setStatus("EventDock.Failed");
-			return;
+		refresh();
+	}
+
+	void clearDeletedEventUi(uint64_t eventId)
+	{
+		eventThumbnailCache.erase(eventId);
+		anglePreviewCache.erase(eventId);
+		if (previewTargetEventId == eventId) {
+			previewTargetEventId = 0;
+			previewLoadedEventId = 0;
 		}
-		refresh(eventId);
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			const auto bus = static_cast<sr_replay_bus>(i);
+			sr_replay_playlist_state playlist = {};
+			if (sr_replay_playlist_get_state(bus, &playlist) && playlist.active &&
+			    playlist.event_id == eventId)
+				sr_replay_playlist_stop(bus);
+			sr_replay_channel_state state = {};
+			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.event_id == eventId)
+				sr_replay_channel_clear(bus);
+		}
 	}
 
 	void deleteSelected(bool deleteMedia)
 	{
-		const uint64_t eventId = selectedEventId();
-		if (!eventId)
+		const std::vector<uint64_t> ids = selectedEventIds();
+		if (ids.empty())
 			return;
 
-		if (deleteMedia) {
+		size_t deleted = 0;
+		size_t protectedSkipped = 0;
+		size_t errors = 0;
+		sr_storage_cleanup_result cleanupTotal = {};
+		for (uint64_t eventId : ids) {
 			sr_event_record event = {};
 			if (!sr_event_controller_get_event(controller, eventId, &event)) {
-				setStatus("EventDock.Failed");
-				return;
+				errors++;
+				continue;
 			}
 			const bool protectedEvent = event.protected_event;
 			sr_event_controller_free_event(&event);
 			if (protectedEvent) {
-				setStatus("EventDock.ProtectedMedia");
-				return;
+				protectedSkipped++;
+				continue;
 			}
-		}
 
-		const char *confirmKey = deleteMedia ? "EventDock.DeleteMediaConfirm" : "EventDock.DeleteConfirm";
-		if (QMessageBox::question(this, T("EventDock.DeleteTitle"), T(confirmKey)) != QMessageBox::Yes)
-			return;
-
-		if (!deleteMedia) {
-			if (!sr_event_controller_delete_event(controller, eventId)) {
-				setStatus("EventDock.Failed");
-				return;
+			bool ok = false;
+			if (!deleteMedia) {
+				ok = sr_event_controller_delete_event(controller, eventId);
+			} else {
+				sr_storage_cleanup_result cleanup = {};
+				ok = sr_event_controller_delete_event_with_media(controller, eventId, &cleanup);
+				cleanupTotal.segments_examined += cleanup.segments_examined;
+				cleanupTotal.segments_deleted += cleanup.segments_deleted;
+				cleanupTotal.segments_pinned += cleanup.segments_pinned;
+				cleanupTotal.camera_dirs_scanned += cleanup.camera_dirs_scanned;
+				cleanupTotal.errors += cleanup.errors;
 			}
-			setStatus("EventDock.Deleted");
-			refresh();
-			return;
+			if (!ok) {
+				errors++;
+				continue;
+			}
+			deleted++;
+			clearDeletedEventUi(eventId);
 		}
 
-		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
-			sr_replay_channel_state state = {};
-			const auto bus = static_cast<sr_replay_bus>(i);
-			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.event_id == eventId)
-				sr_replay_channel_clear(bus);
-		}
-
-		sr_storage_cleanup_result cleanup = {};
-		if (!sr_event_controller_delete_event_with_media(controller, eventId, &cleanup)) {
-			setStatus("EventDock.MediaCleanupFailed");
-			return;
-		}
-
-		status->setText(T("EventDock.MediaDeleted")
-					.arg(cleanup.segments_deleted)
-					.arg(cleanup.segments_pinned)
-					.arg(cleanup.errors));
+		errors += cleanupTotal.errors;
+		status->setText(T(deleteMedia ? "EventDock.DeleteMediaSummary" : "EventDock.DeleteSummary")
+					.arg(deleted)
+					.arg(protectedSkipped)
+					.arg(errors)
+					.arg(cleanupTotal.segments_deleted)
+					.arg(cleanupTotal.segments_pinned));
 		refresh();
 	}
 

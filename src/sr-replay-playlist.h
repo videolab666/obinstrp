@@ -71,6 +71,11 @@ bool sr_replay_playlist_advance_on_end(enum sr_replay_bus bus);
 void sr_replay_playlist_stop(enum sr_replay_bus bus);
 bool sr_replay_playlist_get_state(enum sr_replay_bus bus, struct sr_replay_playlist_state *state);
 
+/* Snapshot the current sequence items for UI progress/countdown. The caller owns
+ * event_ids_out and must free it with bfree(). */
+bool sr_replay_playlist_snapshot_items(enum sr_replay_bus bus, uint64_t **event_ids_out, size_t *count_out,
+				       size_t *position_out, bool *angle_sequence_out);
+
 #ifdef __cplusplus
 }
 #endif
