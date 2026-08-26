@@ -305,6 +305,8 @@ static bool ensure_target_texture(sr_gpu_renderer *renderer, uint32_t width, uin
 	return true;
 }
 
+static void draw_sdr_texture(gs_texture_t *texture, uint32_t width, uint32_t height);
+
 #ifdef _WIN32
 static bool ensure_d3d11_pipeline(sr_gpu_renderer *renderer, uint32_t width, uint32_t height)
 {
@@ -434,10 +436,39 @@ static bool draw_native_d3d11(sr_gpu_renderer *renderer, const AVFrame *frame, u
 	if (FAILED(hr))
 		return false;
 
-	obs_source_draw(renderer->texture, 0, 0, width, height, false);
+	draw_sdr_texture(renderer->texture, width, height);
 	return true;
 }
 #endif
+
+/* The D3D11 video processor and swscale both leave SDR RGB in its normal
+ * nonlinear (display-encoded) form. GS_BGRA_UNORM is required by the native
+ * video-processor output path, but unlike GS_BGRA it has no alternate sRGB
+ * shader-resource view in libobs. When OBS asks an sRGB-aware source to render
+ * into a linear-sRGB pass, explicitly decode the texture in the shader instead
+ * of sampling the UNORM values as if they were already linear. */
+static void draw_sdr_texture(gs_texture_t *texture, uint32_t width, uint32_t height)
+{
+	if (!texture)
+		return;
+
+	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	if (!effect)
+		return;
+
+	const bool linear_srgb = gs_get_linear_srgb();
+	const bool previous_framebuffer_srgb = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(linear_srgb);
+
+	gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
+	gs_effect_set_texture(image, texture);
+
+	const char *technique = linear_srgb ? "DrawSrgbDecompress" : "Draw";
+	while (gs_effect_loop(effect, technique))
+		gs_draw_sprite(texture, 0, width, height);
+
+	gs_enable_framebuffer_srgb(previous_framebuffer_srgb);
+}
 
 static bool draw_software(sr_gpu_renderer *renderer, const AVFrame *frame, uint32_t width, uint32_t height)
 {
@@ -489,7 +520,7 @@ static bool draw_software(sr_gpu_renderer *renderer, const AVFrame *frame, uint3
 		return false;
 
 	gs_texture_set_image(renderer->texture, renderer->bgra.data(), width * 4u, false);
-	obs_source_draw(renderer->texture, 0, 0, width, height, false);
+	draw_sdr_texture(renderer->texture, width, height);
 	return true;
 }
 
