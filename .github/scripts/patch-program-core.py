@@ -178,3 +178,4 @@ save(p, s)
 
 print('Program core patch OK')
 # retrigger diagnostics
+# rerun split integration checks
