@@ -3039,8 +3039,7 @@ private:
 		if (timestampNs >= editTimelineEndNs)
 			return TIMELINE_SCALE;
 		const uint64_t duration = editTimelineEndNs - editTimelineStartNs;
-		return (int)((long double)(timestampNs - editTimelineStartNs) * TIMELINE_SCALE /
-			     (long double)duration);
+		return (int)((long double)(timestampNs - editTimelineStartNs) * TIMELINE_SCALE / (long double)duration);
 	}
 
 	uint64_t editTimelineTimestamp(int value) const
@@ -3089,7 +3088,8 @@ private:
 
 		if (event.preferred_camera_id) {
 			char *preferred = nullptr;
-			if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &preferred) && preferred)
+			if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &preferred) &&
+			    preferred)
 				addCandidate(QString::fromUtf8(preferred));
 			bfree(preferred);
 		}
@@ -3183,12 +3183,14 @@ private:
 
 		int playheadValue = rangeIn;
 		sr_replay_channel_state preview = {};
-		if (sr_replay_channel_get_state(transportBus(), &preview) && preview.cued && preview.event_id == event.id)
+		if (sr_replay_channel_get_state(transportBus(), &preview) && preview.cued &&
+		    preview.event_id == event.id)
 			playheadValue = editTimelineValue(preview.playhead_ns);
 		timelineSlider->setValue(qBound(rangeIn, playheadValue, qMax(rangeIn, rangeOut)));
 
 		const uint64_t relativeIn = event.in_ns > editTimelineStartNs ? event.in_ns - editTimelineStartNs : 0;
-		const uint64_t relativeOut = event.out_ns > editTimelineStartNs ? event.out_ns - editTimelineStartNs : 0;
+		const uint64_t relativeOut = event.out_ns > editTimelineStartNs ? event.out_ns - editTimelineStartNs
+										: 0;
 		timelineTime->setText(T("EventDock.Timeline.EditRange")
 					      .arg(replayClockText(relativeIn))
 					      .arg(replayClockText(relativeOut))
@@ -3261,8 +3263,7 @@ private:
 					  : state.playhead_ns >= state.out_ns ? duration
 									      : state.playhead_ns - state.in_ns;
 		if (!timelineDragging) {
-			const int sliderValue =
-				(int)((long double)position * TIMELINE_SCALE / (long double)duration);
+			const int sliderValue = (int)((long double)position * TIMELINE_SCALE / (long double)duration);
 			timelineSlider->setValue(sliderValue);
 		}
 		timelineTime->setText(replayClockText(position) + QStringLiteral(" / ") + replayClockText(duration));
@@ -3374,8 +3375,7 @@ private:
 		previewLoadedEventId = 0;
 		editPreviewEventId = 0;
 		editPreviewCamera.clear();
-		status->setText(T("EventDock.Timeline.EditSaved")
-					.arg((double)(outNs - inNs) / 1e9, 0, 'f', 3));
+		status->setText(T("EventDock.Timeline.EditSaved").arg((double)(outNs - inNs) / 1e9, 0, 'f', 3));
 		refresh(eventId);
 		refreshAngleCoverage();
 		previewSelectedEvent(true);
