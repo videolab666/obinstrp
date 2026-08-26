@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 #define SR_EVENT_LIST_COUNT 20
-#define SR_EVENT_DB_SCHEMA_VERSION 2
+#define SR_EVENT_DB_SCHEMA_VERSION 3
 
 enum sr_event_audio_mode {
 	SR_EVENT_AUDIO_OFF = 0,
@@ -41,6 +41,7 @@ struct sr_event_write {
 	uint64_t out_ns;
 	uint64_t preferred_camera_id; /* 0 means automatic / unset */
 	double speed_percent;
+	bool speed_override; /* false = inherit Global controller in Global mode */
 	int audio_mode;
 	bool protected_event;
 	bool played;
@@ -55,6 +56,7 @@ struct sr_event_record {
 	uint64_t out_ns;
 	uint64_t preferred_camera_id; /* 0 means automatic / unset */
 	double speed_percent;
+	bool speed_override; /* false = inherit Global controller in Global mode */
 	int audio_mode;
 	bool protected_event;
 	bool played;

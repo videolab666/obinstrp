@@ -1495,8 +1495,11 @@ private:
 		QString first = QStringLiteral("#%1").arg(event.id);
 		if (!name.isEmpty())
 			first += QStringLiteral("  ") + name;
-		QString second =
-			QStringLiteral("%1  ·  %2%").arg(durationText(event)).arg(event.speed_percent, 0, 'f', 0);
+		const bool inherited = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL &&
+				       !event.speed_override;
+		const QString speed = inherited ? QStringLiteral("--")
+						: QStringLiteral("%1%").arg(event.speed_percent, 0, 'f', 0);
+		QString second = QStringLiteral("%1  ·  %2").arg(durationText(event)).arg(speed);
 		if (!tag.isEmpty())
 			second += QStringLiteral("  ·  ") + tag;
 		return first + QStringLiteral("\n") + second;
@@ -2709,7 +2712,8 @@ private:
 			if (sr_event_controller_get_event(controller, eventIds[i], &event)) {
 				if (!event.pending && event.out_ns > event.in_ns) {
 					const double plannedSpeed = sr_config_get_replay_speed_policy() ==
-										    SR_REPLAY_SPEED_GLOBAL
+											    SR_REPLAY_SPEED_GLOBAL &&
+										    !event.speed_override
 									    ? sr_replay_channel_get_controller_speed()
 									    : event.speed_percent;
 					runtime = playbackRuntimeNs(event.out_ns - event.in_ns, plannedSpeed);
@@ -3447,9 +3451,13 @@ private:
 			auto *duration = new QTableWidgetItem(durationText(event));
 			duration->setFlags(duration->flags() & ~Qt::ItemIsEditable);
 			table->setItem((int)i, 1, duration);
-			table->setItem((int)i, 2,
-				       new QTableWidgetItem(QString::number(event.speed_percent, 'f', 0) +
-							    QStringLiteral("%")));
+			const bool inheritedSpeed = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL &&
+						    !event.speed_override;
+			auto *speedItem = new QTableWidgetItem(
+				inheritedSpeed ? QStringLiteral("--")
+					       : QString::number(event.speed_percent, 'f', 0) + QStringLiteral("%"));
+			speedItem->setToolTip(T("EventDock.EventSpeed.Tooltip"));
+			table->setItem((int)i, 2, speedItem);
 			auto *state = new QTableWidgetItem(stateText(event));
 			state->setFlags(state->flags() & ~Qt::ItemIsEditable);
 			table->setItem((int)i, 3, state);
@@ -3490,13 +3498,17 @@ private:
 			return;
 		}
 
-		QString speedText = table->item(item->row(), 2)->text();
-		speedText.remove(QChar('%'));
-		bool speedOk = false;
-		const double speed = speedText.trimmed().toDouble(&speedOk);
+		QString speedText = table->item(item->row(), 2)->text().trimmed();
+		const bool speedOverride = !speedText.isEmpty() && speedText != QStringLiteral("--");
+		double speed = event.speed_percent;
+		bool speedOk = true;
+		if (speedOverride) {
+			speedText.remove(QChar('%'));
+			speed = speedText.trimmed().toDouble(&speedOk);
+		}
 		const QByteArray name = table->item(item->row(), 4)->text().trimmed().toUtf8();
 		const QByteArray tag = table->item(item->row(), 5)->text().trimmed().toUtf8();
-		if (!speedOk || speed < 10.0 || speed > 400.0) {
+		if (!speedOk || (speedOverride && (speed < 10.0 || speed > 400.0))) {
 			sr_event_controller_free_event(&event);
 			setStatus("EventDock.InvalidSpeed");
 			refresh(eventId);
@@ -3508,6 +3520,7 @@ private:
 		update.out_ns = event.out_ns;
 		update.preferred_camera_id = event.preferred_camera_id;
 		update.speed_percent = speed;
+		update.speed_override = speedOverride;
 		update.audio_mode = event.audio_mode;
 		update.protected_event = event.protected_event;
 		update.played = event.played;

@@ -209,6 +209,25 @@ static bool migrate_v2(struct sr_event_db *db)
 	return true;
 }
 
+static bool migrate_v3(struct sr_event_db *db)
+{
+	if (!begin_transaction(db))
+		return false;
+	if (!exec_sql(db,
+		      "ALTER TABLE events ADD COLUMN speed_override INTEGER NOT NULL DEFAULT 0 "
+		      "CHECK(speed_override IN (0, 1))",
+		      "migrate schema v3") ||
+	    !exec_sql(db, "PRAGMA user_version=3", "set schema v3")) {
+		rollback_transaction(db);
+		return false;
+	}
+	if (!commit_transaction(db)) {
+		rollback_transaction(db);
+		return false;
+	}
+	return true;
+}
+
 static bool migrate_schema(struct sr_event_db *db)
 {
 	int version = 0;
@@ -230,6 +249,12 @@ static bool migrate_schema(struct sr_event_db *db)
 		if (!migrate_v2(db))
 			return false;
 		version = 2;
+	}
+
+	if (version == 2) {
+		if (!migrate_v3(db))
+			return false;
+		version = 3;
 	}
 
 	db->schema_version = version;
@@ -392,6 +417,7 @@ static bool bind_event(sqlite3_stmt *stmt, int first_parameter, const struct sr_
 	else
 		rc = sqlite3_bind_null(stmt, index++);
 	if (rc != SQLITE_OK || sqlite3_bind_double(stmt, index++, event->speed_percent) != SQLITE_OK ||
+	    sqlite3_bind_int(stmt, index++, event->speed_override ? 1 : 0) != SQLITE_OK ||
 	    sqlite3_bind_int(stmt, index++, event->audio_mode) != SQLITE_OK ||
 	    sqlite3_bind_int(stmt, index++, event->protected_event ? 1 : 0) != SQLITE_OK ||
 	    sqlite3_bind_int(stmt, index++, event->played ? 1 : 0) != SQLITE_OK ||
@@ -410,8 +436,8 @@ bool sr_event_db_create_event(struct sr_event_db *db, const struct sr_event_writ
 	pthread_mutex_lock(&db->mutex);
 	sqlite3_stmt *stmt = NULL;
 	const char *sql =
-		"INSERT INTO events(in_ns,out_ns,preferred_camera_id,speed_percent,audio_mode,protected_event,played,pending,name,tag) "
-		"VALUES(?,?,?,?,?,?,?,?,?,?)";
+		"INSERT INTO events(in_ns,out_ns,preferred_camera_id,speed_percent,speed_override,audio_mode,protected_event,played,pending,name,tag) "
+		"VALUES(?,?,?,?,?,?,?,?,?,?,?)";
 	int rc = sqlite3_prepare_v2(db->sql, sql, -1, &stmt, NULL);
 	bool ok = rc == SQLITE_OK && bind_event(stmt, 1, event);
 	if (ok) {
@@ -436,7 +462,7 @@ bool sr_event_db_get_event(struct sr_event_db *db, uint64_t event_id, struct sr_
 	pthread_mutex_lock(&db->mutex);
 	sqlite3_stmt *stmt = NULL;
 	const char *sql =
-		"SELECT id,in_ns,out_ns,preferred_camera_id,speed_percent,audio_mode,protected_event,played,pending,name,tag "
+		"SELECT id,in_ns,out_ns,preferred_camera_id,speed_percent,speed_override,audio_mode,protected_event,played,pending,name,tag "
 		"FROM events WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->sql, sql, -1, &stmt, NULL);
 	bool ok = rc == SQLITE_OK && sqlite3_bind_int64(stmt, 1, (sqlite3_int64)event_id) == SQLITE_OK;
@@ -451,12 +477,13 @@ bool sr_event_db_get_event(struct sr_event_db *db, uint64_t event_id, struct sr_
 		event->preferred_camera_id =
 			sqlite3_column_type(stmt, 3) == SQLITE_NULL ? 0 : (uint64_t)sqlite3_column_int64(stmt, 3);
 		event->speed_percent = sqlite3_column_double(stmt, 4);
-		event->audio_mode = sqlite3_column_int(stmt, 5);
-		event->protected_event = sqlite3_column_int(stmt, 6) != 0;
-		event->played = sqlite3_column_int(stmt, 7) != 0;
-		event->pending = sqlite3_column_int(stmt, 8) != 0;
-		const unsigned char *name = sqlite3_column_text(stmt, 9);
-		const unsigned char *tag = sqlite3_column_text(stmt, 10);
+		event->speed_override = sqlite3_column_int(stmt, 5) != 0;
+		event->audio_mode = sqlite3_column_int(stmt, 6);
+		event->protected_event = sqlite3_column_int(stmt, 7) != 0;
+		event->played = sqlite3_column_int(stmt, 8) != 0;
+		event->pending = sqlite3_column_int(stmt, 9) != 0;
+		const unsigned char *name = sqlite3_column_text(stmt, 10);
+		const unsigned char *tag = sqlite3_column_text(stmt, 11);
 		event->name = bstrdup(name ? (const char *)name : "");
 		event->tag = bstrdup(tag ? (const char *)tag : "");
 		ok = event->name && event->tag;
@@ -479,11 +506,11 @@ bool sr_event_db_update_event(struct sr_event_db *db, uint64_t event_id, const s
 	pthread_mutex_lock(&db->mutex);
 	sqlite3_stmt *stmt = NULL;
 	const char *sql =
-		"UPDATE events SET in_ns=?,out_ns=?,preferred_camera_id=?,speed_percent=?,audio_mode=?,protected_event=?,"
+		"UPDATE events SET in_ns=?,out_ns=?,preferred_camera_id=?,speed_percent=?,speed_override=?,audio_mode=?,protected_event=?,"
 		"played=?,pending=?,name=?,tag=?,updated_unix=unixepoch() WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->sql, sql, -1, &stmt, NULL);
 	bool ok = rc == SQLITE_OK && bind_event(stmt, 1, event) &&
-		  sqlite3_bind_int64(stmt, 11, (sqlite3_int64)event_id) == SQLITE_OK;
+		  sqlite3_bind_int64(stmt, 12, (sqlite3_int64)event_id) == SQLITE_OK;
 	if (ok) {
 		rc = sqlite3_step(stmt);
 		ok = rc == SQLITE_DONE && sqlite3_changes(db->sql) == 1;
@@ -822,8 +849,8 @@ bool sr_event_db_create_event_in_list(struct sr_event_db *db, const struct sr_ev
 
 	sqlite3_stmt *stmt = NULL;
 	const char *event_sql =
-		"INSERT INTO events(in_ns,out_ns,preferred_camera_id,speed_percent,audio_mode,protected_event,played,pending,name,tag) "
-		"VALUES(?,?,?,?,?,?,?,?,?,?)";
+		"INSERT INTO events(in_ns,out_ns,preferred_camera_id,speed_percent,speed_override,audio_mode,protected_event,played,pending,name,tag) "
+		"VALUES(?,?,?,?,?,?,?,?,?,?,?)";
 	int rc = sqlite3_prepare_v2(db->sql, event_sql, -1, &stmt, NULL);
 	bool ok = rc == SQLITE_OK && bind_event(stmt, 1, event);
 	if (ok) {

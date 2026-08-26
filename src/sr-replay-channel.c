@@ -234,7 +234,9 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	const uint64_t in_ns = coverage.playable_in_ns;
 	const uint64_t out_ns = coverage.playable_out_ns;
 	const bool partial = coverage.coverage != SR_REPLAY_COVERAGE_FULL;
-	const double speed = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL
+	const bool event_speed_override = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL &&
+					  event.speed_override;
+	const double speed = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL && !event_speed_override
 				     ? sr_replay_channel_get_controller_speed()
 				     : event.speed_percent;
 	const uint64_t event_in_ns = event.in_ns;
