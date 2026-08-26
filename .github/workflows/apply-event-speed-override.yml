@@ -1,0 +1,39 @@
+name: Apply Event speed override
+on:
+  push:
+    branches: [feature/hardware-zero-copy]
+    paths:
+      - '.github/scripts/patch-event-speed-override.py'
+      - '.github/workflows/apply-event-speed-override.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
+      - name: Apply patch
+        run: python .github/scripts/patch-event-speed-override.py
+      - name: Format sources
+        run: |
+          clang-format-19 -i src/sr-event-db.h src/sr-event-db.c src/sr-event-controller.c src/sr-replay-channel.c src/sr-event-dock.cpp
+      - name: Validate override contract
+        run: |
+          grep -q 'SR_EVENT_DB_SCHEMA_VERSION 3' src/sr-event-db.h
+          grep -q 'speed_override' src/sr-event-db.c
+          grep -q 'event.speed_override' src/sr-replay-channel.c
+          grep -q 'QStringLiteral("--")' src/sr-event-dock.cpp
+          grep -q 'EventDock.EventSpeed.Tooltip' data/locale/en-US.ini
+      - name: Commit product changes and remove helpers
+        run: |
+          rm .github/scripts/patch-event-speed-override.py .github/workflows/apply-event-speed-override.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: add per-Event replay speed override'
+          git push origin HEAD:feature/hardware-zero-copy
