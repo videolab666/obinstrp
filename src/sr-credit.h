@@ -23,14 +23,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <stdio.h>
 
-/* Builds the "<a href="...">Pitel Instant Replay (version) by Systec</a>" credit
- * line shown at the bottom of the plugin's windows/dialogs, into buf.
+/* Builds the Pitel Instant Replay project link shown at the bottom of the
+ * plugin's windows/dialogs, into buf.
  * Returns buf. Requires obs_module_text() to be usable (i.e. the OBS module
  * is loaded), so only include this from translation units compiled into the
  * main plugin module, not the standalone plugin-support library. */
 static inline const char *sr_plugin_credit_html(char *buf, size_t size)
 {
-	snprintf(buf, size, "<a href=\"%s\">%s (%s) %s Systec</a>", PLUGIN_WEBSITE,
-		 obs_module_text("PitelInstantReplay"), PLUGIN_VERSION, obs_module_text("Credit.By"));
+	snprintf(buf, size, "<a href=\"%s\">%s (%s)</a>", PLUGIN_WEBSITE, obs_module_text("PitelInstantReplay"),
+		 PLUGIN_VERSION);
 	return buf;
 }

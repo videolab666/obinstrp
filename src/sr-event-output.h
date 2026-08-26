@@ -10,7 +10,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #pragma once
 
-#define SR_EVENT_OUTPUT_ID "sports_replay_event_output"
+#define SR_EVENT_OUTPUT_ID "pitel_instant_replay_event_output"
 #define SR_EVENT_OUTPUT_SETTING_BUS "replay_bus"
 #define SR_EVENT_OUTPUT_SETTING_AUDIO_MODE "audio_mode"
 #define SR_EVENT_OUTPUT_SETTING_REPLAY_GAIN_DB "replay_gain_db"

@@ -1,12 +1,12 @@
 ; Inno Setup installer for Pitel Instant Replay (OBS Studio plugin)
-; Author: Systec - https://www.systecinformatica.com.ar
+; Pitel Instant Replay standalone installer
 
 #define MyName "Pitel Instant Replay for OBS Studio"
 #ifndef MyVersion
   #define MyVersion "1.0.0"
 #endif
-#define MyPublisher "Systec"
-#define MyURL "https://www.systecinformatica.com.ar"
+#define MyPublisher "videolab666"
+#define MyURL "https://github.com/videolab666/obinstrp"
 
 [Setup]
 AppName={#MyName}
@@ -35,11 +35,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "pitel-instant-replay\bin\64bit\pitel-instant-replay.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
 Source: "pitel-instant-replay\data\locale\*"; DestDir: "{app}\data\obs-plugins\pitel-instant-replay\locale"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-[InstallDelete]
-; Remove the legacy module before installing the renamed module.
-Type: files; Name: "{app}\obs-plugins\64bit\sports-replay.dll"
-Type: files; Name: "{app}\obs-plugins\64bit\sports-replay.pdb"
-Type: filesandordirs; Name: "{app}\data\obs-plugins\sports-replay"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\data\obs-plugins\pitel-instant-replay"

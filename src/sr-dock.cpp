@@ -524,15 +524,6 @@ private:
 			return;
 		QByteArray cfgUtf8 = cfgPath.toUtf8();
 		obs_data_t *data = obs_data_create_from_json_file(cfgUtf8.constData());
-		bool migratedLegacy = false;
-		if (!data) {
-			char *legacyPath = obs_module_config_path("../sports-replay/played.json");
-			if (legacyPath) {
-				data = obs_data_create_from_json_file(legacyPath);
-				migratedLegacy = data != nullptr;
-			}
-			bfree(legacyPath);
-		}
 		if (!data)
 			return;
 
@@ -549,8 +540,6 @@ private:
 			obs_data_array_release(arr);
 		}
 		obs_data_release(data);
-		if (migratedLegacy)
-			savePlayedPaths();
 	}
 
 	void savePlayedPaths()
@@ -879,11 +868,11 @@ void mark_played_task(void *param)
 void sr_dock_register(struct sr_event_controller *controller)
 {
 	auto *tabs = new QTabWidget();
-	tabs->setObjectName(QStringLiteral("SportsReplayDock"));
+	tabs->setObjectName(QStringLiteral("PitelInstantReplayDock"));
 	tabs->setDocumentMode(true);
 
 	auto *operatorScroll = new QScrollArea(tabs);
-	operatorScroll->setObjectName(QStringLiteral("SportsReplayOperatorScroll"));
+	operatorScroll->setObjectName(QStringLiteral("PitelInstantReplayOperatorScroll"));
 	operatorScroll->setWidgetResizable(true);
 	operatorScroll->setFrameShape(QFrame::NoFrame);
 	operatorScroll->setWidget(sr_event_dock_create(controller, operatorScroll));
@@ -895,7 +884,7 @@ void sr_dock_register(struct sr_event_controller *controller)
 	tabs->addTab(storage, T("Dock.TabStorage"));
 	tabs->setCurrentIndex(0);
 
-	if (!obs_frontend_add_dock_by_id("sports_replay_dock", obs_module_text("Dock.Title"), tabs)) {
+	if (!obs_frontend_add_dock_by_id("pitel_instant_replay_dock", obs_module_text("Dock.Title"), tabs)) {
 		delete tabs;
 		return;
 	}

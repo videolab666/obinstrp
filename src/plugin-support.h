@@ -30,7 +30,7 @@ extern "C" {
 extern const char *PLUGIN_NAME;
 extern const char *PLUGIN_VERSION;
 
-#define PLUGIN_WEBSITE "https://www.systecinformatica.com.ar"
+#define PLUGIN_WEBSITE "https://github.com/videolab666/obinstrp"
 
 void obs_log(int log_level, const char *format, ...);
 extern void blogva(int log_level, const char *format, va_list args);

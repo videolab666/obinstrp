@@ -471,8 +471,8 @@ static void switch_scene_return_task(void *param)
 }
 
 /* Same as sr_switch_to_scene(), but marks the activation as a "return to
- * previous scene" bounce: if the scene we land on itself holds a Sports
- * Replay source with autoplay + "return to previous" configured, that
+ * previous scene" bounce: if the scene we land on itself holds a Pitel Instant Replay
+ * replay source with autoplay + "return to previous" configured, that
  * source must not treat this as a deliberate trigger and auto-capture a
  * fresh replay - otherwise two such scenes ping-pong forever. */
 void sr_switch_to_scene_return(const char *scene_name)

@@ -910,30 +910,30 @@ static void *sr_playback_create(obs_data_t *settings, obs_source_t *source)
 	sr_frame_cache_init(&p->frame_cache, (size_t)SR_REPLAY_FRAME_CACHE_BYTES);
 	pthread_mutex_init(&p->mutex, NULL);
 
-	p->hk_capture = obs_hotkey_register_source(source, "SportsReplay.Capture", obs_module_text("Hotkey.Capture"),
-						   hk_capture_cb, p);
-	p->hk_play_pause = obs_hotkey_register_source(source, "SportsReplay.PlayPause",
+	p->hk_capture = obs_hotkey_register_source(source, "PitelInstantReplay.Capture",
+						   obs_module_text("Hotkey.Capture"), hk_capture_cb, p);
+	p->hk_play_pause = obs_hotkey_register_source(source, "PitelInstantReplay.PlayPause",
 						      obs_module_text("Hotkey.PlayPause"), hk_play_pause_cb, p);
-	p->hk_restart = obs_hotkey_register_source(source, "SportsReplay.Restart", obs_module_text("Hotkey.Restart"),
-						   hk_restart_cb, p);
-	p->hk_faster = obs_hotkey_register_source(source, "SportsReplay.Faster", obs_module_text("Hotkey.Faster"),
+	p->hk_restart = obs_hotkey_register_source(source, "PitelInstantReplay.Restart",
+						   obs_module_text("Hotkey.Restart"), hk_restart_cb, p);
+	p->hk_faster = obs_hotkey_register_source(source, "PitelInstantReplay.Faster", obs_module_text("Hotkey.Faster"),
 						  hk_faster_cb, p);
-	p->hk_slower = obs_hotkey_register_source(source, "SportsReplay.Slower", obs_module_text("Hotkey.Slower"),
+	p->hk_slower = obs_hotkey_register_source(source, "PitelInstantReplay.Slower", obs_module_text("Hotkey.Slower"),
 						  hk_slower_cb, p);
-	p->hk_normal = obs_hotkey_register_source(source, "SportsReplay.NormalSpeed",
+	p->hk_normal = obs_hotkey_register_source(source, "PitelInstantReplay.NormalSpeed",
 						  obs_module_text("Hotkey.NormalSpeed"), hk_normal_cb, p);
-	p->hk_half = obs_hotkey_register_source(source, "SportsReplay.HalfSpeed", obs_module_text("Hotkey.HalfSpeed"),
-						hk_half_cb, p);
-	p->hk_quarter = obs_hotkey_register_source(source, "SportsReplay.QuarterSpeed",
+	p->hk_half = obs_hotkey_register_source(source, "PitelInstantReplay.HalfSpeed",
+						obs_module_text("Hotkey.HalfSpeed"), hk_half_cb, p);
+	p->hk_quarter = obs_hotkey_register_source(source, "PitelInstantReplay.QuarterSpeed",
 						   obs_module_text("Hotkey.QuarterSpeed"), hk_quarter_cb, p);
-	p->hk_reverse = obs_hotkey_register_source(source, "SportsReplay.ReverseToggle",
+	p->hk_reverse = obs_hotkey_register_source(source, "PitelInstantReplay.ReverseToggle",
 						   obs_module_text("Hotkey.ReverseToggle"), hk_reverse_cb, p);
-	p->hk_play_last = obs_hotkey_register_source(source, "SportsReplay.PlayLast",
+	p->hk_play_last = obs_hotkey_register_source(source, "PitelInstantReplay.PlayLast",
 						     obs_module_text("Hotkey.PlayLast"), hk_play_last_cb, p);
-	p->hk_send_to_program = obs_hotkey_register_source(source, "SportsReplay.SendToProgram",
+	p->hk_send_to_program = obs_hotkey_register_source(source, "PitelInstantReplay.SendToProgram",
 							   obs_module_text("Hotkey.SendToProgram"),
 							   hk_send_to_program_cb, p);
-	p->hk_capture_only = obs_hotkey_register_source(source, "SportsReplay.CaptureOnly",
+	p->hk_capture_only = obs_hotkey_register_source(source, "PitelInstantReplay.CaptureOnly",
 							obs_module_text("Hotkey.CaptureOnly"), hk_capture_only_cb, p);
 
 	sr_playback_update(p, settings);

@@ -20,10 +20,10 @@ the Free Software Foundation; either version 2 of the License, or
 extern "C" {
 #endif
 
-#define SR_REPLAY_SETUP_SCENE_A "Pitel Replay A"
-#define SR_REPLAY_SETUP_SCENE_B "Pitel Replay B"
-#define SR_REPLAY_SETUP_OUTPUT_A "Pitel Instant Replay Event Output A"
-#define SR_REPLAY_SETUP_OUTPUT_B "Pitel Instant Replay Event Output B"
+#define SR_REPLAY_SETUP_SCENE_A "Pitel Instant Replay A"
+#define SR_REPLAY_SETUP_SCENE_B "Pitel Instant Replay B"
+#define SR_REPLAY_SETUP_OUTPUT_A "Pitel Replay Output A"
+#define SR_REPLAY_SETUP_OUTPUT_B "Pitel Replay Output B"
 #define SR_REPLAY_SETUP_NAME_MAX 256
 #define SR_REPLAY_SETUP_ID_MAX 128
 
@@ -74,7 +74,7 @@ bool sr_replay_setup_set_capture(const char *source_name, bool enabled);
 
 /* Create/repair two scene-backed Event Outputs for A/B playback. Existing
  * valid user topology is preserved. If A and B currently resolve to one scene,
- * only the missing separate side is added to a canonical Pitel Replay scene. */
+ * only the missing separate side is added to a canonical Pitel Instant Replay scene. */
 bool sr_replay_setup_ensure_event_scenes(struct sr_replay_setup_result *result);
 
 /* Preferred topology lookup used by TAKE/playlist code. Canonical Setup scenes

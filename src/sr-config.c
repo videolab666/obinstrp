@@ -44,7 +44,7 @@ static char *default_save_dir(void)
 	if (home && *home) {
 		dstr_copy(&d, home);
 		dstr_replace(&d, "\\", "/");
-		dstr_cat(&d, "/Videos/Pitel Instant Replay");
+		dstr_cat(&d, "/Videos/Pitel Instant Replay/Recorder");
 	} else {
 		char *cfg = obs_module_config_path("replays");
 		dstr_copy(&d, cfg ? cfg : "replays");
@@ -106,17 +106,6 @@ void sr_config_init(void)
 	obs_data_t *data = path ? obs_data_create_from_json_file(path) : NULL;
 	bfree(path);
 
-	bool migrated_legacy_config = false;
-	if (!data) {
-		char *legacy_path = obs_module_config_path("../sports-replay/config.json");
-		data = legacy_path ? obs_data_create_from_json_file(legacy_path) : NULL;
-		if (data) {
-			migrated_legacy_config = true;
-			blog(LOG_INFO, "Pitel Instant Replay: importing legacy sports-replay module configuration");
-		}
-		bfree(legacy_path);
-	}
-
 	const char *saved = data ? obs_data_get_string(data, "save_dir") : "";
 	g_save_dir = (saved && *saved) ? bstrdup(saved) : default_save_dir();
 
@@ -156,9 +145,6 @@ void sr_config_init(void)
 
 	os_mkdirs(g_save_dir);
 	os_mkdirs(g_session_root);
-
-	if (migrated_legacy_config)
-		save_locked();
 
 	if (data)
 		obs_data_release(data);

@@ -33,14 +33,14 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.systec.pitel-instant-replay"
+            "bundleId": "com.videolab666.pitel-instant-replay"
         }
     },
     "artifactName": "pitel-instant-replay",
     "name": "pitel-instant-replay",
     "displayName": "Pitel Instant Replay",
     "version": "1.4.0",
-    "author": "Systec",
-    "website": "https://www.systecinformatica.com.ar",
-    "email": "systecinformatica@gmail.com"
+    "author": "videolab666",
+    "website": "https://github.com/videolab666/obinstrp",
+    "email": ""
 }

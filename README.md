@@ -155,23 +155,10 @@ cmake --preset windows-x64
 cmake --build --preset windows-x64
 ```
 
-## Support development
+## Project
 
-Plugins like this take a lot of time, testing and late nights to build and keep
-working across OBS updates. Pitel Instant Replay is free and open source, and it will
-stay that way. If it has been useful for your broadcasts, a small contribution
-helps me keep maintaining it, adding new features, and building more free tools
-for the community. Every bit is genuinely appreciated — thank you for your
-support! 🙏
-
-- 💵 **Payoneer** — `systecinformatica@gmail.com`
-- 🇦🇷 **Mercado Pago** (Argentina only) — alias `systecinformatica`
-- ₿ **USDT (TRC-20)** — `TTHh4B9k9nbp3DB1DKN2XcPrVurPZFvPpz`
-
-## Author
-
-Developed by **Systec** — [www.systecinformatica.com.ar](https://www.systecinformatica.com.ar)
+Pitel Instant Replay is maintained in [`videolab666/obinstrp`](https://github.com/videolab666/obinstrp).
 
 ## License
 
-GPL-2.0-or-later — Copyright (C) 2026 Systec (https://www.systecinformatica.com.ar)
+GPL-2.0-or-later. See `LICENSE` and `THIRD_PARTY_NOTICES.md` for licensing and historical third-party provenance.
