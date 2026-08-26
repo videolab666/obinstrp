@@ -1,0 +1,70 @@
+name: Apply recording status UI patch
+run-name: Apply recording status / FPS / no-auto-resume
+
+on:
+  push:
+    branches:
+      - feature/hardware-zero-copy
+    paths:
+      - '.github/apply-record-status-ui.py'
+      - '.github/workflows/apply-record-status-ui.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: replay-record-status-product-apply
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
+
+      - name: Apply requested product changes
+        run: python3 .github/apply-record-status-ui.py
+
+      - name: Install formatter
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+
+      - name: Format changed sources
+        run: clang-format -i src/sr-event-dock.cpp src/capture-filter.c src/sr-program-recorder.c src/plugin-main.c src/sr-capture.h
+
+      - name: Validate patch shape
+        run: |
+          git diff --check
+          grep -F 'EventDock.Performance.Packets' src/sr-event-dock.cpp
+          grep -F 'recording_duration_ns' src/sr-event-dock.cpp src/sr-capture.h src/capture-filter.c src/sr-program-recorder.c
+          grep -F 'OBS_FRONTEND_EVENT_FINISHED_LOADING' src/plugin-main.c
+          grep -F 'setupSourceStatus' src/sr-event-dock.cpp
+
+      - name: Remove one-shot helpers
+        run: rm -f .github/apply-record-status-ui.py .github/workflows/apply-record-status-ui.yml
+
+      - name: Commit and publish product patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -u
+          git diff --cached --check
+          git commit -m 'feat: improve replay recording status and startup behavior'
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:feature/hardware-zero-copy; then
+              exit 0
+            fi
+            echo "Push attempt ${attempt} raced with another update; rebasing and retrying"
+            git pull --rebase origin feature/hardware-zero-copy
+            sleep 2
+          done
+          echo 'Could not publish product patch after retries' >&2
+          exit 1
+
+      - name: Start final full validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run validate-program-output.yml --ref feature/hardware-zero-copy
