@@ -11,7 +11,7 @@ on:
 permissions:
   contents: write
 
-# One-shot product patch; remove this workflow after the product commit lands.
+# One-shot helper retained only long enough to trigger the registered applicator.
 jobs:
   apply:
     runs-on: ubuntu-24.04
