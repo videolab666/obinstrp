@@ -6,29 +6,11 @@ on:
   push:
     branches:
       - feature/hardware-zero-copy
-    paths:
-      - 'src/**'
-      - 'cmake/**'
-      - 'CMakeLists.txt'
-      - 'CMakePresets.json'
-      - 'buildspec.json'
-      - '.github/workflows/validate-program-output.yml'
-      - '.github/workflows/build-project.yaml'
-      - '.github/workflows/check-format.yaml'
   pull_request:
     branches:
       - feature/disk-replay-core
       - main
       - master
-    paths:
-      - 'src/**'
-      - 'cmake/**'
-      - 'CMakeLists.txt'
-      - 'CMakePresets.json'
-      - 'buildspec.json'
-      - '.github/workflows/validate-program-output.yml'
-      - '.github/workflows/build-project.yaml'
-      - '.github/workflows/check-format.yaml'
 
 permissions:
   contents: read
@@ -37,10 +19,10 @@ concurrency:
   group: replay-development-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Full development validation for the replay feature branch. Keeping
-# workflow_dispatch here allows the same build to be started manually, while
-# push and pull_request cover normal development without relying on ad-hoc CI
-# branches or narrow per-file filters.
+# Full validation for replay development. Every push to the active replay
+# feature branch is built deliberately: maintaining a narrow paths list is too
+# easy to get wrong for cross-cutting render/encode/playback changes. The same
+# workflow is also available from Actions via workflow_dispatch.
 jobs:
   check-format:
     name: Check Formatting 🔍
