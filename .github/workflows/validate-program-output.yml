@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: replay-ui-product-apply
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   apply:
@@ -20,7 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
 
       - name: Apply requested product changes
         run: python3 tools/apply_setup_storage_ui.py
@@ -33,18 +34,27 @@ jobs:
 
       - name: Restore normal CI and remove one-shot helpers
         run: |
-          git checkout HEAD^ -- .github/workflows/validate-program-output.yml
+          git show 5ace72aa2815f7efe954660c4ea22c38bdd278a6:.github/workflows/validate-program-output.yml > .github/workflows/validate-program-output.yml
           rm -f tools/apply_setup_storage_ui.py .github/workflows/apply-setup-storage-ui.yml
           git diff --check
 
-      - name: Commit product patch
+      - name: Commit and publish product patch
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A src/sr-event-dock.cpp src/sr-dock.cpp data/locale/en-US.ini data/locale/es-ES.ini tools/apply_setup_storage_ui.py .github/workflows/apply-setup-storage-ui.yml .github/workflows/validate-program-output.yml
           git diff --cached --check
           git commit -m 'feat: streamline replay source setup and storage management'
-          git push
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:feature/hardware-zero-copy; then
+              exit 0
+            fi
+            echo "Push attempt ${attempt} raced with another update; rebasing and retrying"
+            git pull --rebase origin feature/hardware-zero-copy
+            sleep 2
+          done
+          echo 'Could not publish product patch after retries' >&2
+          exit 1
 
       - name: Start final full validation
         env:
