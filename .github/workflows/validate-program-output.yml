@@ -35,7 +35,7 @@ jobs:
 
       - name: Format timeline source
         run: |
-          /home/linuxbrew/.linuxbrew/opt/clang-format@19/bin/clang-format -i src/sr-event-dock.cpp
+          clang-format-19 -i src/sr-event-dock.cpp
           git diff --check
 
       - name: Restore normal validation workflow
