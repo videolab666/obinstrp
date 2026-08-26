@@ -70,6 +70,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QSlider>
 #include <QStackedWidget>
 #include <QStandardPaths>
+#include <QStyledItemDelegate>
 #include <QStyle>
 #include <QStyleOptionSlider>
 #include <QStringList>
@@ -320,7 +321,63 @@ constexpr int ANGLE_PREVIEW_WIDTH = 176;
 constexpr int ANGLE_PREVIEW_HEIGHT = 99;
 constexpr int EVENT_THUMB_WIDTH = 192;
 constexpr int EVENT_THUMB_HEIGHT = 108;
+constexpr int EVENT_THUMB_DISPLAY_WIDTH = 176;
+constexpr int EVENT_THUMB_DISPLAY_HEIGHT = 99;
+constexpr int EVENT_THUMB_CELL_WIDTH = 184;
+constexpr int EVENT_THUMB_CELL_HEIGHT = 142;
 constexpr size_t EVENT_THUMB_BATCH = 24;
+constexpr size_t ANGLE_PREVIEW_CACHE_EVENTS = 12;
+
+class SrEventThumbnailDelegate : public QStyledItemDelegate {
+public:
+	explicit SrEventThumbnailDelegate(QObject *parent = nullptr) : QStyledItemDelegate(parent) {}
+
+	QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const override
+	{
+		return QSize(EVENT_THUMB_CELL_WIDTH, EVENT_THUMB_CELL_HEIGHT);
+	}
+
+	void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override
+	{
+		QStyleOptionViewItem itemOption(option);
+		initStyleOption(&itemOption, index);
+		const QIcon icon = itemOption.icon;
+		const QString text = itemOption.text;
+
+		itemOption.icon = QIcon();
+		itemOption.text.clear();
+		QStyle *style = itemOption.widget ? itemOption.widget->style() : QApplication::style();
+		style->drawControl(QStyle::CE_ItemViewItem, &itemOption, painter, itemOption.widget);
+
+		const QRect content = option.rect.adjusted(4, 3, -4, -3);
+		const QRect imageBox(content.left(), content.top(), content.width(), EVENT_THUMB_DISPLAY_HEIGHT);
+		if (!icon.isNull()) {
+			const QIcon::Mode mode = !(option.state & QStyle::State_Enabled)   ? QIcon::Disabled
+						 : (option.state & QStyle::State_Selected) ? QIcon::Selected
+											   : QIcon::Normal;
+			QPixmap pixmap = icon.pixmap(QSize(EVENT_THUMB_WIDTH, EVENT_THUMB_HEIGHT), mode);
+			if (!pixmap.isNull()) {
+				QSize drawSize = pixmap.size();
+				drawSize.scale(QSize(EVENT_THUMB_DISPLAY_WIDTH, EVENT_THUMB_DISPLAY_HEIGHT),
+					       Qt::KeepAspectRatio);
+				QRect target(QPoint(0, 0), drawSize);
+				target.moveCenter(imageBox.center());
+				painter->save();
+				painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
+				painter->drawPixmap(target, pixmap);
+				painter->restore();
+			}
+		}
+
+		const QRect textRect(content.left(), imageBox.bottom() + 4, content.width(),
+				     std::max(0, content.bottom() - imageBox.bottom() - 3));
+		painter->save();
+		painter->setPen((option.state & QStyle::State_Selected) ? option.palette.highlightedText().color()
+									: option.palette.text().color());
+		painter->drawText(textRect, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, text);
+		painter->restore();
+	}
+};
 
 struct AnglePreviewResult {
 	std::string camera;
@@ -896,10 +953,11 @@ public:
 		thumbnailList->setWordWrap(true);
 		thumbnailList->setSelectionMode(QAbstractItemView::ExtendedSelection);
 		thumbnailList->setSelectionRectVisible(true);
-		thumbnailList->setIconSize(QSize(EVENT_THUMB_WIDTH, EVENT_THUMB_HEIGHT));
-		thumbnailList->setGridSize(QSize(220, 164));
-		thumbnailList->setSpacing(4);
+		thumbnailList->setIconSize(QSize(EVENT_THUMB_DISPLAY_WIDTH, EVENT_THUMB_DISPLAY_HEIGHT));
+		thumbnailList->setGridSize(QSize(EVENT_THUMB_CELL_WIDTH, EVENT_THUMB_CELL_HEIGHT));
+		thumbnailList->setSpacing(1);
 		thumbnailList->setUniformItemSizes(true);
+		thumbnailList->setItemDelegate(new SrEventThumbnailDelegate(thumbnailList));
 		thumbnailList->setToolTip(T("EventDock.ViewThumbnails.Tooltip"));
 		eventViewStack->addWidget(thumbnailList);
 		eventViewStack->setCurrentWidget(table);
@@ -2111,7 +2169,8 @@ private:
 			button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
 			button->setCheckable(true);
 			button->setAutoRaise(false);
-			button->setMinimumSize(210, 132);
+			button->setMinimumWidth(184);
+			button->setFixedHeight(132);
 			button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 			button->setIconSize(QSize(ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT));
 			button->setProperty("cameraName", camera);
@@ -2236,10 +2295,30 @@ private:
 		if (previewTargetEventId != eventId) {
 			previewTargetEventId = eventId;
 			previewLoadedEventId = 0;
-			for (QToolButton *button : angleButtons)
-				button->setIcon(QIcon());
 		}
-		if (!eventId || previewLoadedEventId == eventId || anglePreviewJob)
+		if (!eventId)
+			return;
+
+		auto cacheIt = anglePreviewCache.find(eventId);
+		bool allCached = true;
+		for (QToolButton *button : angleButtons) {
+			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_NONE)
+				continue;
+			const std::string camera = button->property("cameraName").toString().toUtf8().constData();
+			if (cacheIt != anglePreviewCache.end()) {
+				auto iconIt = cacheIt->second.find(camera);
+				if (iconIt != cacheIt->second.end() && !iconIt->second.isNull()) {
+					button->setIcon(iconIt->second);
+					continue;
+				}
+			}
+			allCached = false;
+		}
+		if (allCached) {
+			previewLoadedEventId = eventId;
+			return;
+		}
+		if (previewLoadedEventId == eventId || anglePreviewJob)
 			return;
 
 		char *sessionPath = sr_session_get_or_create_path();
@@ -2252,6 +2331,13 @@ private:
 		for (QToolButton *button : angleButtons) {
 			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_NONE)
 				continue;
+			const std::string camera = button->property("cameraName").toString().toUtf8().constData();
+			cacheIt = anglePreviewCache.find(eventId);
+			if (cacheIt != anglePreviewCache.end()) {
+				auto iconIt = cacheIt->second.find(camera);
+				if (iconIt != cacheIt->second.end() && !iconIt->second.isNull())
+					continue;
+			}
 			const qint64 offset = button->property("syncOffsetNs").toLongLong();
 			uint64_t cameraTimestamp = timestampNs;
 			if (offset >= 0 && (uint64_t)offset <= UINT64_MAX - cameraTimestamp)
@@ -2259,12 +2345,14 @@ private:
 			else if (offset < 0 && (uint64_t)(-offset) < cameraTimestamp)
 				cameraTimestamp -= (uint64_t)(-offset);
 			AnglePreviewTask task;
-			task.camera = button->property("cameraName").toString().toUtf8().constData();
+			task.camera = camera;
 			task.timestampNs = cameraTimestamp;
 			job->tasks.emplace_back(std::move(task));
 		}
-		if (job->tasks.empty())
+		if (job->tasks.empty()) {
+			previewLoadedEventId = eventId;
 			return;
+		}
 		anglePreviewJob = std::move(job);
 		AnglePreviewJob *workerJob = anglePreviewJob.get();
 		workerJob->worker = std::thread([workerJob]() { runAnglePreviewJob(workerJob); });
@@ -2276,20 +2364,30 @@ private:
 			return;
 		if (anglePreviewJob->worker.joinable())
 			anglePreviewJob->worker.join();
-		if (anglePreviewJob->eventId == previewTargetEventId && angleEventId() == previewTargetEventId) {
-			for (const AnglePreviewResult &result : anglePreviewJob->results) {
-				if (result.rgba.empty())
-					continue;
-				QToolButton *button = angleButton(QString::fromUtf8(result.camera.c_str()));
-				if (!button)
-					continue;
-				const QImage image(result.rgba.data(), ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT,
-						   ANGLE_PREVIEW_WIDTH * 4, QImage::Format_RGBA8888);
-				button->setIcon(QIcon(QPixmap::fromImage(image.copy())));
+
+		const uint64_t completedEventId = anglePreviewJob->eventId;
+		auto &cache = anglePreviewCache[completedEventId];
+		for (const AnglePreviewResult &result : anglePreviewJob->results) {
+			if (result.rgba.empty())
+				continue;
+			const QImage image(result.rgba.data(), ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT,
+					   ANGLE_PREVIEW_WIDTH * 4, QImage::Format_RGBA8888);
+			QIcon icon(QPixmap::fromImage(image.copy()));
+			cache[result.camera] = icon;
+			if (completedEventId == previewTargetEventId && angleEventId() == previewTargetEventId) {
+				if (QToolButton *button = angleButton(QString::fromUtf8(result.camera.c_str())))
+					button->setIcon(icon);
 			}
-			previewLoadedEventId = anglePreviewJob->eventId;
 		}
+		while (anglePreviewCache.size() > ANGLE_PREVIEW_CACHE_EVENTS)
+			anglePreviewCache.erase(anglePreviewCache.begin());
+
+		if (completedEventId == previewTargetEventId && angleEventId() == previewTargetEventId)
+			previewLoadedEventId = completedEventId;
 		anglePreviewJob.reset();
+
+		if (previewTargetEventId && previewLoadedEventId != previewTargetEventId)
+			refreshAngleCoverage();
 	}
 
 	void syncAngleButtonState()
@@ -3438,6 +3536,7 @@ private:
 	std::unique_ptr<ExportJob> exportJob;
 	std::unique_ptr<AnglePreviewJob> anglePreviewJob;
 	std::unique_ptr<EventThumbnailJob> eventThumbnailJob;
+	std::map<uint64_t, std::map<std::string, QIcon>> anglePreviewCache;
 	std::map<uint64_t, CachedEventThumbnail> eventThumbnailCache;
 	std::vector<uint64_t> galleryEventIds;
 	unsigned galleryListId = 0;
