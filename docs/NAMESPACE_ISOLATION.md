@@ -13,7 +13,7 @@ There is no runtime compatibility bridge or automatic migration.
 - dock ID: `pitel_instant_replay_dock`
 - Qt dock object names: `PitelInstantReplayDock` / `PitelInstantReplayOperatorScroll`
 - macOS bundle ID: `com.videolab666.pitel-instant-replay`
-- module config directory: determined only by the `pitel-instant-replay` module name
+- module config namespace: `pitel-instant-replay/standalone-v1/` (older module-root config files are ignored)
 - default recording root: `Videos/Pitel Instant Replay/Recorder`
 - canonical replay scenes: `Pitel Instant Replay A` / `Pitel Instant Replay B`
 

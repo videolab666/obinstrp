@@ -35,7 +35,7 @@ static char *g_take_out_transition;
 static char *g_event_transition;
 static uint32_t g_event_transition_duration_ms;
 
-/* Default location when the user hasn't chosen one: <Videos>/Pitel Instant Replay,
+/* Default location when the user hasn't chosen one: <Videos>/Pitel Instant Replay/Recorder,
  * created if needed. Falls back to the plugin config dir. */
 static char *default_save_dir(void)
 {
@@ -46,7 +46,7 @@ static char *default_save_dir(void)
 		dstr_replace(&d, "\\", "/");
 		dstr_cat(&d, "/Videos/Pitel Instant Replay/Recorder");
 	} else {
-		char *cfg = obs_module_config_path("replays");
+		char *cfg = obs_module_config_path("standalone-v1/replays");
 		dstr_copy(&d, cfg ? cfg : "replays");
 		bfree(cfg);
 	}
@@ -71,7 +71,7 @@ static char *default_session_root(const char *save_dir)
 
 static void save_locked(void)
 {
-	char *dir = obs_module_config_path("");
+	char *dir = obs_module_config_path("standalone-v1");
 	if (dir) {
 		os_mkdirs(dir);
 		bfree(dir);
@@ -91,7 +91,7 @@ static void save_locked(void)
 	obs_data_set_string(data, "event_transition", g_event_transition ? g_event_transition : "");
 	obs_data_set_int(data, "event_transition_duration_ms", g_event_transition_duration_ms);
 
-	char *path = obs_module_config_path("config.json");
+	char *path = obs_module_config_path("standalone-v1/config.json");
 	if (path)
 		obs_data_save_json(data, path);
 	bfree(path);
@@ -102,7 +102,7 @@ void sr_config_init(void)
 {
 	pthread_mutex_init(&g_mutex, NULL);
 
-	char *path = obs_module_config_path("config.json");
+	char *path = obs_module_config_path("standalone-v1/config.json");
 	obs_data_t *data = path ? obs_data_create_from_json_file(path) : NULL;
 	bfree(path);
 

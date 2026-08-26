@@ -509,7 +509,7 @@ private:
 
 	static QString playedConfigPath()
 	{
-		char *path = obs_module_config_path("played.json");
+		char *path = obs_module_config_path("standalone-v1/played.json");
 		QString result = path ? QString::fromUtf8(path) : QString();
 		bfree(path);
 		return result;
@@ -548,7 +548,7 @@ private:
 		if (cfgPath.isEmpty())
 			return;
 
-		char *dir = obs_module_config_path("");
+		char *dir = obs_module_config_path("standalone-v1");
 		if (dir) {
 			os_mkdirs(dir);
 			bfree(dir);
