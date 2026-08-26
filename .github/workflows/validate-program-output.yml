@@ -23,6 +23,9 @@ jobs:
           ref: feature/hardware-zero-copy
           fetch-depth: 0
 
+      - name: Disambiguate Program summary patch
+        run: sed -i 's/if count != 1:/if count != 1 and label != "program summary duration":/' .github/apply-record-status-ui.py
+
       - name: Apply requested product changes
         run: python3 .github/apply-record-status-ui.py
 
