@@ -1,0 +1,38 @@
+name: Apply Program main texture normalization
+on:
+  push:
+    branches: [feature/hardware-zero-copy]
+    paths:
+      - '.github/scripts/patch-program-main-texture-normalization.py'
+      - '.github/workflows/apply-program-main-texture-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
+      - name: Validate helper
+        run: python -m py_compile .github/scripts/patch-program-main-texture-normalization.py
+      - name: Apply fix
+        run: python .github/scripts/patch-program-main-texture-normalization.py
+      - name: Format
+        run: clang-format -i src/sr-gpu-encoder.cpp
+      - name: Validate contract
+        run: |
+          grep -q 'normalize_program_texture' src/sr-gpu-encoder.cpp
+          grep -q 'GPU-only shader blit' src/sr-gpu-encoder.cpp
+          grep -q 'PROGRAM main texture could not be normalized' src/sr-gpu-encoder.cpp
+      - name: Commit product fix and remove helpers
+        run: |
+          rm .github/scripts/patch-program-main-texture-normalization.py .github/workflows/apply-program-main-texture-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: normalize Program main texture before NV12 encode'
+          git push origin HEAD:feature/hardware-zero-copy
