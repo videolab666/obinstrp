@@ -18,6 +18,7 @@ on:
       - 'src/sr-event-output.c'
       - 'src/sr-replay-playlist.c'
       - 'src/sr-event-dock.cpp'
+      - 'cmake/linux/defaults.cmake'
 
 permissions:
   contents: read
