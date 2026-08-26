@@ -53,6 +53,7 @@ struct sr_capture {
 	bool parent_showing_held;
 	bool writer_failed;
 	bool master_audio_acquired;
+	uint64_t recording_start_ns;
 
 	/* Format the current encoder was opened with. The GPU encoder is created
 	 * from the OBS render callback after filter_video has observed the source
@@ -187,11 +188,16 @@ static void publish_status(struct sr_capture *c, uint64_t now, bool force)
 	if (!c || (!force && c->last_status_publish && now - c->last_status_publish < 500000000ULL))
 		return;
 
+	const uint64_t video_now = obs_get_video_frame_time();
 	struct sr_capture_recording_summary status = {
 		.camera_count = 1,
 		.requested_count = c->disk_recording ? 1 : 0,
 		.active_count = c->writer ? 1 : 0,
 		.failed_count = (c->writer_failed || c->encoder_failed) ? 1 : 0,
+		.recording_duration_ns = c->disk_recording && c->recording_start_ns &&
+							 video_now >= c->recording_start_ns
+						 ? video_now - c->recording_start_ns
+						 : 0,
 	};
 	struct sr_capture_performance_entry performance = {
 		.path = c->encoder_failed ? SR_CAPTURE_PERF_ERROR
@@ -343,6 +349,7 @@ static void sr_capture_update(void *data, obs_data_t *settings)
 		if (!disk_recording)
 			c->restart_writer = true;
 		c->disk_recording = disk_recording;
+		c->recording_start_ns = disk_recording ? obs_get_video_frame_time() : 0;
 		c->writer_failed = false;
 		if (disk_recording)
 			set_parent_showing_hold(c, true);
@@ -363,6 +370,12 @@ static void *sr_capture_create(obs_data_t *settings, obs_source_t *source)
 	c->backend = SR_ENC_AUTO;
 	c->qp = 23;
 	c->gop_ms = SR_GOP_500MS;
+
+	/* REC is a runtime operator action, not a scene-collection preference.
+	 * OBS persists filter settings, so a previous shutdown can leave this
+	 * flag true in the collection. Clear it before the first update so merely
+	 * opening OBS can never start replay recording. */
+	obs_data_set_bool(settings, S_DISK_RECORDING, false);
 	sr_capture_update(c, settings);
 	obs_add_main_render_callback(sr_capture_gpu_render, c);
 	return c;
@@ -842,6 +855,8 @@ static void capture_control_filter(obs_source_t *parent, obs_source_t *child, vo
 		ctx->summary->reserve_blocked_count += status.reserve_blocked_count;
 		ctx->summary->packets_written += status.packets_written;
 		ctx->summary->bytes_written += status.bytes_written;
+		if (status.recording_duration_ns > ctx->summary->recording_duration_ns)
+			ctx->summary->recording_duration_ns = status.recording_duration_ns;
 	}
 
 	if (ctx->performance) {

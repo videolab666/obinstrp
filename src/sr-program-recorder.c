@@ -45,6 +45,7 @@ struct sr_program_recorder {
 	uint32_t fps_num;
 	uint32_t fps_den;
 
+	uint64_t recording_start_ns;
 	uint64_t encode_calls;
 	uint64_t encode_time_ns_total;
 	uint64_t encode_time_ns_last;
@@ -275,12 +276,17 @@ bool sr_program_recorder_set_recording(bool enabled)
 		return false;
 
 	pthread_mutex_lock(&g_program.mutex);
+	const bool was_requested = g_program.recording_requested;
 	g_program.recording_requested = enabled;
 	if (enabled) {
+		if (!was_requested)
+			g_program.recording_start_ns = obs_get_video_frame_time();
 		g_program.encoder_failed = false;
 		g_program.writer_failed = false;
-	} else if (!g_program.callback_registered) {
-		release_resources_locked(&g_program);
+	} else {
+		g_program.recording_start_ns = 0;
+		if (!g_program.callback_registered)
+			release_resources_locked(&g_program);
 	}
 	pthread_mutex_unlock(&g_program.mutex);
 	return true;
@@ -309,6 +315,14 @@ void sr_program_recorder_add_recording_summary(struct sr_capture_recording_summa
 		summary->active_count++;
 	if (g_program.encoder_failed || g_program.writer_failed)
 		summary->failed_count++;
+	if (g_program.recording_requested && g_program.recording_start_ns) {
+		const uint64_t now = obs_get_video_frame_time();
+		if (now >= g_program.recording_start_ns) {
+			const uint64_t duration = now - g_program.recording_start_ns;
+			if (duration > summary->recording_duration_ns)
+				summary->recording_duration_ns = duration;
+		}
+	}
 	if (g_program.writer) {
 		struct sr_segment_writer_stats stats = {0};
 		sr_segment_writer_get_stats(g_program.writer, &stats);

@@ -65,6 +65,7 @@ struct sr_capture_recording_summary {
 	size_t reserve_blocked_count;
 	uint64_t packets_written;
 	uint64_t bytes_written;
+	uint64_t recording_duration_ns;
 };
 
 enum sr_capture_performance_path {

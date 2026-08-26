@@ -128,6 +128,28 @@ QString replayClockText(uint64_t ns)
 		.arg(millis, 3, 10, QChar('0'));
 }
 
+QString recordingDurationText(uint64_t ns)
+{
+	const uint64_t totalSeconds = ns / NS_PER_SECOND;
+	const uint64_t hours = totalSeconds / 3600ULL;
+	const uint64_t minutes = (totalSeconds / 60ULL) % 60ULL;
+	const uint64_t seconds = totalSeconds % 60ULL;
+	return QStringLiteral("%1:%2:%3")
+		.arg(hours, 2, 10, QChar('0'))
+		.arg(minutes, 2, 10, QChar('0'))
+		.arg(seconds, 2, 10, QChar('0'));
+}
+
+QString recordingFpsText()
+{
+	struct obs_video_info video = {};
+	if (!obs_get_video_info(&video) || !video.fps_num || !video.fps_den)
+		return QStringLiteral("—");
+	if (video.fps_num % video.fps_den == 0)
+		return QString::number(video.fps_num / video.fps_den);
+	return QString::number((double)video.fps_num / (double)video.fps_den, 'f', 2);
+}
+
 QStringList captureCameraNames()
 {
 	QStringList names;
@@ -858,6 +880,10 @@ public:
 		settingsGear->setFixedWidth(28);
 		recordStatus = new QLabel(this);
 		recordStatus->setWordWrap(true);
+		setupSourceStatus = new QLabel(this);
+		setupSourceStatus->setAlignment(Qt::AlignCenter);
+		setupSourceStatus->setMinimumWidth(76);
+		setupSourceStatus->setStyleSheet(QStringLiteral("color: gray;"));
 		setupButton = new QToolButton(this);
 		setupButton->setText(T("EventDock.Setup.Button"));
 		setupButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
@@ -871,6 +897,7 @@ public:
 		recordBar->addWidget(recordToggle);
 		recordBar->addWidget(repairABButton);
 		recordBar->addWidget(settingsGear);
+		recordBar->addWidget(setupSourceStatus);
 		recordBar->addWidget(setupButton);
 		recordBar->addWidget(recordStatus, 1);
 		root->addLayout(recordBar);
@@ -884,12 +911,12 @@ public:
 		performanceSummary->setStyleSheet(QStringLiteral("color: gray;"));
 		performanceLayout->addWidget(performanceSummary);
 		performanceTable = new QTableWidget(performancePanel);
-		performanceTable->setColumnCount(7);
+		performanceTable->setColumnCount(8);
 		performanceTable->setHorizontalHeaderLabels(
 			{T("EventDock.Performance.Camera"), T("EventDock.Performance.Path"),
 			 T("EventDock.Performance.Video"), T("EventDock.Performance.Gop"),
-			 T("EventDock.Performance.Queue"), T("EventDock.Performance.Drops"),
-			 T("EventDock.Performance.Disk")});
+			 T("EventDock.Performance.Queue"), T("EventDock.Performance.Packets"),
+			 T("EventDock.Performance.Drops"), T("EventDock.Performance.Disk")});
 		performanceTable->setSelectionMode(QAbstractItemView::NoSelection);
 		performanceTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		performanceTable->setFocusPolicy(Qt::NoFocus);
@@ -1727,31 +1754,26 @@ private:
 
 	void refreshSetupStatus()
 	{
-		if (!setupButton)
+		if (!setupButton || !setupSourceStatus)
 			return;
+		setupButton->setText(T("EventDock.Setup.Button"));
+		setupButton->setStyleSheet(QString());
+
 		sr_replay_setup_snapshot snapshot = {};
 		if (!sr_replay_setup_get_snapshot(&snapshot)) {
-			setupButton->setText(T("EventDock.Setup.Button"));
+			setupSourceStatus->setText(T("EventDock.Setup.SourceCount").arg(QStringLiteral("—")));
+			setupSourceStatus->setStyleSheet(QStringLiteral("color: gray;"));
+			setupButton->setToolTip(T("EventDock.Setup.Unavailable"));
 			return;
 		}
 
-		const bool needsAB = eventTransitionConfigured();
 		const size_t selectedSources =
 			snapshot.enabled_capture_source_count + (snapshot.program_output_enabled ? 1 : 0);
-		const bool healthy = selectedSources > 0 && (!needsAB || snapshot.event_transition_ready);
-		if (!selectedSources) {
-			setupButton->setText(QStringLiteral("⚠ ") + T("EventDock.Setup.Button"));
-		} else {
-			const QString mode = snapshot.event_transition_ready ? QStringLiteral("A/B")
-									     : QStringLiteral("CUT");
-			setupButton->setText(QStringLiteral("%1 %2 src · %3")
-						     .arg(healthy ? QStringLiteral("✓") : QStringLiteral("⚠"))
-						     .arg(selectedSources)
-						     .arg(mode));
-		}
-		setupButton->setStyleSheet(
-			healthy ? QStringLiteral("QToolButton { color: #30c85a; font-weight: bold; }")
-				: QStringLiteral("QToolButton { color: #d8a000; font-weight: bold; }"));
+		setupSourceStatus->setText(T("EventDock.Setup.SourceCount").arg(selectedSources));
+		setupSourceStatus->setStyleSheet(selectedSources
+							 ? QStringLiteral("color: #30c85a; font-weight: bold;")
+							 : QStringLiteral("color: #d8a000; font-weight: bold;"));
+
 		const QString sceneA = snapshot.bus_a_ready ? QString::fromUtf8(snapshot.scene_a)
 							    : T("EventDock.Setup.Missing");
 		const QString sceneB = snapshot.bus_b_ready ? QString::fromUtf8(snapshot.scene_b)
@@ -2161,7 +2183,8 @@ private:
 				T("EventDock.RecordActive")
 					.arg(summary.active_count)
 					.arg(summary.camera_count)
-					.arg(summary.packets_written)
+					.arg(recordingDurationText(summary.recording_duration_ns))
+					.arg(recordingFpsText())
 					.arg((double)summary.bytes_written / (1024.0 * 1024.0), 0, 'f', 1));
 			recordStatus->setStyleSheet(QStringLiteral("color: #30c85a; font-weight: bold;"));
 		} else if (summary.requested_count) {
@@ -2193,6 +2216,7 @@ private:
 		size_t waitingCount = 0;
 		size_t errorCount = 0;
 		size_t fallbackCount = 0;
+		uint64_t writtenPackets = 0;
 		uint64_t droppedPackets = 0;
 
 		for (size_t i = 0; i < snapshot.count; i++) {
@@ -2214,6 +2238,7 @@ private:
 			}
 			if (entry.gpu_fallback_reason != SR_CAPTURE_GPU_FALLBACK_NONE)
 				fallbackCount++;
+			writtenPackets += entry.packets_written;
 			droppedPackets += entry.packets_dropped;
 
 			const int row = (int)i;
@@ -2222,6 +2247,7 @@ private:
 			const QString gop = captureGopMode(entry);
 			const QString queue =
 				QStringLiteral("%1 / peak %2").arg(entry.queue_depth).arg(entry.queue_high_watermark);
+			const QString packets = QString::number(entry.packets_written);
 			const QString drops = QString::number(entry.packets_dropped);
 			const QString disk = captureDiskState(entry);
 			const QString fallback = captureFallbackText(entry.gpu_fallback_reason);
@@ -2239,7 +2265,7 @@ private:
 				tooltip = fallback + QStringLiteral("\n") + tooltip;
 
 			const QString values[] = {
-				QString::fromUtf8(entry.camera_name), path, video, gop, queue, drops, disk};
+				QString::fromUtf8(entry.camera_name), path, video, gop, queue, packets, drops, disk};
 			for (int column = 0; column < performanceTable->columnCount(); column++) {
 				auto *item = new QTableWidgetItem(values[column]);
 				item->setToolTip(tooltip);
@@ -2255,6 +2281,7 @@ private:
 				.arg(waitingCount)
 				.arg(errorCount)
 				.arg(fallbackCount)
+				.arg(writtenPackets)
 				.arg(droppedPackets) +
 			QStringLiteral("\n") + replayPerformanceSummary(SR_REPLAY_BUS_A, QStringLiteral("A")) +
 			QStringLiteral("    ") + replayPerformanceSummary(SR_REPLAY_BUS_B, QStringLiteral("B")));
@@ -3809,6 +3836,7 @@ private:
 	QToolButton *performanceToggle = nullptr;
 	QToolButton *recordToggle = nullptr;
 	QToolButton *setupButton = nullptr;
+	QLabel *setupSourceStatus = nullptr;
 	QLabel *recordStatus = nullptr;
 	QLabel *performanceSummary = nullptr;
 	QLabel *programStatus = nullptr;

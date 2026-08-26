@@ -9,9 +9,11 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include <obs-module.h>
+#include <obs-frontend-api.h>
 #include <plugin-support.h>
 
 #include "sr-camera-list.h"
+#include "sr-capture.h"
 #include "sr-config.h"
 #include "sr-dock.h"
 #include "sr-event-controller.h"
@@ -362,6 +364,19 @@ static void unregister_event_hotkeys(void)
 	hk_playlist_stop = OBS_INVALID_HOTKEY_ID;
 }
 
+static void frontend_event(enum obs_frontend_event event, void *data)
+{
+	UNUSED_PARAMETER(data);
+	if (event != OBS_FRONTEND_EVENT_FINISHED_LOADING && event != OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED)
+		return;
+
+	size_t source_count = 0;
+	sr_capture_set_all_disk_recording(false, &source_count);
+	obs_log(LOG_INFO,
+		"Pitel Instant Replay: replay source selection restored, REC state reset to STOPPED for %zu source(s)",
+		source_count);
+}
+
 bool obs_module_load(void)
 {
 	sr_config_init();
@@ -414,12 +429,14 @@ bool obs_module_load(void)
 
 void obs_module_post_load(void)
 {
+	obs_frontend_add_event_callback(frontend_event, NULL);
 	sr_scene_tracker_start();
 	sr_dock_register(event_controller);
 }
 
 void obs_module_unload(void)
 {
+	obs_frontend_remove_event_callback(frontend_event, NULL);
 	sr_scene_tracker_stop();
 	unregister_event_hotkeys();
 	sr_storage_manager_stop();
