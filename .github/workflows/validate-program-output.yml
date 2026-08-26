@@ -42,7 +42,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A src/sr-event-dock.cpp src/sr-dock.cpp data/locale/en-US.ini data/locale/es-ES.ini tools/apply_setup_storage_ui.py .github/workflows/apply-setup-storage-ui.yml .github/workflows/validate-program-output.yml
+          git add -u
           git diff --cached --check
           git commit -m 'feat: streamline replay source setup and storage management'
           for attempt in 1 2 3 4 5; do
