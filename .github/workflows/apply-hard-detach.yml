@@ -20,7 +20,10 @@ jobs:
           fetch-depth: 0
 
       - name: Apply standalone namespace patch
-        run: python3 .github/scripts/hard-detach-pitel.py
+        run: |
+          # sr-credit.h keeps its inherited GPL copyright header; only the runtime/public credit is rebranded.
+          sed -i "s/'src\/sr-credit.h', //" .github/scripts/hard-detach-pitel.py
+          python3 .github/scripts/hard-detach-pitel.py
 
       - name: Format touched C/C++ sources
         run: |
