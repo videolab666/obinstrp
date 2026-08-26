@@ -495,15 +495,18 @@ static bool normalize_program_texture(sr_gpu_encoder *enc, gs_texture_t *texture
 	/* obs_get_main_texture() is the final composited Program image, but its
 	 * native D3D11 format/bind flags are an OBS implementation detail and are
 	 * not guaranteed to be accepted directly by ID3D11VideoProcessor. Normalize
-	 * it into the same known BGRA render target used by the proven ISO-camera
-	 * GPU path. This is a GPU-only shader blit; there is no GPU->CPU readback. */
+	 * it into the same known BGRA_UNORM render target used by the proven
+	 * ISO-camera GPU path. This is a GPU-only shader blit; there is no GPU->CPU
+	 * readback.
+	 *
+	 * Important: preserve the SDR Program texture's encoded RGB code values.
+	 * The intermediate target is GS_BGRA_UNORM so that D3D11 VideoProcessor can
+	 * consume a typed BGRA resource. In OBS's D3D11 backend that format has no
+	 * separate sRGB RTV. Sampling with gs_effect_set_texture_srgb() would decode
+	 * sRGB to linear, then store those linear values directly in UNORM, producing
+	 * the characteristic dark replay image. Therefore this normalization pass is
+	 * deliberately a raw UNORM -> UNORM GPU copy. */
 	gs_texrender_reset(enc->render);
-	/* obs_get_main_texture() is sampled as sRGB below. Match OBS's own main
-	 * texture presentation path by enabling sRGB framebuffer encoding while
-	 * writing the normalized BGRA target, otherwise linearized values are
-	 * stored as UNORM and the recorded PROGRAM image becomes too dark. */
-	const bool previous_srgb = gs_framebuffer_srgb_enabled();
-	gs_enable_framebuffer_srgb(true);
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
 
@@ -517,7 +520,7 @@ static bool normalize_program_texture(sr_gpu_encoder *enc, gs_texture_t *texture
 		gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 		gs_eparam_t *image = effect ? gs_effect_get_param_by_name(effect, "image") : nullptr;
 		if (effect && image) {
-			gs_effect_set_texture_srgb(image, texture);
+			gs_effect_set_texture(image, texture);
 			while (gs_effect_loop(effect, "Draw"))
 				gs_draw_sprite(texture, 0, enc->width, enc->height);
 			rendered = true;
@@ -525,7 +528,6 @@ static bool normalize_program_texture(sr_gpu_encoder *enc, gs_texture_t *texture
 		gs_texrender_end(enc->render);
 	}
 	gs_blend_state_pop();
-	gs_enable_framebuffer_srgb(previous_srgb);
 
 	if (!rendered)
 		return false;
