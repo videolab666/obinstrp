@@ -24,7 +24,11 @@ jobs:
           fetch-depth: 0
 
       - name: Apply product patch
-        run: python3 .github/apply-edit-timeline.py
+        run: |
+          sed -i 's/bus A\/B seleccionado/bus A\/B/' .github/apply-edit-timeline.py
+          sed -i 's/sobre la línea de tiempo/sobre la pista de la línea de tiempo/' .github/apply-edit-timeline.py
+          sed -i 's/crear un nuevo Event/crear un nuevo evento/' .github/apply-edit-timeline.py
+          python3 .github/apply-edit-timeline.py
 
       - name: Validate product patch
         run: |
