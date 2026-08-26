@@ -1,0 +1,71 @@
+name: Apply Program Output replay
+on:
+  push:
+    branches: [feature/hardware-zero-copy]
+    paths:
+      - '.github/scripts/patch-program-core.py'
+      - '.github/scripts/patch-program-integration.py'
+      - '.github/scripts/patch-program-playback.py'
+      - '.github/scripts/patch-program-ui.py'
+      - '.github/workflows/apply-program-output-replay.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
+      - name: Validate patch helpers
+        run: |
+          python -m py_compile .github/scripts/patch-program-core.py
+          python -m py_compile .github/scripts/patch-program-integration.py
+          python -m py_compile .github/scripts/patch-program-playback.py
+          python -m py_compile .github/scripts/patch-program-ui.py
+      - name: Apply Program replay patch
+        run: |
+          python .github/scripts/patch-program-core.py
+          python .github/scripts/patch-program-integration.py
+          python .github/scripts/patch-program-playback.py
+          python .github/scripts/patch-program-ui.py
+      - name: Format sources
+        run: |
+          clang-format -i \
+            src/sr-program-recorder.h src/sr-program-recorder.c \
+            src/sr-config.h src/sr-config.c \
+            src/sr-camera-identity.h src/sr-camera-identity.c \
+            src/sr-codec.h src/sr-gpu-encoder.cpp \
+            src/capture-filter.c src/sr-camera-list.c \
+            src/sr-replay-setup.h src/sr-replay-setup.c \
+            src/sr-replay-playlist.c src/sr-event-output.c \
+            src/plugin-main.c src/sr-event-dock.cpp
+      - name: Validate Program replay contract
+        run: |
+          grep -q 'src/sr-program-recorder.c' CMakeLists.txt
+          grep -q 'SR_CONFIG_SCHEMA_VERSION 7' src/sr-config.h
+          grep -q 'SR_PROGRAM_CAMERA_KEY "program-output-v1"' src/sr-camera-identity.h
+          grep -q 'obs_add_main_rendered_callback' src/sr-program-recorder.c
+          grep -q 'obs_get_main_texture' src/sr-program-recorder.c
+          grep -q 'sr_gpu_encoder_texture_encode' src/sr-gpu-encoder.cpp
+          grep -q 'sr_program_recorder_add_recording_summary' src/capture-filter.c
+          grep -q 'program_output_enabled' src/sr-replay-setup.h
+          grep -q 'sr_camera_is_program_name(cameras.names\[i\])' src/sr-replay-playlist.c
+          grep -q 'Record PROGRAM output as replay angle' data/locale/en-US.ini
+          grep -q 'PROGRAM.*Play Each Angle' README.md
+      - name: Commit product changes and remove helpers
+        run: |
+          rm \
+            .github/scripts/patch-program-core.py \
+            .github/scripts/patch-program-integration.py \
+            .github/scripts/patch-program-playback.py \
+            .github/scripts/patch-program-ui.py \
+            .github/workflows/apply-program-output-replay.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: record Program output as replay angle'
+          git push origin HEAD:feature/hardware-zero-copy
