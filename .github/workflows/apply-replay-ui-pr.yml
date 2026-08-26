@@ -1,0 +1,50 @@
+name: Apply replay UI product patch
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feature/hardware-zero-copy'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
+
+      - name: Apply replay setup/storage product patch
+        run: python3 tools/apply_setup_storage_ui.py
+
+      - name: Install formatter
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+
+      - name: Format changed C++ files
+        run: clang-format -i src/sr-event-dock.cpp src/sr-dock.cpp
+
+      - name: Validate patch
+        run: git diff --check
+
+      - name: Commit product changes and remove one-shot helpers
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f tools/apply_setup_storage_ui.py .github/workflows/apply-setup-storage-ui.yml
+          git add -A src/sr-event-dock.cpp src/sr-dock.cpp data/locale/en-US.ini data/locale/es-ES.ini tools/apply_setup_storage_ui.py .github/workflows/apply-setup-storage-ui.yml
+          git diff --cached --check
+          git commit -m 'feat: streamline replay source setup and storage management'
+          git push origin HEAD:feature/hardware-zero-copy
+
+      - name: Start full replay validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run validate-program-output.yml --ref feature/hardware-zero-copy
