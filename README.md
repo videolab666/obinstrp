@@ -50,12 +50,13 @@ while cutting memory use by roughly **50–100×**.
 For the stable RAM-replay version, download and run the installer from the
 [latest release](../../releases/latest).
 
-The vMix-style disk/Event operator is currently developed on
-`feature/disk-replay-core`. Open the latest successful workflow run for
-[pull request #1](../../pull/1/checks), download the Windows x64 artifact,
-unpack its inner `pitel-instant-replay-*-windows-x64.zip`, and copy the contained
-`obs-plugins` and `data` directories into the OBS installation directory.
-Close OBS before replacing plugin files, then restart it.
+The vMix-style disk/Event operator and GPU-resident Program recorder are
+currently developed on `feature/hardware-zero-copy`. Open the latest successful
+workflow run for [pull request #2](../../pull/2/checks), download the Windows
+x64 artifact, unpack its inner `pitel-instant-replay-*-windows-x64.zip`, and
+copy the contained `obs-plugins` and `data` directories into the OBS
+installation directory. Close OBS before replacing plugin files, then restart
+it.
 
 Open **Docks → Pitel Instant Replay — Instant Replay**. The unified dock starts on
 the **Replay operator** tab; the legacy saved-MP4 bin remains available on the
@@ -92,13 +93,17 @@ second tab. Development artifacts are unsigned and require OBS Studio 31+.
 8. Open the **Storage** tab to see every replay session and its size, inspect the
    last automatic-cleanup result, or permanently delete a closed session. The
    active session is protected from manual deletion.
-9. Replay Setup can also record **PROGRAM**: the final composited OBS Program/PGM output becomes a manual replay angle alongside ISO cameras. On Windows/D3D11 it stays GPU-resident through NVENC/AMF; PROGRAM is intentionally skipped by automatic **Play Each Angle** tours.
+9. Replay Setup can also record **PROGRAM**: the final composited OBS Program/PGM
+   output becomes a manual replay angle alongside ISO cameras. On Windows/D3D11
+   it stays GPU-resident through NVENC/AMF. PROGRAM is intentionally skipped by
+   automatic **Play Each Angle** tours, but remains available for manual Cue,
+   thumbnails and export.
 
 Continuous recording keeps its camera sources showing internally even when
 they are not in the current OBS scene. **STOP RECORD** releases those holds and
-stops every Pitel capture writer. The default disk-space reserve is 20 GB; set
-the recording folder, reserve, segment duration and optional native OBS
-Stingers from the dock settings.
+stops all selected ISO and PROGRAM replay writers. The default disk-space
+reserve is 20 GB; set the recording folder, reserve, segment duration and
+optional native OBS Stingers from the dock settings.
 
 ### Legacy RAM replay
 
