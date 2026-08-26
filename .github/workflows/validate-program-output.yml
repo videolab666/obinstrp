@@ -22,6 +22,8 @@ on:
 permissions:
   contents: read
 
+# Keep this validation independent of the PR base branch so feature-branch
+# checkpoints can be built before the PR targets main.
 jobs:
   check-format:
     name: Check Formatting 🔍
