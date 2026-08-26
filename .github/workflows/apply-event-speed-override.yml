@@ -42,7 +42,7 @@ jobs:
           PY
       - name: Format sources
         run: |
-          clang-format-19 -i src/sr-event-db.h src/sr-event-db.c src/sr-event-controller.c src/sr-replay-channel.c src/sr-event-dock.cpp
+          clang-format -i src/sr-event-db.h src/sr-event-db.c src/sr-event-controller.c src/sr-replay-channel.c src/sr-event-dock.cpp
       - name: Validate override contract
         run: |
           grep -q 'SR_EVENT_DB_SCHEMA_VERSION 3' src/sr-event-db.h
