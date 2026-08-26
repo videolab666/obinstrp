@@ -1,0 +1,24 @@
+name: Validate Program Output replay
+run-name: Program Output replay full validation
+on:
+  push:
+    branches: [feature/hardware-zero-copy]
+    paths:
+      - '.github/workflows/validate-program-output.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check-format:
+    name: Check Formatting 🔍
+    uses: ./.github/workflows/check-format.yaml
+    permissions:
+      contents: read
+
+  build-project:
+    name: Build Project 🧱
+    uses: ./.github/workflows/build-project.yaml
+    secrets: inherit
+    permissions:
+      contents: read
