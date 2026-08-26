@@ -353,6 +353,7 @@ constexpr int EVENT_THUMB_CELL_WIDTH = 184;
 constexpr int EVENT_THUMB_CELL_HEIGHT = 142;
 constexpr size_t EVENT_THUMB_BATCH = 24;
 constexpr size_t ANGLE_PREVIEW_CACHE_EVENTS = 12;
+constexpr int TIMELINE_SCALE = 1000000;
 
 class SrEventThumbnailDelegate : public QStyledItemDelegate {
 public:
@@ -537,6 +538,12 @@ void runExportJob(ExportJob *job)
 
 class SrRangeSlider : public QSlider {
 public:
+	enum class Mode {
+		Transport,
+		Sequence,
+		Edit,
+	};
+
 	using RangeHandler = std::function<void(int, int)>;
 	using ClickHandler = std::function<void(int)>;
 
@@ -544,140 +551,192 @@ public:
 
 	void setRangeHandler(RangeHandler handler) { rangeHandler = std::move(handler); }
 	void setClickHandler(ClickHandler handler) { clickHandler = std::move(handler); }
-	void setSequenceProgress(bool active)
+
+	void setMode(Mode nextMode)
 	{
-		sequenceProgress = active;
-		if (active)
-			clearSelection();
+		if (mode == nextMode)
+			return;
+		mode = nextMode;
+		dragHandle = EditHandle::None;
+		if (mode != Mode::Edit)
+			hasEditSelection = false;
+		update();
 	}
+
+	Mode currentMode() const { return mode; }
+	bool editingRange() const { return mode == Mode::Edit && dragHandle != EditHandle::None; }
+
+	void setEditSelection(int rangeIn, int rangeOut)
+	{
+		rangeIn = qBound(minimum(), rangeIn, maximum());
+		rangeOut = qBound(minimum(), rangeOut, maximum());
+		if (rangeOut <= rangeIn) {
+			clearSelection();
+			return;
+		}
+		hasEditSelection = true;
+		editIn = rangeIn;
+		editOut = rangeOut;
+		update();
+	}
+
+	void clearSelection()
+	{
+		dragHandle = EditHandle::None;
+		hasEditSelection = false;
+		update();
+	}
+
 	void setProgressTint(const QColor &color)
 	{
 		progressTint = color;
 		update();
 	}
+
 	void clearProgressTint()
 	{
 		progressTint = QColor();
 		update();
 	}
 
-	void clearSelection()
-	{
-		selecting = false;
-		hasSelection = false;
-		update();
-	}
-
 protected:
 	void mousePressEvent(QMouseEvent *event) override
 	{
-		if (sequenceProgress) {
-			event->accept();
-			return;
-		}
 		if (!isEnabled() || event->button() != Qt::LeftButton) {
 			QSlider::mousePressEvent(event);
 			return;
 		}
 
-		QStyleOptionSlider option;
-		initStyleOption(&option);
-		const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
-		const QPoint position = event->position().toPoint();
-		if (handle.contains(position)) {
-			selecting = false;
+		if (mode == Mode::Sequence) {
+			event->accept();
+			return;
+		}
+
+		if (mode != Mode::Edit) {
 			QSlider::mousePressEvent(event);
 			return;
 		}
 
-		selectionStart = valueAtX(position.x());
-		selectionEnd = selectionStart;
-		selectionMoved = false;
-		selecting = true;
+		const QPoint position = event->position().toPoint();
+		if (hasEditSelection) {
+			const int inDistance = qAbs(position.x() - pixelForValue(editIn));
+			const int outDistance = qAbs(position.x() - pixelForValue(editOut));
+			constexpr int hitRadius = 12;
+			if (qMin(inDistance, outDistance) <= hitRadius) {
+				dragHandle = inDistance <= outDistance ? EditHandle::In : EditHandle::Out;
+				event->accept();
+				return;
+			}
+		}
+
+		const int clicked = valueAtX(position.x());
+		setValue(clicked);
+		if (clickHandler)
+			clickHandler(clicked);
 		event->accept();
-		update();
 	}
 
 	void mouseMoveEvent(QMouseEvent *event) override
 	{
-		if (!selecting) {
+		if (mode != Mode::Edit || dragHandle == EditHandle::None) {
 			QSlider::mouseMoveEvent(event);
 			return;
 		}
 
-		selectionEnd = valueAtX(event->position().toPoint().x());
-		selectionMoved = selectionMoved || qAbs(selectionEnd - selectionStart) >= 5;
+		const int next = valueAtX(event->position().toPoint().x());
+		if (dragHandle == EditHandle::In)
+			editIn = qBound(minimum(), next, qMax(minimum(), editOut - 1));
+		else
+			editOut = qBound(qMin(maximum(), editIn + 1), next, maximum());
 		event->accept();
 		update();
 	}
 
 	void mouseReleaseEvent(QMouseEvent *event) override
 	{
-		if (!selecting || event->button() != Qt::LeftButton) {
+		if (mode != Mode::Edit || dragHandle == EditHandle::None || event->button() != Qt::LeftButton) {
 			QSlider::mouseReleaseEvent(event);
 			return;
 		}
 
-		selectionEnd = valueAtX(event->position().toPoint().x());
-		const int rangeIn = qMin(selectionStart, selectionEnd);
-		const int rangeOut = qMax(selectionStart, selectionEnd);
-		selecting = false;
-		if (selectionMoved && rangeOut > rangeIn) {
-			hasSelection = true;
-			selectionStart = rangeIn;
-			selectionEnd = rangeOut;
-			if (rangeHandler)
-				rangeHandler(rangeIn, rangeOut);
-		} else {
-			hasSelection = false;
-			setValue(selectionEnd);
-			if (clickHandler)
-				clickHandler(selectionEnd);
-		}
+		const EditHandle released = dragHandle;
+		dragHandle = EditHandle::None;
+		if (released != EditHandle::None && rangeHandler)
+			rangeHandler(editIn, editOut);
 		event->accept();
 		update();
 	}
 
 	void paintEvent(QPaintEvent *event) override
 	{
-		QSlider::paintEvent(event);
+		if (mode != Mode::Edit) {
+			QSlider::paintEvent(event);
+
+			if (!progressTint.isValid())
+				return;
+			QStyleOptionSlider option;
+			initStyleOption(&option);
+			const QRect groove =
+				style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+			const int left = pixelForValue(minimum());
+			const int right = pixelForValue(value());
+			if (right <= left)
+				return;
+			QColor tint = progressTint;
+			tint.setAlpha(210);
+			QPainter painter(this);
+			painter.setPen(Qt::NoPen);
+			painter.setBrush(tint);
+			painter.drawRoundedRect(QRect(left, groove.center().y() - 4, right - left, 8), 3, 3);
+			return;
+		}
 
 		QStyleOptionSlider option;
 		initStyleOption(&option);
+		option.subControls = QStyle::SC_SliderGroove | QStyle::SC_SliderTickmarks;
+		QPainter painter(this);
+		style()->drawComplexControl(QStyle::CC_Slider, &option, &painter, this);
+
 		const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
-		if (progressTint.isValid()) {
-			const int left = pixelForValue(minimum());
-			const int right = pixelForValue(value());
-			if (right > left) {
-				QColor tint = progressTint;
-				tint.setAlpha(210);
-				QPainter progressPainter(this);
-				progressPainter.setPen(Qt::NoPen);
-				progressPainter.setBrush(tint);
-				progressPainter.drawRoundedRect(QRect(left, groove.center().y() - 4, right - left, 8),
-								3, 3);
-			}
+		if (!hasEditSelection)
+			return;
+
+		const int left = pixelForValue(editIn);
+		const int right = pixelForValue(editOut);
+		QColor highlight = palette().color(QPalette::Highlight);
+		QColor fill = highlight;
+		fill.setAlpha(105);
+		painter.setPen(Qt::NoPen);
+		painter.setBrush(fill);
+		painter.drawRoundedRect(QRect(left, groove.center().y() - 5, qMax(1, right - left), 10), 3, 3);
+
+		const int playhead = pixelForValue(value());
+		if (value() >= editIn && value() <= editOut) {
+			QColor playheadColor = palette().color(QPalette::Text);
+			playheadColor.setAlpha(190);
+			painter.setPen(QPen(playheadColor, 1));
+			painter.drawLine(playhead, groove.center().y() - 9, playhead, groove.center().y() + 9);
 		}
 
-		if (!selecting && !hasSelection)
-			return;
-
-		const int rangeIn = qMin(selectionStart, selectionEnd);
-		const int rangeOut = qMax(selectionStart, selectionEnd);
-		const int left = pixelForValue(rangeIn);
-		const int right = pixelForValue(rangeOut);
-		if (right <= left)
-			return;
-
-		QColor highlight = palette().color(QPalette::Highlight);
-		highlight.setAlpha(115);
-		QPainter painter(this);
-		painter.setPen(Qt::NoPen);
-		painter.setBrush(highlight);
-		painter.drawRoundedRect(QRect(left, groove.center().y() - 4, right - left, 8), 3, 3);
+		auto drawHandle = [&](int x, const QString &label) {
+			painter.setPen(QPen(highlight, 2));
+			painter.setBrush(highlight);
+			painter.drawRoundedRect(QRect(x - 5, groove.center().y() - 8, 10, 16), 3, 3);
+			QRect labelRect(x - 18, 0, 36, qMax(11, groove.top()));
+			painter.setPen(palette().color(QPalette::Text));
+			painter.drawText(labelRect, Qt::AlignHCenter | Qt::AlignBottom, label);
+		};
+		drawHandle(left, QStringLiteral("IN"));
+		drawHandle(right, QStringLiteral("OUT"));
 	}
 
 private:
+	enum class EditHandle {
+		None,
+		In,
+		Out,
+	};
+
 	int valueAtX(int x) const
 	{
 		QStyleOptionSlider option;
@@ -691,7 +750,7 @@ private:
 						       option.upsideDown);
 	}
 
-	int pixelForValue(int value) const
+	int pixelForValue(int sliderValue) const
 	{
 		QStyleOptionSlider option;
 		initStyleOption(&option);
@@ -699,17 +758,16 @@ private:
 		const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
 		const int span = qMax(1, groove.width() - handle.width());
 		return groove.x() + handle.width() / 2 +
-		       QStyle::sliderPositionFromValue(minimum(), maximum(), value, span, option.upsideDown);
+		       QStyle::sliderPositionFromValue(minimum(), maximum(), sliderValue, span, option.upsideDown);
 	}
 
 	RangeHandler rangeHandler;
 	ClickHandler clickHandler;
-	int selectionStart = 0;
-	int selectionEnd = 0;
-	bool selecting = false;
-	bool selectionMoved = false;
-	bool hasSelection = false;
-	bool sequenceProgress = false;
+	Mode mode = Mode::Transport;
+	EditHandle dragHandle = EditHandle::None;
+	int editIn = 0;
+	int editOut = 0;
+	bool hasEditSelection = false;
 	QColor progressTint;
 };
 
@@ -1130,15 +1188,20 @@ public:
 		auto *timelineBar = new QHBoxLayout();
 		timelineBar->setSpacing(3);
 		timelineBar->addWidget(new QLabel(T("EventDock.Timeline"), this));
+		timelineModeLabel = new QLabel(T("EventDock.Timeline.EditMode"), this);
+		timelineModeLabel->setAlignment(Qt::AlignCenter);
+		timelineModeLabel->setMinimumWidth(58);
+		timelineBar->addWidget(timelineModeLabel);
 		timelineSlider = new SrRangeSlider(this);
-		timelineSlider->setRange(0, 10000);
+		timelineSlider->setRange(0, TIMELINE_SCALE);
 		timelineSlider->setSingleStep(1);
-		timelineSlider->setPageStep(100);
+		timelineSlider->setPageStep(TIMELINE_SCALE / 100);
+		timelineSlider->setMinimumHeight(30);
 		timelineSlider->setEnabled(false);
-		timelineSlider->setToolTip(T("EventDock.Timeline.Tooltip"));
+		timelineSlider->setToolTip(T("EventDock.Timeline.EditTooltip"));
 		timelineBar->addWidget(timelineSlider, 1);
 		timelineTime = new QLabel(QStringLiteral("--:--.--- / --:--.---"), this);
-		timelineTime->setMinimumWidth(130);
+		timelineTime->setMinimumWidth(275);
 		timelineBar->addWidget(timelineTime);
 		root->addLayout(timelineBar);
 
@@ -1281,7 +1344,20 @@ public:
 		connect(clearPreferred, &QPushButton::clicked, this, [this]() { setPreferredCamera(true); });
 		connect(cueA, &QPushButton::clicked, this, [this]() { cueSelected(SR_REPLAY_BUS_A); });
 		connect(cueB, &QPushButton::clicked, this, [this]() { cueSelected(SR_REPLAY_BUS_B); });
-		connect(busCombo, &QComboBox::currentIndexChanged, this, [this](int) { syncTransportControls(); });
+		connect(busCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+			syncTransportControls();
+			if (!replayPlayoutActive()) {
+				editPreviewEventId = 0;
+				previewSelectedEvent(true);
+			}
+		});
+		connect(cameraCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+			if (!replayPlayoutActive()) {
+				editPreviewEventId = 0;
+				previewSelectedEvent(true);
+				syncTimeline();
+			}
+		});
 		connect(playPause, &QPushButton::clicked, this, [this]() { togglePlayPause(); });
 		connect(stop, &QPushButton::clicked, this, [this]() { stopTransport(); });
 		connect(restart, &QPushButton::clicked, this, [this]() { restartTransport(); });
@@ -1304,7 +1380,7 @@ public:
 		});
 		connect(timelineSlider, &QSlider::sliderPressed, this, [this]() {
 			timelineDragging = true;
-			sr_replay_channel_pause(transportBus(), true);
+			sr_replay_channel_pause(timelineTransportBus(), true);
 		});
 		connect(timelineSlider, &QSlider::sliderMoved, this, [this](int value) { seekTimeline(value); });
 		connect(timelineSlider, &QSlider::sliderReleased, this, [this]() {
@@ -1313,11 +1389,11 @@ public:
 			syncTimeline();
 		});
 		timelineSlider->setClickHandler([this](int value) {
-			seekTimeline(value);
+			seekEditTimeline(value);
 			syncTimeline();
 		});
 		timelineSlider->setRangeHandler(
-			[this](int rangeIn, int rangeOut) { createRangeEvent(rangeIn, rangeOut); });
+			[this](int rangeIn, int rangeOut) { editSelectedEventRange(rangeIn, rangeOut); });
 		connect(jogSlider, &QSlider::sliderPressed, this, [this]() { jogLastValue = jogSlider->value(); });
 		connect(jogSlider, &QSlider::sliderMoved, this, [this](int value) { jogMoved(value); });
 		connect(jogSlider, &QSlider::sliderReleased, this, [this]() {
@@ -1363,10 +1439,25 @@ public:
 			if (!syncingEventViews)
 				syncGallerySelectionFromTable();
 			refreshAngleCoverage();
+			if (!replayPlayoutActive()) {
+				editPreviewEventId = 0;
+				QTimer::singleShot(0, this, [this]() {
+					previewSelectedEvent(false);
+					syncTimeline();
+				});
+			}
 		});
 		connect(thumbnailList, &QListWidget::itemSelectionChanged, this, [this]() {
 			if (!syncingEventViews)
 				syncTableSelectionFromGallery();
+			refreshAngleCoverage();
+			if (!replayPlayoutActive()) {
+				editPreviewEventId = 0;
+				QTimer::singleShot(0, this, [this]() {
+					previewSelectedEvent(false);
+					syncTimeline();
+				});
+			}
 		});
 		connect(thumbnailList, &QListWidget::itemDoubleClicked, this,
 			[this](QListWidgetItem *) { playSelectedEvent(); });
@@ -2863,6 +2954,249 @@ private:
 		return true;
 	}
 
+	bool replayPlayoutActive() const
+	{
+		enum sr_replay_bus programBus;
+		if (sr_replay_take_program_bus(&programBus))
+			return true;
+
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			const auto bus = static_cast<sr_replay_bus>(i);
+			sr_replay_playlist_state playlist = {};
+			if (sr_replay_playlist_get_state(bus, &playlist) && playlist.active)
+				return true;
+			sr_replay_channel_state state = {};
+			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.playing)
+				return true;
+		}
+		return false;
+	}
+
+	enum sr_replay_bus timelineTransportBus() const
+	{
+		enum sr_replay_bus programBus;
+		if (sr_replay_take_program_bus(&programBus))
+			return programBus;
+
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			const auto bus = static_cast<sr_replay_bus>(i);
+			sr_replay_playlist_state playlist = {};
+			if (sr_replay_playlist_get_state(bus, &playlist) && playlist.active)
+				return bus;
+		}
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			const auto bus = static_cast<sr_replay_bus>(i);
+			sr_replay_channel_state state = {};
+			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.playing)
+				return bus;
+		}
+		return transportBus();
+	}
+
+	void updateEditTimelineBounds()
+	{
+		sr_capture_recording_summary recording = {};
+		if (sr_capture_get_recording_summary(&recording) && recording.recording_start_ns) {
+			const uint64_t recordingStart = recording.recording_start_ns;
+			uint64_t recordingEnd = recordingStart;
+			if (recording.recording_duration_ns <= UINT64_MAX - recordingStart)
+				recordingEnd = recordingStart + recording.recording_duration_ns;
+			if (recording.requested_count) {
+				const uint64_t now = obs_get_video_frame_time();
+				if (now > recordingEnd)
+					recordingEnd = now;
+			}
+			if (!editTimelineHaveBounds || recordingStart < editTimelineStartNs)
+				editTimelineStartNs = recordingStart;
+			if (!editTimelineHaveBounds || recordingEnd > editTimelineEndNs)
+				editTimelineEndNs = recordingEnd;
+			editTimelineHaveBounds = editTimelineEndNs > editTimelineStartNs;
+		}
+
+		const uint64_t eventId = selectedEventId();
+		sr_event_record event = {};
+		if (controller && eventId && sr_event_controller_get_event(controller, eventId, &event)) {
+			if (!editTimelineHaveBounds) {
+				editTimelineStartNs = event.in_ns;
+				editTimelineEndNs = event.out_ns;
+				editTimelineHaveBounds = event.out_ns > event.in_ns;
+			} else {
+				if (event.in_ns < editTimelineStartNs)
+					editTimelineStartNs = event.in_ns;
+				if (event.out_ns > editTimelineEndNs)
+					editTimelineEndNs = event.out_ns;
+			}
+			sr_event_controller_free_event(&event);
+		}
+	}
+
+	int editTimelineValue(uint64_t timestampNs) const
+	{
+		if (!editTimelineHaveBounds || editTimelineEndNs <= editTimelineStartNs)
+			return 0;
+		if (timestampNs <= editTimelineStartNs)
+			return 0;
+		if (timestampNs >= editTimelineEndNs)
+			return TIMELINE_SCALE;
+		const uint64_t duration = editTimelineEndNs - editTimelineStartNs;
+		return (int)((long double)(timestampNs - editTimelineStartNs) * TIMELINE_SCALE /
+			     (long double)duration);
+	}
+
+	uint64_t editTimelineTimestamp(int value) const
+	{
+		if (!editTimelineHaveBounds || editTimelineEndNs <= editTimelineStartNs)
+			return 0;
+		value = qBound(0, value, TIMELINE_SCALE);
+		const uint64_t duration = editTimelineEndNs - editTimelineStartNs;
+		const uint64_t offset =
+			(uint64_t)((long double)duration * (long double)value / (long double)TIMELINE_SCALE);
+		return value >= TIMELINE_SCALE ? editTimelineEndNs : editTimelineStartNs + offset;
+	}
+
+	void setTimelineModeBadge(bool editMode)
+	{
+		if (!timelineModeLabel)
+			return;
+		if (editMode) {
+			timelineModeLabel->setText(T("EventDock.Timeline.EditMode"));
+			timelineModeLabel->setStyleSheet(QStringLiteral(
+				"font-weight: bold; color: white; background: #2b7a4b; border-radius: 3px; padding: 1px 4px;"));
+		} else {
+			timelineModeLabel->setText(T("EventDock.Timeline.PlayoutMode"));
+			timelineModeLabel->setStyleSheet(QStringLiteral(
+				"font-weight: bold; color: white; background: #9b3434; border-radius: 3px; padding: 1px 4px;"));
+		}
+	}
+
+	bool previewSelectedEvent(bool force)
+	{
+		if (!controller || replayPlayoutActive())
+			return false;
+		const uint64_t eventId = selectedEventId();
+		if (!eventId)
+			return false;
+
+		sr_event_record event = {};
+		if (!sr_event_controller_get_event(controller, eventId, &event))
+			return false;
+
+		QStringList candidates;
+		auto addCandidate = [&candidates](const QString &candidate) {
+			if (!candidate.isEmpty() && !candidates.contains(candidate))
+				candidates.append(candidate);
+		};
+
+		if (event.preferred_camera_id) {
+			char *preferred = nullptr;
+			if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &preferred) && preferred)
+				addCandidate(QString::fromUtf8(preferred));
+			bfree(preferred);
+		}
+		addCandidate(selectedCamera());
+		for (QToolButton *button : angleButtons) {
+			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_FULL)
+				addCandidate(button->property("cameraName").toString());
+		}
+		for (QToolButton *button : angleButtons) {
+			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_PARTIAL)
+				addCandidate(button->property("cameraName").toString());
+		}
+		for (const QString &camera : captureCameraNames())
+			addCandidate(camera);
+		sr_event_controller_free_event(&event);
+
+		const enum sr_replay_bus bus = transportBus();
+		for (const QString &camera : candidates) {
+			sr_replay_channel_state current = {};
+			if (!force && sr_replay_channel_get_state(bus, &current) && current.cued &&
+			    current.event_id == eventId && QString::fromUtf8(current.camera_name) == camera) {
+				editPreviewEventId = eventId;
+				editPreviewBus = bus;
+				editPreviewCamera = camera;
+				return true;
+			}
+
+			const QByteArray cameraUtf8 = camera.toUtf8();
+			if (!sr_replay_channel_cue(bus, eventId, cameraUtf8.constData()))
+				continue;
+
+			editPreviewEventId = eventId;
+			editPreviewBus = bus;
+			editPreviewCamera = camera;
+			if (cameraCombo) {
+				const int index = cameraCombo->findData(camera);
+				if (index >= 0) {
+					const QSignalBlocker blocker(cameraCombo);
+					cameraCombo->setCurrentIndex(index);
+				}
+			}
+			refreshTransportStatus();
+			syncAngleButtonState();
+			return true;
+		}
+
+		editPreviewEventId = 0;
+		editPreviewCamera.clear();
+		return false;
+	}
+
+	void syncEditTimeline()
+	{
+		updateEditTimelineBounds();
+		setTimelineModeBadge(true);
+		timelineSlider->setMode(SrRangeSlider::Mode::Edit);
+		timelineSlider->clearProgressTint();
+		timelineSlider->setToolTip(T("EventDock.Timeline.EditTooltip"));
+		if (timelineSlider->editingRange())
+			return;
+
+		if (!editTimelineHaveBounds || editTimelineEndNs <= editTimelineStartNs) {
+			timelineEventId = 0;
+			timelineSlider->clearSelection();
+			timelineSlider->setEnabled(false);
+			timelineSlider->setValue(0);
+			timelineTime->setText(T("EventDock.Timeline.NoRecording"));
+			return;
+		}
+
+		const uint64_t total = editTimelineEndNs - editTimelineStartNs;
+		const uint64_t eventId = selectedEventId();
+		sr_event_record event = {};
+		if (!eventId || !controller || !sr_event_controller_get_event(controller, eventId, &event) ||
+		    event.out_ns <= event.in_ns) {
+			if (event.id)
+				sr_event_controller_free_event(&event);
+			timelineEventId = 0;
+			timelineSlider->clearSelection();
+			timelineSlider->setEnabled(false);
+			timelineSlider->setValue(TIMELINE_SCALE);
+			timelineTime->setText(T("EventDock.Timeline.RecordLength").arg(replayClockText(total)));
+			return;
+		}
+
+		timelineEventId = event.id;
+		const int rangeIn = editTimelineValue(event.in_ns);
+		const int rangeOut = editTimelineValue(event.out_ns);
+		timelineSlider->setEnabled(true);
+		timelineSlider->setEditSelection(rangeIn, qMax(rangeIn + 1, rangeOut));
+
+		int playheadValue = rangeIn;
+		sr_replay_channel_state preview = {};
+		if (sr_replay_channel_get_state(transportBus(), &preview) && preview.cued && preview.event_id == event.id)
+			playheadValue = editTimelineValue(preview.playhead_ns);
+		timelineSlider->setValue(qBound(rangeIn, playheadValue, qMax(rangeIn, rangeOut)));
+
+		const uint64_t relativeIn = event.in_ns > editTimelineStartNs ? event.in_ns - editTimelineStartNs : 0;
+		const uint64_t relativeOut = event.out_ns > editTimelineStartNs ? event.out_ns - editTimelineStartNs : 0;
+		timelineTime->setText(T("EventDock.Timeline.EditRange")
+					      .arg(replayClockText(relativeIn))
+					      .arg(replayClockText(relativeOut))
+					      .arg(replayClockText(event.out_ns - event.in_ns))
+					      .arg(replayClockText(total)));
+		sr_event_controller_free_event(&event);
+	}
+
 	void syncTimeline()
 	{
 		if (!timelineSlider || !timelineTime)
@@ -2873,11 +3207,13 @@ private:
 		uint64_t sequenceRemaining = 0;
 		if (playlistTimelineProgress(&sequenceElapsed, &sequenceTotal, &sequenceRemaining)) {
 			timelineEventId = 0;
-			timelineSlider->setSequenceProgress(true);
+			setTimelineModeBadge(false);
+			timelineSlider->setMode(SrRangeSlider::Mode::Sequence);
 			timelineSlider->setEnabled(true);
 			timelineSlider->setToolTip(T("EventDock.Timeline.PlaylistTooltip"));
-			const int value = (int)((long double)sequenceElapsed * 10000.0L / (long double)sequenceTotal);
-			timelineSlider->setValue(qBound(0, value, 10000));
+			const int value =
+				(int)((long double)sequenceElapsed * TIMELINE_SCALE / (long double)sequenceTotal);
+			timelineSlider->setValue(qBound(0, value, TIMELINE_SCALE));
 			if (sequenceRemaining > 15ULL * NS_PER_SECOND)
 				timelineSlider->setProgressTint(QColor(QStringLiteral("#2fb34a")));
 			else if (sequenceRemaining > 10ULL * NS_PER_SECOND)
@@ -2887,15 +3223,25 @@ private:
 			timelineTime->setText(replayClockText(sequenceElapsed) + QStringLiteral(" / ") +
 					      replayClockText(sequenceTotal) + QStringLiteral("   −") +
 					      replayClockText(sequenceRemaining));
+			editPreviewEventId = 0;
+			editPreviewCamera.clear();
 			return;
 		}
 
-		timelineSlider->setSequenceProgress(false);
+		if (!replayPlayoutActive()) {
+			syncEditTimeline();
+			return;
+		}
+
+		editPreviewEventId = 0;
+		editPreviewCamera.clear();
+		setTimelineModeBadge(false);
+		timelineSlider->setMode(SrRangeSlider::Mode::Transport);
 		timelineSlider->clearProgressTint();
 		timelineSlider->setToolTip(T("EventDock.Timeline.Tooltip"));
+		const enum sr_replay_bus bus = timelineTransportBus();
 		sr_replay_channel_state state = {};
-		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued ||
-		    state.out_ns <= state.in_ns) {
+		if (!sr_replay_channel_get_state(bus, &state) || !state.cued || state.out_ns <= state.in_ns) {
 			timelineEventId = 0;
 			timelineSlider->clearSelection();
 			timelineSlider->setEnabled(false);
@@ -2915,63 +3261,125 @@ private:
 					  : state.playhead_ns >= state.out_ns ? duration
 									      : state.playhead_ns - state.in_ns;
 		if (!timelineDragging) {
-			const int sliderValue = (int)((long double)position * 10000.0L / (long double)duration);
+			const int sliderValue =
+				(int)((long double)position * TIMELINE_SCALE / (long double)duration);
 			timelineSlider->setValue(sliderValue);
 		}
 		timelineTime->setText(replayClockText(position) + QStringLiteral(" / ") + replayClockText(duration));
 	}
 
-	void seekTimeline(int value)
+	void seekEditTimeline(int value)
 	{
-		sr_replay_channel_state state = {};
-		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued || state.out_ns <= state.in_ns)
+		if (replayPlayoutActive() || !editTimelineHaveBounds)
+			return;
+		const uint64_t eventId = selectedEventId();
+		if (!eventId || !previewSelectedEvent(false))
 			return;
 
-		if (value < 0)
-			value = 0;
-		if (value > 10000)
-			value = 10000;
+		sr_event_record event = {};
+		if (!sr_event_controller_get_event(controller, eventId, &event))
+			return;
+		uint64_t target = editTimelineTimestamp(value);
+		if (target < event.in_ns)
+			target = event.in_ns;
+		if (target > event.out_ns)
+			target = event.out_ns;
+		const enum sr_replay_bus bus = transportBus();
+		sr_replay_channel_seek(bus, target);
+		timelineSlider->setValue(editTimelineValue(target));
+		sr_event_controller_free_event(&event);
+	}
+
+	void seekTimeline(int value)
+	{
+		if (!replayPlayoutActive()) {
+			seekEditTimeline(value);
+			return;
+		}
+
+		const enum sr_replay_bus bus = timelineTransportBus();
+		sr_replay_channel_state state = {};
+		if (!sr_replay_channel_get_state(bus, &state) || !state.cued || state.out_ns <= state.in_ns)
+			return;
+
+		value = qBound(0, value, TIMELINE_SCALE);
 		const uint64_t duration = state.out_ns - state.in_ns;
-		const uint64_t offset = (uint64_t)((long double)duration * (long double)value / 10000.0L);
+		const uint64_t offset =
+			(uint64_t)((long double)duration * (long double)value / (long double)TIMELINE_SCALE);
 		const uint64_t target = offset >= duration ? state.out_ns : state.in_ns + offset;
-		sr_replay_channel_pause(transportBus(), true);
-		sr_replay_channel_seek(transportBus(), target);
+		sr_replay_channel_pause(bus, true);
+		sr_replay_channel_seek(bus, target);
 		timelineTime->setText(replayClockText(offset > duration ? duration : offset) + QStringLiteral(" / ") +
 				      replayClockText(duration));
 	}
 
-	void createRangeEvent(int rangeIn, int rangeOut)
+	void editSelectedEventRange(int rangeIn, int rangeOut)
 	{
-		if (!controller || rangeOut <= rangeIn)
-			return;
-
-		sr_replay_channel_state state = {};
-		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued ||
-		    state.out_ns <= state.in_ns) {
-			setStatus("EventDock.NoCue");
+		if (!controller || replayPlayoutActive() || !editTimelineHaveBounds || rangeOut <= rangeIn) {
+			syncTimeline();
 			return;
 		}
 
-		rangeIn = qBound(0, rangeIn, 10000);
-		rangeOut = qBound(0, rangeOut, 10000);
-		const uint64_t duration = state.out_ns - state.in_ns;
-		const uint64_t inOffset = (uint64_t)((long double)duration * (long double)rangeIn / 10000.0L);
-		const uint64_t outOffset = (uint64_t)((long double)duration * (long double)rangeOut / 10000.0L);
-		const uint64_t inNs = state.in_ns + inOffset;
-		const uint64_t outNs = rangeOut >= 10000 ? state.out_ns : state.in_ns + outOffset;
-		if (outNs <= inNs || !sr_event_controller_mark_in(controller, inNs)) {
+		const uint64_t eventId = selectedEventId();
+		sr_event_record event = {};
+		if (!eventId || !sr_event_controller_get_event(controller, eventId, &event)) {
 			setStatus("EventDock.Failed");
+			syncTimeline();
 			return;
 		}
 
-		uint64_t eventId = 0;
-		if (!sr_event_controller_mark_out(controller, outNs, &eventId)) {
-			sr_event_controller_cancel_mark_in(controller);
-			setStatus("EventDock.Failed");
+		const uint64_t inNs = editTimelineTimestamp(rangeIn);
+		const uint64_t outNs = editTimelineTimestamp(rangeOut);
+		struct obs_video_info video = {};
+		uint64_t minimumDuration = 1000000ULL;
+		if (obs_get_video_info(&video) && video.fps_num && video.fps_den)
+			minimumDuration =
+				(uint64_t)((long double)NS_PER_SECOND * video.fps_den / (long double)video.fps_num);
+		if (outNs <= inNs || outNs - inNs < minimumDuration) {
+			sr_event_controller_free_event(&event);
+			setStatus("EventDock.Timeline.TooShort");
+			syncTimeline();
 			return;
 		}
-		setCreatedStatus(eventId);
+
+		sr_event_write update = {};
+		update.in_ns = inNs;
+		update.out_ns = outNs;
+		update.preferred_camera_id = event.preferred_camera_id;
+		update.speed_percent = event.speed_percent;
+		update.speed_override = event.speed_override;
+		update.audio_mode = event.audio_mode;
+		update.protected_event = event.protected_event;
+		update.played = event.played;
+		update.pending = event.pending;
+		update.name = event.name;
+		update.tag = event.tag;
+		const bool ok = sr_event_controller_update_event(controller, eventId, &update);
+		sr_event_controller_free_event(&event);
+		if (!ok) {
+			setStatus("EventDock.Failed");
+			syncTimeline();
+			return;
+		}
+
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			const auto bus = static_cast<sr_replay_bus>(i);
+			sr_replay_channel_state state = {};
+			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.event_id == eventId)
+				sr_replay_channel_clear(bus);
+		}
+		eventThumbnailCache.erase(eventId);
+		anglePreviewCache.erase(eventId);
+		previewTargetEventId = 0;
+		previewLoadedEventId = 0;
+		editPreviewEventId = 0;
+		editPreviewCamera.clear();
+		status->setText(T("EventDock.Timeline.EditSaved")
+					.arg((double)(outNs - inNs) / 1e9, 0, 'f', 3));
 		refresh(eventId);
+		refreshAngleCoverage();
+		previewSelectedEvent(true);
+		syncTimeline();
 	}
 
 	void jogMoved(int value)
@@ -3825,6 +4233,7 @@ private:
 	QSlider *jogSlider = nullptr;
 	QSlider *shuttleSlider = nullptr;
 	QLabel *timelineTime = nullptr;
+	QLabel *timelineModeLabel = nullptr;
 	QLabel *shuttleValue = nullptr;
 	QPushButton *reverseButton = nullptr;
 	QPushButton *loopButton = nullptr;
@@ -3861,6 +4270,12 @@ private:
 	uint64_t galleryGeneration = 1;
 	bool syncingEventViews = false;
 	uint64_t timelineEventId = 0;
+	uint64_t editTimelineStartNs = 0;
+	uint64_t editTimelineEndNs = 0;
+	bool editTimelineHaveBounds = false;
+	uint64_t editPreviewEventId = 0;
+	enum sr_replay_bus editPreviewBus = SR_REPLAY_BUS_A;
+	QString editPreviewCamera;
 	uint64_t previewTargetEventId = 0;
 	uint64_t previewLoadedEventId = 0;
 };
