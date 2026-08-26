@@ -64,7 +64,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm .github/scripts/hard-detach-pitel.py .github/workflows/apply-hard-detach.yml
+          git rm -f .github/scripts/hard-detach-pitel.py .github/workflows/apply-hard-detach.yml
           git add -A
           git commit -m 'refactor: isolate Pitel Instant Replay namespace'
           git push origin HEAD:feature/hardware-zero-copy
