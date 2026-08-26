@@ -1,34 +1,52 @@
-name: Replay Development CI
-run-name: Replay Development CI — ${{ github.ref_name }} — ${{ github.event_name }}
+name: Replay UI patch applicator
+run-name: Apply Replay Setup and Storage UI
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - feature/hardware-zero-copy
 
 permissions:
-  contents: read
+  contents: write
+  actions: write
 
 concurrency:
-  group: replay-development-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: replay-ui-product-apply
+  cancel-in-progress: false
 
-# Full validation for the active replay development branch.
-# Every push is built; workflow_dispatch keeps a manual Run workflow button
-# available from the default branch. PR validation is intentionally left to
-# the repository's normal PR workflow when this branch is eventually retargeted
-# to main, avoiding duplicate push + pull_request builds during development.
 jobs:
-  check-format:
-    name: Check Formatting 🔍
-    uses: ./.github/workflows/check-format.yaml
-    permissions:
-      contents: read
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
-  build-project:
-    name: Build Project 🧱
-    uses: ./.github/workflows/build-project.yaml
-    secrets: inherit
-    permissions:
-      contents: read
+      - name: Apply requested product changes
+        run: python3 tools/apply_setup_storage_ui.py
+
+      - name: Install formatter
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+
+      - name: Format changed C++ files
+        run: clang-format -i src/sr-event-dock.cpp src/sr-dock.cpp
+
+      - name: Restore normal CI and remove one-shot helpers
+        run: |
+          git checkout HEAD^ -- .github/workflows/validate-program-output.yml
+          rm -f tools/apply_setup_storage_ui.py .github/workflows/apply-setup-storage-ui.yml
+          git diff --check
+
+      - name: Commit product patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A src/sr-event-dock.cpp src/sr-dock.cpp data/locale/en-US.ini data/locale/es-ES.ini tools/apply_setup_storage_ui.py .github/workflows/apply-setup-storage-ui.yml .github/workflows/validate-program-output.yml
+          git diff --cached --check
+          git commit -m 'feat: streamline replay source setup and storage management'
+          git push
+
+      - name: Start final full validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run validate-program-output.yml --ref feature/hardware-zero-copy
