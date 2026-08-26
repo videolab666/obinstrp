@@ -6,23 +6,19 @@ on:
   push:
     branches:
       - feature/hardware-zero-copy
-  pull_request:
-    branches:
-      - feature/disk-replay-core
-      - main
-      - master
 
 permissions:
   contents: read
 
 concurrency:
-  group: replay-development-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: replay-development-ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Full validation for replay development. Every push to the active replay
-# feature branch is built deliberately: maintaining a narrow paths list is too
-# easy to get wrong for cross-cutting render/encode/playback changes. The same
-# workflow is also available from Actions via workflow_dispatch.
+# Full validation for the active replay development branch.
+# Every push is built; workflow_dispatch keeps a manual Run workflow button
+# available from the default branch. PR validation is intentionally left to
+# the repository's normal PR workflow when this branch is eventually retargeted
+# to main, avoiding duplicate push + pull_request builds during development.
 jobs:
   check-format:
     name: Check Formatting 🔍
