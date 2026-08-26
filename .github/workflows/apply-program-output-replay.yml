@@ -26,12 +26,14 @@ jobs:
           python -m py_compile .github/scripts/patch-program-integration.py
           python -m py_compile .github/scripts/patch-program-playback.py
           python -m py_compile .github/scripts/patch-program-ui.py
-      - name: Apply Program replay patch
-        run: |
-          python .github/scripts/patch-program-core.py
-          python .github/scripts/patch-program-integration.py
-          python .github/scripts/patch-program-playback.py
-          python .github/scripts/patch-program-ui.py
+      - name: Apply Program core
+        run: python .github/scripts/patch-program-core.py
+      - name: Apply Program integration
+        run: python .github/scripts/patch-program-integration.py
+      - name: Apply Program playback
+        run: python .github/scripts/patch-program-playback.py
+      - name: Apply Program UI
+        run: python .github/scripts/patch-program-ui.py
       - name: Format sources
         run: |
           clang-format -i \
