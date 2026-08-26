@@ -1,0 +1,48 @@
+name: Apply standalone config isolation
+
+on:
+  push:
+    branches:
+      - feature/hardware-zero-copy
+    paths:
+      - .github/workflows/apply-config-isolation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
+
+      - name: Apply config namespace patch
+        run: python3 .github/scripts/isolate-config-namespace.py
+
+      - name: Format touched sources
+        run: clang-format -i src/sr-config.c src/sr-dock.cpp
+
+      - name: Validate namespace isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'standalone-v1/config.json' src/sr-config.c
+          grep -q 'standalone-v1/played.json' src/sr-dock.cpp
+          grep -q 'standalone-v1/replays' src/sr-config.c
+          ! grep -n 'obs_module_config_path("config.json")' src/sr-config.c
+          ! grep -n 'obs_module_config_path("played.json")' src/sr-dock.cpp
+          grep -q 'Pitel Instant Replay/Recorder' src/sr-config.c
+
+      - name: Commit product changes and remove helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f .github/scripts/isolate-config-namespace.py .github/workflows/apply-config-isolation.yml
+          git add -A
+          git commit -m 'refactor: isolate standalone config namespace'
+          git push origin HEAD:feature/hardware-zero-copy
