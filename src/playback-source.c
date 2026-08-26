@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -26,6 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "sr-buffer.h"
 #include "sr-dock.h"
 #include "sr-codec.h"
+#include "sr-replay-decode.h"
 #include "sr-capture.h"
 #include "sr-scene-tracker.h"
 #include "sr-clip.h"
@@ -53,6 +54,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * beat guarantees the frontend has recorded the change, so "previous scene"
  * names the scene we just left and not the one before it. */
 #define SR_EMPTY_BOUNCE_SEC 0.5f
+
+/* A 192 MiB bound keeps roughly one 1080p60 one-second GOP worth of
+ * NV12/YUV420 pictures hot without allowing reverse/jog caching to grow
+ * with replay duration. At 4K the same byte budget naturally retains a
+ * much smaller window. */
+#define SR_REPLAY_FRAME_CACHE_BYTES (192ULL * 1024ULL * 1024ULL)
 
 enum sr_end_action {
 	SR_END_FREEZE = 0, /* stay on the last frame */
@@ -85,7 +92,9 @@ struct sr_playback {
 				       triggers doesn't overwrite the loaded replay */
 
 	struct sr_decoder *decoder;
-	int64_t cur_idx; /* index of last decoded/output video packet */
+	struct sr_frame_cache frame_cache;
+	int64_t cur_idx;     /* index of last packet represented in decoder reference state */
+	int64_t display_idx; /* index of the picture most recently sent to OBS */
 
 	/* playhead is an absolute timestamp within [first_ts, last_ts] */
 	uint64_t playhead;
@@ -157,6 +166,9 @@ static void sr_playback_install_replay(struct sr_playback *p, struct sr_replay *
 	p->have_replay = true;
 	p->end_action_override = end_action_override;
 	p->bounce_countdown = 0.0f;
+	p->cur_idx = -1;
+	p->display_idx = -1;
+	sr_frame_cache_clear(&p->frame_cache);
 
 	sr_decoder_destroy(p->decoder);
 	p->decoder = sr_decoder_create(p->replay.codec_id, p->replay.extradata, p->replay.extradata_size);
@@ -235,7 +247,7 @@ static bool sr_playback_capture_replay_ex(struct sr_playback *p, bool play)
 		if (buf)
 			got = sr_buffer_snapshot(buf, &replay);
 	} else {
-		obs_log(LOG_WARNING, "source '%s' has no Sports Replay Capture filter", p->capture_source_name);
+		obs_log(LOG_WARNING, "source '%s' has no Pitel Instant Replay Capture filter", p->capture_source_name);
 	}
 	obs_source_release(target);
 
@@ -370,17 +382,16 @@ static void sr_playback_output_frame_at(struct sr_playback *p, size_t idx)
 	if (!p->decoder || idx >= p->replay.video.num)
 		return;
 
-	/* all frames are intra frames: a non-sequential jump only needs a
-	 * decoder flush, not decoding from a keyframe */
-	if (p->cur_idx >= 0 && (size_t)(p->cur_idx + 1) != idx)
-		sr_decoder_flush(p->decoder);
-
+	/* Short-GOP packets after an IDR depend on earlier reference frames.
+	 * The helper keeps the decoder warm during normal forward playback,
+	 * decodes skipped packets on fast-forward, and for reverse/random
+	 * seeks flushes and rebuilds state from the preceding keyframe. */
 	AVFrame *decoded = NULL;
-	if (!sr_decoder_decode(p->decoder, p->replay.video.array[idx].pkt, &decoded))
+	if (!sr_replay_decode_frame_at(p->decoder, &p->replay, &p->frame_cache, &p->cur_idx, idx, &decoded))
 		return;
 
 	output_avframe(p, decoded);
-	p->cur_idx = (int64_t)idx;
+	p->display_idx = (int64_t)idx;
 }
 
 /* Enters the intro phase if an intro clip is loaded, otherwise the replay
@@ -397,6 +408,7 @@ static void sr_playback_begin_sequence(struct sr_playback *p)
 		p->phase = PHASE_INTRO;
 	} else {
 		p->cur_idx = -1;
+		p->display_idx = -1;
 		p->audio_idx = 0;
 		p->playhead = p->backward ? p->replay.last_ts : p->replay.first_ts;
 		p->phase = PHASE_REPLAY;
@@ -406,6 +418,7 @@ static void sr_playback_begin_sequence(struct sr_playback *p)
 static void sr_playback_begin_replay_phase(struct sr_playback *p)
 {
 	p->cur_idx = -1;
+	p->display_idx = -1;
 	p->audio_idx = 0;
 	p->playhead = p->backward ? p->replay.last_ts : p->replay.first_ts;
 	p->phase = PHASE_REPLAY;
@@ -538,7 +551,7 @@ static void sr_playback_tick(void *data, float seconds)
 	}
 
 	const size_t idx = frame_index_for_playhead(p);
-	if ((int64_t)idx != p->cur_idx)
+	if ((int64_t)idx != p->display_idx)
 		sr_playback_output_frame_at(p, idx);
 
 	sr_playback_output_audio(p, prev_playhead, p->playhead);
@@ -551,6 +564,7 @@ static void sr_playback_tick(void *data, float seconds)
 			p->playhead = p->backward ? p->replay.last_ts : p->replay.first_ts;
 			p->audio_idx = 0;
 			p->cur_idx = -1;
+			p->display_idx = -1;
 		} else if (p->outro_clip) {
 			sr_clip_set_output_size(p->outro_clip, p->replay.width, p->replay.height);
 			sr_clip_rewind(p->outro_clip);
@@ -891,7 +905,9 @@ static void *sr_playback_create(obs_data_t *settings, obs_source_t *source)
 	p->self = source;
 	p->speed_percent = 100.0;
 	p->cur_idx = -1;
+	p->display_idx = -1;
 	p->end_action_override = -1;
+	sr_frame_cache_init(&p->frame_cache, (size_t)SR_REPLAY_FRAME_CACHE_BYTES);
 	pthread_mutex_init(&p->mutex, NULL);
 
 	p->hk_capture = obs_hotkey_register_source(source, "SportsReplay.Capture", obs_module_text("Hotkey.Capture"),
@@ -944,6 +960,7 @@ static void sr_playback_destroy(void *data)
 	if (p->have_replay)
 		sr_replay_free(&p->replay);
 	sr_decoder_destroy(p->decoder);
+	sr_frame_cache_free(&p->frame_cache);
 	sr_clip_close(p->intro_clip);
 	sr_clip_close(p->outro_clip);
 	bfree(p->intro_path);

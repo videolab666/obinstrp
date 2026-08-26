@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -22,9 +22,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 extern "C" {
 #endif
 
-/* Creates the replay clip-bin dock and registers it with the OBS frontend.
- * Call once, after the frontend is ready (obs_module_post_load). */
-void sr_dock_register(void);
+struct sr_event_controller;
+
+/* Creates the unified replay operator/clip-bin dock and registers it with the
+ * OBS frontend. Call once, after the frontend is ready. */
+void sr_dock_register(struct sr_event_controller *controller);
 
 /* Marks a saved replay as already gone to air, the same way launching one
  * from the dock does. For replays that go straight to program from a hotkey:

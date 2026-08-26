@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -29,6 +29,11 @@ extern "C" {
  * allocated tightly-packed RGBA buffer (w*h*4 bytes). Caller frees with
  * bfree. Returns false on failure. */
 bool sr_thumbnail_rgba(const char *path, int w, int h, uint8_t **out);
+
+/* Decodes a frame from one continuous-recording camera at timestamp_ns and
+ * scales it to tightly packed RGBA for the operator angle preview. */
+bool sr_disk_thumbnail_rgba(const char *session_dir, const char *camera_name, uint64_t timestamp_ns, int w, int h,
+			    uint8_t **out);
 
 #ifdef __cplusplus
 }

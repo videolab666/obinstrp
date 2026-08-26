@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -85,8 +85,11 @@ bool sr_save_replay(const struct sr_replay *r, const char *path)
 			break;
 		}
 		pkt->stream_index = st->index;
-		pkt->flags |= AV_PKT_FLAG_KEY; /* every frame is intra */
 
+		/* Preserve the encoder's real keyframe flag. Short-GOP replays contain
+		 * dependent P-frames, so marking every packet as a keyframe would create
+		 * a misleading MP4 seek index. sr_buffer_snapshot() guarantees that a
+		 * live snapshot begins on an actual retained keyframe. */
 		const int64_t pts_ns = (int64_t)r->video.array[i].ts - first;
 		int64_t dur_ns;
 		if (i + 1 < r->video.num)
@@ -95,6 +98,8 @@ bool sr_save_replay(const struct sr_replay *r, const char *path)
 			dur_ns = (r->video.num > 1) ? (int64_t)r->video.array[i].ts - (int64_t)r->video.array[i - 1].ts
 						    : 33333333;
 
+		/* Replay recording deliberately keeps B-frames disabled. Therefore DTS
+		 * can follow PTS after rebasing the OBS timestamps to zero. */
 		pkt->pts = av_rescale_q(pts_ns, NS_TB, st->time_base);
 		pkt->dts = pkt->pts;
 		pkt->duration = av_rescale_q(dur_ns, NS_TB, st->time_base);

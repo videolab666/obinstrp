@@ -36,9 +36,10 @@
             "bundleId": "com.systec.sports-replay"
         }
     },
+    "artifactName": "pitel-instant-replay",
     "name": "sports-replay",
-    "displayName": "Sports Replay",
-    "version": "1.2.0",
+    "displayName": "Pitel Instant Replay",
+    "version": "1.4.0",
     "author": "Systec",
     "website": "https://www.systecinformatica.com.ar",
     "email": "systecinformatica@gmail.com"

@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -33,14 +33,23 @@ enum sr_encoder_backend {
 	SR_ENC_X264,
 };
 
+enum sr_gop_interval {
+	SR_GOP_ALL_I = 0,
+	SR_GOP_250MS = 250,
+	SR_GOP_500MS = 500,
+	SR_GOP_1000MS = 1000,
+};
+
 struct sr_encoder;
 struct sr_decoder;
 
-/* Creates an all-intra H.264 encoder. Tries hardware encoders first when
- * backend is SR_ENC_AUTO and falls back to libx264. Returns NULL only if
- * no encoder could be opened at all. qp: 0 (best) .. 51 (worst). */
+/* Creates a replay-optimized H.264 encoder. Tries hardware encoders first
+ * when backend is SR_ENC_AUTO and falls back to libx264. GOP is expressed
+ * in milliseconds; SR_GOP_ALL_I keeps one keyframe per frame. B-frames are
+ * always disabled and GOPs are requested as closed for deterministic seek.
+ * qp: 0 (best) .. 51 (worst). */
 struct sr_encoder *sr_encoder_create(uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den,
-				     enum sr_encoder_backend backend, int qp);
+				     enum sr_encoder_backend backend, int qp, uint32_t gop_interval_ms);
 void sr_encoder_destroy(struct sr_encoder *enc);
 
 /* Encodes one OBS frame (any common format; converted internally).
@@ -55,7 +64,7 @@ const char *sr_encoder_name(const struct sr_encoder *enc);
  * stored packets and to mux them to a file. Valid while the encoder lives. */
 void sr_encoder_get_extradata(const struct sr_encoder *enc, const uint8_t **data, int *size);
 
-/* Software decoder for the stored all-intra stream. extradata may be NULL. */
+/* Software decoder for the stored H.264 replay stream. extradata may be NULL. */
 struct sr_decoder *sr_decoder_create(enum AVCodecID codec_id, const uint8_t *extradata, int extradata_size);
 void sr_decoder_destroy(struct sr_decoder *dec);
 

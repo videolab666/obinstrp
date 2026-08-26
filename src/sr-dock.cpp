@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -18,10 +18,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "sr-dock.h"
 #include "sr-config.h"
+#include "sr-event-dock.h"
 #include "sr-thumb.h"
 #include "sr-capture.h"
 #include "sr-credit.h"
 #include "sr-scene-tracker.h"
+#include "sr-session.h"
+#include "sr-storage-manager.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -32,9 +35,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QWidget>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QComboBox>
+#include <QDateTime>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMessageBox>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QToolButton>
@@ -43,6 +50,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFileSystemWatcher>
 #include <QTimer>
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QImage>
 #include <QPixmap>
@@ -52,6 +60,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QSet>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QScrollArea>
+#include <QTabWidget>
+#include <QTableWidget>
+#include <QHeaderView>
 
 #define THUMB_W 112
 #define THUMB_H 63
@@ -62,7 +74,7 @@ static QString T(const char *key)
 	return QString::fromUtf8(obs_module_text(key));
 }
 
-/* A small "Sports Replay (version) by Systec" clickable credit label, shown
+/* A small "Pitel Instant Replay (version) by Systec" clickable credit label, shown
  * at the bottom of the dock and its dialogs, matching the footer convention
  * used by other OBS plugins (e.g. Exeldro's). */
 static QLabel *makeCreditLabel(QWidget *parent)
@@ -78,6 +90,38 @@ static QLabel *makeCreditLabel(QWidget *parent)
 
 namespace {
 
+QStringList nativeStingerTransitions()
+{
+	QStringList names;
+	obs_frontend_source_list transitions = {};
+	obs_frontend_get_transitions(&transitions);
+	for (size_t i = 0; i < transitions.sources.num; i++) {
+		obs_source_t *transition = transitions.sources.array[i];
+		if (strcmp(obs_source_get_unversioned_id(transition), "obs_stinger_transition") != 0)
+			continue;
+		const QString name = QString::fromUtf8(obs_source_get_name(transition));
+		if (!name.isEmpty() && !names.contains(name))
+			names.append(name);
+	}
+	obs_frontend_source_list_free(&transitions);
+	names.sort(Qt::CaseInsensitive);
+	return names;
+}
+
+void populateStingerCombo(QComboBox *combo, const QStringList &names, const QString &saved)
+{
+	combo->addItem(T("Dock.StingerUseCurrent"), QString());
+	for (const QString &name : names)
+		combo->addItem(name, name);
+
+	int index = combo->findData(saved);
+	if (!saved.isEmpty() && index < 0) {
+		combo->addItem(T("Dock.StingerMissing").arg(saved), saved);
+		index = combo->count() - 1;
+	}
+	combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
 bool enum_replay_sources(void *param, obs_source_t *source)
 {
 	auto *names = static_cast<QStringList *>(param);
@@ -86,7 +130,7 @@ bool enum_replay_sources(void *param, obs_source_t *source)
 	return true;
 }
 
-/* Name of the first Sports Replay source in the current scene collection. */
+/* Name of the first Pitel Instant Replay source in the current scene collection. */
 QByteArray firstReplaySource()
 {
 	QStringList names;
@@ -94,7 +138,7 @@ QByteArray firstReplaySource()
 	return names.isEmpty() ? QByteArray() : names.first().toUtf8();
 }
 
-/* Name of the Sports Replay source whose "capture_source" setting matches
+/* Name of the Pitel Instant Replay source whose "capture_source" setting matches
  * cameraName, or empty if none do. */
 QByteArray replaySourceForCamera(const QString &cameraName)
 {
@@ -275,6 +319,77 @@ private:
 		row->addWidget(browse);
 		lay->addLayout(row);
 
+		char *sessionRootRaw = sr_config_get_session_root();
+		const QString sessionRoot = QString::fromUtf8(sessionRootRaw ? sessionRootRaw : "");
+		bfree(sessionRootRaw);
+
+		lay->addWidget(new QLabel(T("Dock.SessionFolder"), &dlg));
+		auto *sessionRow = new QHBoxLayout();
+		auto *sessionEdit = new QLineEdit(sessionRoot, &dlg);
+		sessionEdit->setReadOnly(true);
+		auto *sessionBrowse = new QPushButton(QStringLiteral("..."), &dlg);
+		sessionBrowse->setMaximumWidth(36);
+		sessionRow->addWidget(sessionEdit, 1);
+		sessionRow->addWidget(sessionBrowse);
+		lay->addLayout(sessionRow);
+
+		const double gib = 1024.0 * 1024.0 * 1024.0;
+		auto *minFree = new QDoubleSpinBox(&dlg);
+		minFree->setRange(1.0, 10000.0);
+		minFree->setDecimals(1);
+		minFree->setSingleStep(10.0);
+		minFree->setSuffix(QStringLiteral(" GB"));
+		minFree->setValue((double)sr_config_get_min_free_bytes() / gib);
+		lay->addWidget(new QLabel(T("Dock.MinFree"), &dlg));
+		lay->addWidget(minFree);
+
+		auto *segmentSeconds = new QDoubleSpinBox(&dlg);
+		segmentSeconds->setRange(1.0, 60.0);
+		segmentSeconds->setDecimals(1);
+		segmentSeconds->setSingleStep(0.5);
+		segmentSeconds->setSuffix(QStringLiteral(" s"));
+		segmentSeconds->setValue((double)sr_config_get_segment_duration_ms() / 1000.0);
+		lay->addWidget(new QLabel(T("Dock.SegmentDuration"), &dlg));
+		lay->addWidget(segmentSeconds);
+
+		char *takeInRaw = sr_config_get_take_in_transition();
+		char *takeOutRaw = sr_config_get_take_out_transition();
+		const QString takeIn = QString::fromUtf8(takeInRaw ? takeInRaw : "");
+		const QString takeOut = QString::fromUtf8(takeOutRaw ? takeOutRaw : "");
+		bfree(takeInRaw);
+		bfree(takeOutRaw);
+		const QStringList stingers = nativeStingerTransitions();
+
+		lay->addWidget(new QLabel(T("Dock.StingerIn"), &dlg));
+		auto *stingerIn = new QComboBox(&dlg);
+		populateStingerCombo(stingerIn, stingers, takeIn);
+		lay->addWidget(stingerIn);
+
+		lay->addWidget(new QLabel(T("Dock.StingerOut"), &dlg));
+		auto *stingerOut = new QComboBox(&dlg);
+		populateStingerCombo(stingerOut, stingers, takeOut);
+		lay->addWidget(stingerOut);
+
+		auto *stingerHint = new QLabel(T("Dock.StingerHint"), &dlg);
+		stingerHint->setWordWrap(true);
+		stingerHint->setStyleSheet(QStringLiteral("color: gray;"));
+		lay->addWidget(stingerHint);
+
+		auto *freeSpace = new QLabel(&dlg);
+		freeSpace->setStyleSheet(QStringLiteral("color: gray;"));
+		lay->addWidget(freeSpace);
+		auto updateFreeSpace = [sessionEdit, freeSpace, gib]() {
+			const QByteArray path = sessionEdit->text().toUtf8();
+			const uint64_t bytes = path.isEmpty() ? 0 : os_get_free_disk_space(path.constData());
+			freeSpace->setText(T("Dock.FreeSpace").arg((double)bytes / gib, 0, 'f', 1));
+		};
+		updateFreeSpace();
+
+		auto *restartHint = new QLabel(T("Dock.StorageRestartHint"), &dlg);
+		restartHint->setWordWrap(true);
+		restartHint->setStyleSheet(QStringLiteral("color: gray;"));
+		lay->addWidget(restartHint);
+
 		auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
 
 		auto *footer = new QHBoxLayout();
@@ -288,6 +403,14 @@ private:
 			if (!picked.isEmpty())
 				edit->setText(picked);
 		});
+		connect(sessionBrowse, &QPushButton::clicked, &dlg, [&]() {
+			QString picked = QFileDialog::getExistingDirectory(&dlg, T("Dock.PickSessionFolder"),
+									   sessionEdit->text());
+			if (!picked.isEmpty()) {
+				sessionEdit->setText(picked);
+				updateFreeSpace();
+			}
+		});
 		connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
 		connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
@@ -295,6 +418,17 @@ private:
 			currentFolder = edit->text();
 			QByteArray f = currentFolder.toUtf8();
 			sr_config_set_save_dir(f.constData());
+
+			const QByteArray sessionPath = sessionEdit->text().toUtf8();
+			sr_config_set_session_root(sessionPath.constData());
+			sr_config_set_min_free_bytes((uint64_t)(minFree->value() * gib));
+			sr_config_set_segment_duration_ms((uint32_t)(segmentSeconds->value() * 1000.0));
+
+			const QByteArray stingerInName = stingerIn->currentData().toString().toUtf8();
+			const QByteArray stingerOutName = stingerOut->currentData().toString().toUtf8();
+			sr_config_set_take_in_transition(stingerInName.constData());
+			sr_config_set_take_out_transition(stingerOutName.constData());
+
 			watchFolder();
 			refreshList();
 		}
@@ -477,6 +611,181 @@ private:
 	QSet<QString> playedPaths;
 };
 
+QString formattedBytes(quint64 bytes)
+{
+	const double gib = 1024.0 * 1024.0 * 1024.0;
+	const double mib = 1024.0 * 1024.0;
+	return bytes >= (quint64)gib ? QStringLiteral("%1 GB").arg((double)bytes / gib, 0, 'f', 2)
+				     : QStringLiteral("%1 MB").arg((double)bytes / mib, 0, 'f', 1);
+}
+
+quint64 directoryBytes(const QString &path)
+{
+	quint64 total = 0;
+	QDirIterator iterator(path, QDir::Files | QDir::Hidden | QDir::System, QDirIterator::Subdirectories);
+	while (iterator.hasNext()) {
+		iterator.next();
+		total += (quint64)iterator.fileInfo().size();
+	}
+	return total;
+}
+
+qint64 sessionCreatedUnix(const QString &path)
+{
+	const QByteArray metadataPath = QDir(path).filePath(QStringLiteral("session.json")).toUtf8();
+	obs_data_t *metadata = obs_data_create_from_json_file(metadataPath.constData());
+	if (!metadata)
+		return QFileInfo(path).lastModified().toSecsSinceEpoch();
+	const qint64 created = (qint64)obs_data_get_int(metadata, "created_unix");
+	obs_data_release(metadata);
+	return created;
+}
+
+class SrStoragePanel : public QWidget {
+public:
+	explicit SrStoragePanel(QWidget *parent = nullptr) : QWidget(parent)
+	{
+		auto *rootLayout = new QVBoxLayout(this);
+		rootLabel = new QLabel(this);
+		rootLabel->setWordWrap(true);
+		rootLayout->addWidget(rootLabel);
+
+		table = new QTableWidget(this);
+		table->setColumnCount(4);
+		table->setHorizontalHeaderLabels({T("Storage.Column.Session"), T("Storage.Column.Created"),
+						  T("Storage.Column.Size"), T("Storage.Column.Status")});
+		table->setSelectionBehavior(QAbstractItemView::SelectRows);
+		table->setSelectionMode(QAbstractItemView::SingleSelection);
+		table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+		table->verticalHeader()->setVisible(false);
+		table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+		table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+		table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+		table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+		rootLayout->addWidget(table, 1);
+
+		auto *buttons = new QHBoxLayout();
+		auto *refresh = new QPushButton(T("Storage.Refresh"), this);
+		auto *remove = new QPushButton(T("Storage.Delete"), this);
+		buttons->addWidget(refresh);
+		buttons->addWidget(remove);
+		buttons->addStretch(1);
+		rootLayout->addLayout(buttons);
+
+		gcStatus = new QLabel(this);
+		gcStatus->setWordWrap(true);
+		gcStatus->setStyleSheet(QStringLiteral("color: gray;"));
+		rootLayout->addWidget(gcStatus);
+
+		connect(refresh, &QPushButton::clicked, this, [this]() { refreshSessions(); });
+		connect(remove, &QPushButton::clicked, this, [this]() { deleteSelectedSession(); });
+
+		statusTimer = new QTimer(this);
+		statusTimer->setInterval(2000);
+		connect(statusTimer, &QTimer::timeout, this, [this]() { refreshStatus(); });
+		statusTimer->start();
+		refreshSessions();
+	}
+
+private:
+	void refreshStatus()
+	{
+		char *rootRaw = sr_config_get_session_root();
+		const QString root = QString::fromUtf8(rootRaw ? rootRaw : "");
+		bfree(rootRaw);
+		const QByteArray rootUtf8 = root.toUtf8();
+		const quint64 freeBytes = root.isEmpty() ? 0 : os_get_free_disk_space(rootUtf8.constData());
+		rootLabel->setText(T("Storage.RootSummary").arg(root).arg(formattedBytes(freeBytes)));
+
+		sr_storage_manager_status manager = {};
+		sr_storage_manager_get_status(&manager);
+		if (!manager.cleanup_passes) {
+			gcStatus->setText(T("Storage.GcNever"));
+			return;
+		}
+		const QString when = QDateTime::fromSecsSinceEpoch((qint64)manager.last_cleanup_unix)
+					     .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+		gcStatus->setText(T("Storage.GcSummary")
+					  .arg(manager.cleanup_passes)
+					  .arg(when)
+					  .arg(manager.last_cleanup.segments_deleted)
+					  .arg(manager.last_cleanup.segments_pinned)
+					  .arg(manager.last_cleanup.errors)
+					  .arg(formattedBytes(manager.last_cleanup.free_bytes_before))
+					  .arg(formattedBytes(manager.last_cleanup.free_bytes_after)));
+	}
+
+	void refreshSessions()
+	{
+		refreshStatus();
+		char *rootRaw = sr_config_get_session_root();
+		const QString root = QString::fromUtf8(rootRaw ? rootRaw : "");
+		bfree(rootRaw);
+		QDir directory(root);
+		const QFileInfoList candidates = directory.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time);
+		QFileInfoList sessions;
+		for (const QFileInfo &candidate : candidates) {
+			const QString metadata =
+				QDir(candidate.absoluteFilePath()).filePath(QStringLiteral("session.json"));
+			if (QFileInfo(metadata).isFile())
+				sessions.append(candidate);
+		}
+		table->setRowCount(sessions.size());
+		for (int row = 0; row < sessions.size(); row++) {
+			const QFileInfo &session = sessions.at(row);
+			const QString path = session.absoluteFilePath();
+			const bool active = sr_session_path_is_active(path.toUtf8().constData());
+			auto *name = new QTableWidgetItem(session.fileName());
+			name->setData(Qt::UserRole, path);
+			table->setItem(row, 0, name);
+			const qint64 created = sessionCreatedUnix(path);
+			table->setItem(row, 1,
+				       new QTableWidgetItem(QDateTime::fromSecsSinceEpoch(created).toString(
+					       QStringLiteral("yyyy-MM-dd HH:mm:ss"))));
+			table->setItem(row, 2, new QTableWidgetItem(formattedBytes(directoryBytes(path))));
+			table->setItem(row, 3,
+				       new QTableWidgetItem(active ? T("Storage.Active") : T("Storage.Inactive")));
+		}
+	}
+
+	void deleteSelectedSession()
+	{
+		const int row = table->currentRow();
+		QTableWidgetItem *item = row >= 0 ? table->item(row, 0) : nullptr;
+		if (!item)
+			return;
+		const QString path = item->data(Qt::UserRole).toString();
+		const QByteArray pathUtf8 = path.toUtf8();
+		if (sr_session_path_is_active(pathUtf8.constData())) {
+			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteActive"));
+			return;
+		}
+
+		char *rootRaw = sr_config_get_session_root();
+		const QString canonicalRoot = QFileInfo(QString::fromUtf8(rootRaw ? rootRaw : "")).canonicalFilePath();
+		bfree(rootRaw);
+		const QFileInfo selected(path);
+		if (canonicalRoot.isEmpty() || selected.dir().canonicalPath() != canonicalRoot) {
+			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteInvalid"));
+			return;
+		}
+
+		if (QMessageBox::question(this, T("Storage.DeleteTitle"),
+					  T("Storage.DeleteConfirm").arg(selected.fileName())) != QMessageBox::Yes)
+			return;
+		if (!QDir(path).removeRecursively()) {
+			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteFailed"));
+			return;
+		}
+		refreshSessions();
+	}
+
+	QLabel *rootLabel = nullptr;
+	QLabel *gcStatus = nullptr;
+	QTableWidget *table = nullptr;
+	QTimer *statusTimer = nullptr;
+};
+
 /* The live dock, so replays that go to air from a hotkey can be marked
  * without a lookup. QPointer so it reads back null once OBS destroys it. */
 QPointer<SrDock> g_dock;
@@ -491,15 +800,30 @@ void mark_played_task(void *param)
 
 } // namespace
 
-void sr_dock_register(void)
+void sr_dock_register(struct sr_event_controller *controller)
 {
-	auto *dock = new SrDock();
-	dock->setObjectName("SportsReplayDock");
-	if (!obs_frontend_add_dock_by_id("sports_replay_dock", obs_module_text("Dock.Title"), dock)) {
-		delete dock;
+	auto *tabs = new QTabWidget();
+	tabs->setObjectName(QStringLiteral("SportsReplayDock"));
+	tabs->setDocumentMode(true);
+
+	auto *operatorScroll = new QScrollArea(tabs);
+	operatorScroll->setObjectName(QStringLiteral("SportsReplayOperatorScroll"));
+	operatorScroll->setWidgetResizable(true);
+	operatorScroll->setFrameShape(QFrame::NoFrame);
+	operatorScroll->setWidget(sr_event_dock_create(controller, operatorScroll));
+
+	auto *clips = new SrDock(tabs);
+	auto *storage = new SrStoragePanel(tabs);
+	tabs->addTab(operatorScroll, T("Dock.TabOperator"));
+	tabs->addTab(clips, T("Dock.TabClips"));
+	tabs->addTab(storage, T("Dock.TabStorage"));
+	tabs->setCurrentIndex(0);
+
+	if (!obs_frontend_add_dock_by_id("sports_replay_dock", obs_module_text("Dock.Title"), tabs)) {
+		delete tabs;
 		return;
 	}
-	g_dock = dock;
+	g_dock = clips;
 }
 
 void sr_dock_mark_played(const char *path)

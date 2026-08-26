@@ -9,7 +9,7 @@
 ---
 
 ## Título
-Sports Replay — Low-memory instant replay for sports broadcasts
+Pitel Instant Replay — Low-memory instant replay for sports broadcasts
 
 ## Descripción corta (tagline)
 Instant replay with a compressed GPU buffer, slow motion, sponsor bumpers
@@ -17,7 +17,7 @@ and a replay bin dock — designed for live sports streaming.
 
 ## Descripción larga
 
-**Sports Replay** brings TV-style instant replay to OBS without eating your
+**Pitel Instant Replay** brings TV-style instant replay to OBS without eating your
 RAM. Instead of storing raw frames in memory (which can reach several GB per
 camera), it keeps the buffer **compressed with your GPU** (NVENC / AMF / QSV,
 x264 fallback). A 15-second 1080p60 buffer uses tens of megabytes instead of
@@ -48,17 +48,17 @@ H.264 encoder is recommended; falls back to x264.
 **Capturas a subir al foro** (están en la carpeta `docs/` del repo):
  1. `screenshot-obs.png` — OBS completo con las cámaras y el dock de repeticiones
  2. `screenshot-dock.png` — el dock "Repeticiones" con miniaturas y el engranaje ⚙
- 3. `screenshot-capture-filter.png` — el filtro "Captura de Sports Replay" en una cámara
+ 3. `screenshot-capture-filter.png` — el filtro "Captura de Pitel Instant Replay" en una cámara
  4. `screenshot-source-properties.png` — propiedades de la fuente (velocidad, acción
     al terminar, cortinas de sponsor)
 
 ## Cómo usarlo (para incluir en el post)
 
-1. Agregá el filtro **Sports Replay Capture** a cada cámara (click derecho →
+1. Agregá el filtro **Pitel Instant Replay Capture** a cada cámara (click derecho →
    Filtros).
-2. En tu escena de repe, agregá una fuente **Sports Replay** y elegí de qué
+2. En tu escena de repe, agregá una fuente **Pitel Instant Replay** y elegí de qué
    cámara reproducir. Configurá velocidad, "acción al terminar = volver a la
    escena anterior", y (opcional) cortinas de sponsor.
 3. Cortá a la escena de repe → reproduce solo y vuelve a la cámara principal.
-4. Abrí el dock **Repeticiones (Sports Replay)** para ver las repes guardadas
+4. Abrí el dock **Repeticiones (Pitel Instant Replay)** para ver las repes guardadas
    con miniaturas y lanzarlas con doble click.

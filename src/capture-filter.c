@@ -1,40 +1,50 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License, or
 (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along
-with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include <obs-module.h>
 #include <plugin-support.h>
 
 #include "sr-buffer.h"
+#include "sr-camera-identity.h"
 #include "sr-codec.h"
 #include "sr-capture.h"
 #include "sr-credit.h"
+#include "sr-config.h"
+#include "sr-master-audio.h"
+#include "sr-session.h"
+#include "sr-segment-writer.h"
+
+#include <string.h>
 
 #define S_DURATION "duration_ms"
 #define S_ENCODER "encoder"
 #define S_QUALITY "quality"
+#define S_GOP "gop_ms"
+#define S_DISK_RECORDING "disk_recording"
 
 struct sr_capture {
 	obs_source_t *self;
 	struct sr_buffer buffer;
 	struct sr_encoder *encoder;
+	struct sr_segment_writer *writer;
+	struct sr_camera_audio_writer *camera_audio_writer;
+	pthread_mutex_t camera_audio_mutex;
 
 	enum sr_encoder_backend backend;
 	int qp;
+	uint32_t gop_ms;
+	bool disk_recording;
+	bool restart_writer;
+	bool parent_showing_held;
+	bool writer_failed;
+	bool master_audio_acquired;
 
 	/* format the current encoder was opened with */
 	uint32_t enc_width;
@@ -43,7 +53,65 @@ struct sr_capture {
 	bool reset_encoder;
 
 	uint64_t last_stats_log;
+	uint64_t last_status_publish;
+	pthread_mutex_t status_mutex;
+	struct sr_capture_recording_summary status;
 };
+
+static void set_parent_showing_hold(struct sr_capture *c, bool hold)
+{
+	if (!c || hold == c->parent_showing_held)
+		return;
+	obs_source_t *parent = obs_filter_get_parent(c->self);
+	if (!parent)
+		return;
+	if (hold)
+		obs_source_inc_showing(parent);
+	else
+		obs_source_dec_showing(parent);
+	c->parent_showing_held = hold;
+}
+
+static void publish_status(struct sr_capture *c, uint64_t now, bool force)
+{
+	if (!c || (!force && c->last_status_publish && now - c->last_status_publish < 500000000ULL))
+		return;
+
+	struct sr_capture_recording_summary status = {
+		.camera_count = 1,
+		.requested_count = c->disk_recording ? 1 : 0,
+		.active_count = c->writer ? 1 : 0,
+		.failed_count = (c->writer_failed || c->encoder_failed) ? 1 : 0,
+	};
+	if (c->writer) {
+		struct sr_segment_writer_stats stats;
+		sr_segment_writer_get_stats(c->writer, &stats);
+		status.reserve_blocked_count = stats.reserve_blocked ? 1 : 0;
+		status.packets_written = stats.packets_written;
+		status.bytes_written = stats.bytes_written;
+		if (stats.write_failed)
+			status.failed_count = 1;
+	}
+
+	pthread_mutex_lock(&c->status_mutex);
+	c->status = status;
+	pthread_mutex_unlock(&c->status_mutex);
+	c->last_status_publish = now;
+}
+
+static void publish_recording_intent(struct sr_capture *c)
+{
+	if (!c)
+		return;
+	pthread_mutex_lock(&c->status_mutex);
+	c->status.camera_count = 1;
+	c->status.requested_count = c->disk_recording ? 1 : 0;
+	if (!c->disk_recording) {
+		c->status.failed_count = 0;
+		c->status.reserve_blocked_count = 0;
+	}
+	pthread_mutex_unlock(&c->status_mutex);
+}
 
 struct sr_buffer *sr_capture_get_buffer(void *capture_data)
 {
@@ -57,6 +125,24 @@ static const char *sr_capture_get_name(void *unused)
 	return obs_module_text("SportsReplayCapture");
 }
 
+static void destroy_writer(struct sr_capture *c)
+{
+	pthread_mutex_lock(&c->camera_audio_mutex);
+	struct sr_camera_audio_writer *camera_audio = c->camera_audio_writer;
+	c->camera_audio_writer = NULL;
+	pthread_mutex_unlock(&c->camera_audio_mutex);
+	sr_camera_audio_writer_destroy(camera_audio);
+	if (c->writer) {
+		sr_segment_writer_destroy(c->writer);
+		c->writer = NULL;
+	}
+	if (c->master_audio_acquired) {
+		sr_master_audio_release();
+		c->master_audio_acquired = false;
+	}
+	publish_status(c, 0, true);
+}
+
 static void sr_capture_update(void *data, obs_data_t *settings)
 {
 	struct sr_capture *c = data;
@@ -65,21 +151,44 @@ static void sr_capture_update(void *data, obs_data_t *settings)
 
 	const enum sr_encoder_backend backend = (enum sr_encoder_backend)obs_data_get_int(settings, S_ENCODER);
 	const int qp = (int)obs_data_get_int(settings, S_QUALITY);
-	if (backend != c->backend || qp != c->qp) {
+	uint32_t gop_ms = (uint32_t)obs_data_get_int(settings, S_GOP);
+	if (gop_ms != SR_GOP_ALL_I && gop_ms != SR_GOP_250MS && gop_ms != SR_GOP_500MS && gop_ms != SR_GOP_1000MS)
+		gop_ms = SR_GOP_500MS;
+	const bool disk_recording = obs_data_get_bool(settings, S_DISK_RECORDING);
+
+	if (backend != c->backend || qp != c->qp || gop_ms != c->gop_ms) {
 		c->backend = backend;
 		c->qp = qp;
+		c->gop_ms = gop_ms;
 		c->reset_encoder = true;
 		c->encoder_failed = false;
+		c->writer_failed = false;
 	}
+
+	if (disk_recording != c->disk_recording) {
+		/* Only change intent here. The writer itself is created/destroyed in
+		 * filter_video so it cannot be freed by the UI update callback while
+		 * the video callback is queueing an encoded packet. */
+		if (!disk_recording)
+			c->restart_writer = true;
+		c->disk_recording = disk_recording;
+		c->writer_failed = false;
+		if (disk_recording)
+			set_parent_showing_hold(c, true);
+	}
+	publish_recording_intent(c);
 }
 
 static void *sr_capture_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct sr_capture *c = bzalloc(sizeof(struct sr_capture));
 	c->self = source;
+	pthread_mutex_init(&c->status_mutex, NULL);
+	pthread_mutex_init(&c->camera_audio_mutex, NULL);
 	sr_buffer_init(&c->buffer);
 	c->backend = SR_ENC_AUTO;
 	c->qp = 23;
+	c->gop_ms = SR_GOP_500MS;
 	sr_capture_update(c, settings);
 	return c;
 }
@@ -87,9 +196,100 @@ static void *sr_capture_create(obs_data_t *settings, obs_source_t *source)
 static void sr_capture_destroy(void *data)
 {
 	struct sr_capture *c = data;
+	set_parent_showing_hold(c, false);
+	destroy_writer(c);
 	sr_encoder_destroy(c->encoder);
 	sr_buffer_free(&c->buffer);
+	pthread_mutex_destroy(&c->status_mutex);
+	pthread_mutex_destroy(&c->camera_audio_mutex);
 	bfree(c);
+}
+
+static obs_source_t *capture_camera_source(struct sr_capture *c)
+{
+	return c ? obs_filter_get_parent(c->self) : NULL;
+}
+
+static const char *capture_camera_name(struct sr_capture *c)
+{
+	obs_source_t *parent = capture_camera_source(c);
+	return parent ? obs_source_get_name(parent) : obs_source_get_name(c->self);
+}
+
+static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi)
+{
+	if (!c->disk_recording || c->writer || c->writer_failed || !c->encoder)
+		return c->writer != NULL;
+
+	char *session_dir = sr_session_get_or_create_path();
+	if (!session_dir) {
+		c->writer_failed = true;
+		return false;
+	}
+
+	const uint8_t *extradata = NULL;
+	int extradata_size = 0;
+	sr_encoder_get_extradata(c->encoder, &extradata, &extradata_size);
+
+	obs_source_t *camera_source = capture_camera_source(c);
+	char camera_key[SR_CAMERA_STABLE_KEY_MAX] = {0};
+	if (!camera_source || !sr_camera_key_from_source(camera_source, camera_key, sizeof(camera_key))) {
+		obs_log(LOG_ERROR, "'%s': could not resolve persistent OBS UUID for replay camera '%s'",
+			obs_source_get_name(c->self), capture_camera_name(c));
+		bfree(session_dir);
+		c->writer_failed = true;
+		return false;
+	}
+
+	struct sr_segment_writer_config cfg = {
+		.session_dir = session_dir,
+		.camera_name = capture_camera_name(c),
+		.camera_key = camera_key,
+		.codec_id = sr_encoder_codec_id(c->encoder),
+		.width = c->enc_width,
+		.height = c->enc_height,
+		.fps_num = ovi->fps_num,
+		.fps_den = ovi->fps_den,
+		.extradata = extradata,
+		.extradata_size = extradata_size,
+		.target_segment_ms = sr_config_get_segment_duration_ms(),
+		.min_free_bytes = sr_config_get_low_space_action() == SR_STORAGE_LOW_SPACE_WARN_ONLY
+					  ? 0
+					  : sr_config_get_min_free_bytes(),
+		.max_queue_packets = 600,
+	};
+
+	c->writer = sr_segment_writer_create(&cfg);
+	if (!c->writer) {
+		bfree(session_dir);
+		c->writer_failed = true;
+		obs_log(LOG_ERROR, "'%s': could not start continuous replay recorder", obs_source_get_name(c->self));
+		return false;
+	}
+
+	if (!c->master_audio_acquired) {
+		if (sr_master_audio_acquire())
+			c->master_audio_acquired = true;
+		else
+			obs_log(LOG_WARNING,
+				"'%s': continuous video is recording, but master replay audio could not start",
+				obs_source_get_name(c->self));
+	}
+	struct obs_audio_info audio_info;
+	if (!c->camera_audio_writer && obs_get_audio_info(&audio_info)) {
+		struct sr_camera_audio_writer *camera_audio =
+			sr_camera_audio_writer_create(session_dir, capture_camera_name(c), audio_info.samples_per_sec);
+		pthread_mutex_lock(&c->camera_audio_mutex);
+		c->camera_audio_writer = camera_audio;
+		pthread_mutex_unlock(&c->camera_audio_mutex);
+		if (!c->camera_audio_writer)
+			obs_log(LOG_WARNING,
+				"'%s': continuous video is recording, but selected-camera replay audio could not start",
+				obs_source_get_name(c->self));
+	}
+	bfree(session_dir);
+	publish_status(c, 0, true);
+	return true;
 }
 
 static void log_buffer_stats(struct sr_capture *c, uint64_t now)
@@ -97,33 +297,63 @@ static void log_buffer_stats(struct sr_capture *c, uint64_t now)
 	if (c->last_stats_log && now - c->last_stats_log < 60000000000ULL)
 		return;
 	c->last_stats_log = now;
+
 	const size_t bytes = sr_buffer_video_bytes(&c->buffer);
-	obs_log(LOG_INFO, "'%s': replay buffer using %.1f MB", obs_source_get_name(c->self),
-		(double)bytes / (1024.0 * 1024.0));
+	if (!c->writer) {
+		obs_log(LOG_INFO, "'%s': replay buffer using %.1f MB", obs_source_get_name(c->self),
+			(double)bytes / (1024.0 * 1024.0));
+		return;
+	}
+
+	struct sr_segment_writer_stats stats;
+	sr_segment_writer_get_stats(c->writer, &stats);
+	obs_log(LOG_INFO,
+		"'%s': replay RAM %.1f MB; disk packets %llu, %.1f MB, segments %llu, queue %zu (peak %zu), dropped %llu%s%s",
+		obs_source_get_name(c->self), (double)bytes / (1024.0 * 1024.0),
+		(unsigned long long)stats.packets_written, (double)stats.bytes_written / (1024.0 * 1024.0),
+		(unsigned long long)stats.segments_finalized, stats.queue_depth, stats.queue_high_watermark,
+		(unsigned long long)stats.packets_dropped, stats.reserve_blocked ? ", DISK RESERVE" : "",
+		stats.write_failed ? ", WRITE ERROR" : "");
 }
 
 static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_source_frame *frame)
 {
 	struct sr_capture *c = data;
 
+	/* Apply a recording toggle on the video callback rather than the UI
+	 * settings callback; see sr_capture_update. */
+	if (c->restart_writer) {
+		destroy_writer(c);
+		c->restart_writer = false;
+	}
+	if (!c->disk_recording && c->writer)
+		destroy_writer(c);
+	if (!c->disk_recording)
+		set_parent_showing_hold(c, false);
+
 	if (!frame || !frame->data[0] || c->encoder_failed)
 		return frame;
 
 	if (c->encoder && (c->reset_encoder || frame->width != c->enc_width || frame->height != c->enc_height)) {
+		destroy_writer(c);
 		sr_encoder_destroy(c->encoder);
 		c->encoder = NULL;
+		c->writer_failed = false;
 		sr_buffer_clear(&c->buffer);
 	}
 
+	struct obs_video_info ovi;
+	if (!obs_get_video_info(&ovi))
+		return frame;
+
 	if (!c->encoder) {
-		struct obs_video_info ovi;
-		obs_get_video_info(&ovi);
-		c->encoder =
-			sr_encoder_create(frame->width, frame->height, ovi.fps_num, ovi.fps_den, c->backend, c->qp);
+		c->encoder = sr_encoder_create(frame->width, frame->height, ovi.fps_num, ovi.fps_den, c->backend, c->qp,
+					       c->gop_ms);
 		if (!c->encoder) {
 			obs_log(LOG_ERROR, "'%s': no H.264 encoder available, replay capture disabled",
 				obs_source_get_name(c->self));
 			c->encoder_failed = true;
+			publish_status(c, frame->timestamp, true);
 			return frame;
 		}
 		c->reset_encoder = false;
@@ -143,10 +373,32 @@ static struct obs_source_frame *sr_capture_filter_video(void *data, struct obs_s
 	}
 
 	AVPacket *pkt = sr_encoder_encode(c->encoder, frame);
-	if (pkt)
+	if (pkt) {
+		/* Async input frames retain the source/device timestamp. OBS maps
+		 * those frames onto its own video clock when selecting them for the
+		 * current render tick, but that private timing adjustment is not
+		 * reflected in frame->timestamp. Event IN/OUT markers use the OBS
+		 * video clock, so persist disk packets in that same global timebase.
+		 * Keeping the source timestamp here makes valid camera media appear
+		 * unrelated to every Event on devices with a local capture clock. */
+		const uint64_t replay_timestamp = obs_get_video_frame_time();
+
+		/* Delay session/writer creation until the encoder has actually emitted
+		 * a packet. Some codec implementations only finalize stream headers
+		 * after encoding begins. */
+		ensure_writer(c, &ovi);
+
+		/* The disk writer clones the packet. The original remains owned by
+		 * the legacy RAM ring buffer, so current replay behavior stays intact
+		 * while the new continuous storage engine is developed. */
+		if (c->writer)
+			sr_segment_writer_push_video(c->writer, pkt,
+						     replay_timestamp ? replay_timestamp : frame->timestamp);
 		sr_buffer_push_video(&c->buffer, pkt, frame->timestamp);
+	}
 
 	log_buffer_stats(c, frame->timestamp);
+	publish_status(c, frame->timestamp, false);
 	return frame;
 }
 
@@ -166,8 +418,83 @@ static struct obs_audio_data *sr_capture_filter_audio(void *data, struct obs_aud
 
 	if (c->buffer.samples_per_sec)
 		sr_buffer_push_audio(&c->buffer, audio, get_audio_channels(c->buffer.speakers));
+	pthread_mutex_lock(&c->camera_audio_mutex);
+	if (c->camera_audio_writer)
+		sr_camera_audio_writer_push(c->camera_audio_writer, audio, get_audio_channels(c->buffer.speakers),
+					    obs_get_video_frame_time());
+	pthread_mutex_unlock(&c->camera_audio_mutex);
 
 	return audio;
+}
+
+struct capture_control_context {
+	bool update_setting;
+	bool enabled;
+	struct sr_capture_recording_summary *summary;
+	size_t camera_count;
+};
+
+static void capture_control_filter(obs_source_t *parent, obs_source_t *child, void *param)
+{
+	UNUSED_PARAMETER(parent);
+	struct capture_control_context *ctx = param;
+	if (!ctx || strcmp(obs_source_get_unversioned_id(child), SR_CAPTURE_ID) != 0)
+		return;
+
+	ctx->camera_count++;
+	if (ctx->update_setting) {
+		obs_data_t *settings = obs_source_get_settings(child);
+		if (ctx->enabled && obs_data_get_bool(settings, S_DISK_RECORDING)) {
+			obs_data_set_bool(settings, S_DISK_RECORDING, false);
+			obs_source_update(child, settings);
+		}
+		obs_data_set_bool(settings, S_DISK_RECORDING, ctx->enabled);
+		obs_source_update(child, settings);
+		obs_data_release(settings);
+	}
+
+	if (!ctx->summary)
+		return;
+	struct sr_capture *capture = obs_obj_get_data(child);
+	if (!capture)
+		return;
+	struct sr_capture_recording_summary status;
+	pthread_mutex_lock(&capture->status_mutex);
+	status = capture->status;
+	pthread_mutex_unlock(&capture->status_mutex);
+
+	ctx->summary->camera_count += status.camera_count;
+	ctx->summary->requested_count += status.requested_count;
+	ctx->summary->active_count += status.active_count;
+	ctx->summary->failed_count += status.failed_count;
+	ctx->summary->reserve_blocked_count += status.reserve_blocked_count;
+	ctx->summary->packets_written += status.packets_written;
+	ctx->summary->bytes_written += status.bytes_written;
+}
+
+static bool capture_control_source(void *param, obs_source_t *source)
+{
+	obs_source_enum_filters(source, capture_control_filter, param);
+	return true;
+}
+
+bool sr_capture_set_all_disk_recording(bool enabled, size_t *camera_count)
+{
+	struct capture_control_context ctx = {.update_setting = true, .enabled = enabled};
+	obs_enum_sources(capture_control_source, &ctx);
+	if (camera_count)
+		*camera_count = ctx.camera_count;
+	return true;
+}
+
+bool sr_capture_get_recording_summary(struct sr_capture_recording_summary *summary)
+{
+	if (!summary)
+		return false;
+	memset(summary, 0, sizeof(*summary));
+	struct capture_control_context ctx = {.summary = summary};
+	obs_enum_sources(capture_control_source, &ctx);
+	return true;
 }
 
 static obs_properties_t *sr_capture_properties(void *unused)
@@ -193,6 +520,21 @@ static obs_properties_t *sr_capture_properties(void *unused)
 	obs_property_list_add_int(p, obs_module_text("Quality.Medium"), 23);
 	obs_property_list_add_int(p, obs_module_text("Quality.Low"), 28);
 
+	p = obs_properties_add_list(props, S_GOP, obs_module_text("GOP"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("GOP.AllI"), SR_GOP_ALL_I);
+	obs_property_list_add_int(p, obs_module_text("GOP.Ultra"), SR_GOP_250MS);
+	obs_property_list_add_int(p, obs_module_text("GOP.Balanced"), SR_GOP_500MS);
+	obs_property_list_add_int(p, obs_module_text("GOP.Economy"), SR_GOP_1000MS);
+	obs_property_set_long_description(p, obs_module_text("GOP.Description"));
+
+	p = obs_properties_add_bool(props, S_DISK_RECORDING, obs_module_text("DiskRecording"));
+	obs_property_set_long_description(p, obs_module_text("DiskRecording.Description"));
+
+	p = obs_properties_add_int(props, S_SYNC_OFFSET_MS, obs_module_text("SyncOffset"), -SR_CAMERA_SYNC_MAX_MS,
+				   SR_CAMERA_SYNC_MAX_MS, 1);
+	obs_property_int_set_suffix(p, " ms");
+	obs_property_set_long_description(p, obs_module_text("SyncOffset.Description"));
+
 	char credit[256];
 	obs_properties_add_text(props, "sr_credit", sr_plugin_credit_html(credit, sizeof(credit)), OBS_TEXT_INFO);
 
@@ -204,6 +546,11 @@ static void sr_capture_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_DURATION, 15000);
 	obs_data_set_default_int(settings, S_ENCODER, SR_ENC_AUTO);
 	obs_data_set_default_int(settings, S_QUALITY, 23);
+	obs_data_set_default_int(settings, S_GOP, SR_GOP_500MS);
+	obs_data_set_default_int(settings, S_SYNC_OFFSET_MS, 0);
+	/* Keep new continuous recording opt-in while the disk engine is still
+	 * running in parallel with the proven legacy replay buffer. */
+	obs_data_set_default_bool(settings, S_DISK_RECORDING, false);
 }
 
 struct obs_source_info sr_capture_info = {

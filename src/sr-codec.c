@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -22,6 +22,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
+
+#include <limits.h>
 
 struct sr_encoder {
 	AVCodecContext *ctx;
@@ -70,8 +72,23 @@ static enum AVPixelFormat obs_to_av_format(enum video_format format)
 	}
 }
 
+static int gop_frames_from_interval(uint32_t fps_num, uint32_t fps_den, uint32_t gop_interval_ms)
+{
+	if (!gop_interval_ms || !fps_num || !fps_den)
+		return 1;
+
+	const uint64_t numerator = (uint64_t)fps_num * (uint64_t)gop_interval_ms;
+	const uint64_t denominator = (uint64_t)fps_den * 1000ULL;
+	uint64_t frames = (numerator + denominator / 2ULL) / denominator;
+	if (!frames)
+		frames = 1;
+	if (frames > (uint64_t)INT_MAX)
+		frames = (uint64_t)INT_MAX;
+	return (int)frames;
+}
+
 static bool open_encoder(struct sr_encoder *enc, const char *name, uint32_t width, uint32_t height, uint32_t fps_num,
-			 uint32_t fps_den, int qp)
+			 uint32_t fps_den, int qp, int gop_size)
 {
 	const AVCodec *codec = avcodec_find_encoder_by_name(name);
 	if (!codec)
@@ -81,18 +98,20 @@ static bool open_encoder(struct sr_encoder *enc, const char *name, uint32_t widt
 	if (!ctx)
 		return false;
 
-	/* every frame is an intra frame so the replay can start playback and
-	 * scrub at any position without decoding predecessors */
+	/* Replay streams use a short closed GOP with no B-frames. That keeps
+	 * packet order equal to presentation order while still reducing RAM/disk
+	 * bandwidth versus All-I. Playback rebuilds state from the preceding
+	 * keyframe for reverse and random seeks. */
 	ctx->width = (int)(width & ~1u);
 	ctx->height = (int)(height & ~1u);
 	ctx->pix_fmt = AV_PIX_FMT_NV12;
 	ctx->time_base = (AVRational){(int)fps_den, (int)fps_num};
 	ctx->framerate = (AVRational){(int)fps_num, (int)fps_den};
-	ctx->gop_size = 1;
+	ctx->gop_size = gop_size > 0 ? gop_size : 1;
 	ctx->max_b_frames = 0;
 	/* emit SPS/PPS as out-of-band extradata so the stream can be muxed to
 	 * mp4 and decoded from a stored header */
-	ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+	ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER | AV_CODEC_FLAG_CLOSED_GOP;
 	ctx->color_range = AVCOL_RANGE_MPEG;
 	ctx->colorspace = AVCOL_SPC_BT709;
 	ctx->color_primaries = AVCOL_PRI_BT709;
@@ -149,10 +168,11 @@ static bool open_encoder(struct sr_encoder *enc, const char *name, uint32_t widt
 }
 
 struct sr_encoder *sr_encoder_create(uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den,
-				     enum sr_encoder_backend backend, int qp)
+				     enum sr_encoder_backend backend, int qp, uint32_t gop_interval_ms)
 {
 	static const char *auto_order[] = {"h264_nvenc", "h264_amf", "h264_qsv", "libx264"};
 	const char *only = NULL;
+	const int gop_size = gop_frames_from_interval(fps_num, fps_den, gop_interval_ms);
 
 	switch (backend) {
 	case SR_ENC_NVENC:
@@ -178,16 +198,16 @@ struct sr_encoder *sr_encoder_create(uint32_t width, uint32_t height, uint32_t f
 
 	bool opened = false;
 	if (only) {
-		opened = open_encoder(enc, only, width, height, fps_num, fps_den, qp);
+		opened = open_encoder(enc, only, width, height, fps_num, fps_den, qp, gop_size);
 		/* an explicitly selected hardware encoder may still be
 		 * missing on this machine; fall back to software */
 		if (!opened && strcmp(only, "libx264") != 0) {
 			obs_log(LOG_WARNING, "encoder '%s' unavailable, falling back to libx264", only);
-			opened = open_encoder(enc, "libx264", width, height, fps_num, fps_den, qp);
+			opened = open_encoder(enc, "libx264", width, height, fps_num, fps_den, qp, gop_size);
 		}
 	} else {
 		for (size_t i = 0; i < sizeof(auto_order) / sizeof(auto_order[0]) && !opened; i++)
-			opened = open_encoder(enc, auto_order[i], width, height, fps_num, fps_den, qp);
+			opened = open_encoder(enc, auto_order[i], width, height, fps_num, fps_den, qp, gop_size);
 	}
 
 	if (!opened) {
@@ -195,8 +215,9 @@ struct sr_encoder *sr_encoder_create(uint32_t width, uint32_t height, uint32_t f
 		return NULL;
 	}
 
-	obs_log(LOG_INFO, "opened replay encoder '%s' (%ux%u, qp %d)", enc->codec->name, enc->ctx->width,
-		enc->ctx->height, qp);
+	const double actual_gop_ms = 1000.0 * (double)gop_size * (double)fps_den / (double)fps_num;
+	obs_log(LOG_INFO, "opened replay encoder '%s' (%ux%u, qp %d, GOP %d frames / %.1f ms, B=0)", enc->codec->name,
+		enc->ctx->width, enc->ctx->height, qp, gop_size, actual_gop_ms);
 	return enc;
 }
 

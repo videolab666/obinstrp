@@ -3,7 +3,7 @@
 ======================================================================
 
 --- TÍTULO del recurso ---
-Sports Replay — Low-memory instant replay for sports broadcasts
+Pitel Instant Replay — Low-memory instant replay for sports broadcasts
 
 --- TAG LINE / resumen corto ---
 Instant replay with a compressed GPU buffer, slow motion, sponsor bumpers and a replay bin dock — made for live sports streaming.
@@ -21,10 +21,10 @@ OBS Studio Plugins
  DESCRIPCIÓN (pegar en el cuerpo del recurso — BBCode)
 ======================================================================
 
-[SIZE=5][B]Sports Replay[/B][/SIZE]
+[SIZE=5][B]Pitel Instant Replay[/B][/SIZE]
 [B]Low-memory instant replay for live sports broadcasts.[/B]
 
-Sports Replay brings TV-style instant replay to OBS without eating your RAM. Instead of keeping raw frames in memory (which can reach several GB per camera), it keeps the buffer [B]compressed with your GPU[/B] (NVENC / AMF / QSV, with an x264 software fallback). A 15-second 1080p60 buffer uses tens of megabytes instead of gigabytes, so multi-camera replay setups run comfortably on a normal streaming PC.
+Pitel Instant Replay brings TV-style instant replay to OBS without eating your RAM. Instead of keeping raw frames in memory (which can reach several GB per camera), it keeps the buffer [B]compressed with your GPU[/B] (NVENC / AMF / QSV, with an x264 software fallback). A 15-second 1080p60 buffer uses tens of megabytes instead of gigabytes, so multi-camera replay setups run comfortably on a normal streaming PC.
 
 [SIZE=4][B]Features[/B][/SIZE]
 [LIST]
@@ -40,10 +40,10 @@ Sports Replay brings TV-style instant replay to OBS without eating your RAM. Ins
 
 [SIZE=4][B]How to use[/B][/SIZE]
 [LIST=1]
-[*]Add the [B]Sports Replay Capture[/B] filter to each camera (right-click source → Filters).
-[*]In your replay scene, add a [B]Sports Replay[/B] source and pick which camera to replay from. Set speed, "when the replay ends = return to previous scene", and optional sponsor clips.
+[*]Add the [B]Pitel Instant Replay Capture[/B] filter to each camera (right-click source → Filters).
+[*]In your replay scene, add a [B]Pitel Instant Replay[/B] source and pick which camera to replay from. Set speed, "when the replay ends = return to previous scene", and optional sponsor clips.
 [*]Cut to the replay scene → it plays automatically and returns to your main camera.
-[*]Open the [B]Replays (Sports Replay)[/B] dock to see saved replays as thumbnails and launch them with a double-click.
+[*]Open the [B]Replays (Pitel Instant Replay)[/B] dock to see saved replays as thumbnails and launch them with a double-click.
 [/LIST]
 
 [SIZE=4][B]Requirements[/B][/SIZE]

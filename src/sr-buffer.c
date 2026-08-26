@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -129,8 +129,24 @@ bool sr_buffer_snapshot(struct sr_buffer *b, struct sr_replay *out)
 		return false;
 	}
 
-	da_reserve(out->video, video_count);
-	for (size_t i = 0; i < video_count; i++) {
+	/* The duration-based ring eviction can leave P-frames at the front of a
+	 * short-GOP buffer. Start the frozen replay at the first retained keyframe
+	 * so it is independently decodable. This shortens the requested duration by
+	 * at most one GOP while keeping the steady-state RAM buffer simple. */
+	size_t video_start = 0;
+	for (; video_start < video_count; video_start++) {
+		struct sr_packet *src = deque_data(&b->video, video_start * sizeof(struct sr_packet));
+		if (src->pkt && (src->pkt->flags & AV_PKT_FLAG_KEY))
+			break;
+	}
+	if (video_start == video_count) {
+		pthread_mutex_unlock(&b->mutex);
+		return false;
+	}
+
+	const size_t snapshot_video_count = video_count - video_start;
+	da_reserve(out->video, snapshot_video_count);
+	for (size_t i = video_start; i < video_count; i++) {
 		struct sr_packet *src = deque_data(&b->video, i * sizeof(struct sr_packet));
 		struct sr_packet copy = {.pkt = av_packet_clone(src->pkt), .ts = src->ts};
 		if (copy.pkt)

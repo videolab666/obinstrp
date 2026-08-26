@@ -1,7 +1,7 @@
-; Inno Setup installer for Sports Replay (OBS Studio plugin)
+; Inno Setup installer for Pitel Instant Replay (OBS Studio plugin)
 ; Author: Systec - https://www.systecinformatica.com.ar
 
-#define MyName "Sports Replay for OBS Studio"
+#define MyName "Pitel Instant Replay for OBS Studio"
 #ifndef MyVersion
   #define MyVersion "1.0.0"
 #endif
@@ -18,7 +18,7 @@ DisableProgramGroupPage=yes
 DisableReadyPage=no
 UninstallDisplayName={#MyName}
 UninstallDisplayIcon={app}\bin\64bit\obs64.exe
-OutputBaseFilename=sports-replay-{#MyVersion}-windows-installer
+OutputBaseFilename=pitel-instant-replay-{#MyVersion}-windows-installer
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible

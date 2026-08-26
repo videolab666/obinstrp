@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -37,10 +37,17 @@ char *sr_scene_tracker_previous(void);
  * copy of the name. */
 void sr_switch_to_scene(const char *scene_name);
 
+/* As above, but temporarily selects an existing native OBS Stinger by name
+ * for this scene change. The operator's previous transition is restored when
+ * OBS reports TRANSITION_STOPPED. Missing/renamed stingers fall back to the
+ * transition currently selected in OBS. */
+void sr_switch_to_scene_with_transition(const char *scene_name, const char *transition_name);
+
 /* Same as sr_switch_to_scene(), but marks the switch as a "return to
  * previous scene" bounce, so a playback source landing there doesn't
  * auto-capture a fresh replay. */
 void sr_switch_to_scene_return(const char *scene_name);
+void sr_switch_to_scene_return_with_transition(const char *scene_name, const char *transition_name);
 
 /* Reads and clears the "returning to previous scene" mark; true when the
  * activation happening right now was caused by sr_switch_to_scene_return()

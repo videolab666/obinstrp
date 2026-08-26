@@ -1,5 +1,5 @@
 /*
-Sports Replay
+Pitel Instant Replay
 Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
 
 This program is free software; you can redistribute it and/or modify
@@ -44,9 +44,11 @@ static char *g_current_scene;
 static char *g_previous_scene;
 static char *g_return_target; /* scene a bounce is on its way to, or NULL */
 static uint64_t g_return_expires;
-static char *g_preview_scene;         /* what the operator has lined up in preview */
-static bool g_preview_guard;          /* a replay is on air: keep it out of preview */
-static uint64_t g_preview_guard_ends; /* 0 = guard runs until the replay leaves program */
+static char *g_preview_scene;               /* what the operator has lined up in preview */
+static bool g_preview_guard;                /* a replay is on air: keep it out of preview */
+static uint64_t g_preview_guard_ends;       /* 0 = guard runs until the replay leaves program */
+static obs_source_t *g_transition_restore;  /* ref held while a one-shot override is active */
+static obs_source_t *g_transition_override; /* ref held while a one-shot override is active */
 
 /* call with g_mutex held */
 static void clear_return_mark(void)
@@ -151,6 +153,31 @@ static void on_preview_scene_changed(void)
 	bfree(restore);
 }
 
+static void restore_transition_override(void)
+{
+	obs_source_t *restore = NULL;
+	obs_source_t *override = NULL;
+
+	pthread_mutex_lock(&g_mutex);
+	restore = g_transition_restore;
+	override = g_transition_override;
+	g_transition_restore = NULL;
+	g_transition_override = NULL;
+	pthread_mutex_unlock(&g_mutex);
+
+	if (!override) {
+		obs_source_release(restore);
+		return;
+	}
+
+	obs_source_t *current = obs_frontend_get_current_transition();
+	if (current == override && restore)
+		obs_frontend_set_current_transition(restore);
+	obs_source_release(current);
+	obs_source_release(override);
+	obs_source_release(restore);
+}
+
 static void on_frontend_event(enum obs_frontend_event event, void *data)
 {
 	UNUSED_PARAMETER(data);
@@ -161,6 +188,9 @@ static void on_frontend_event(enum obs_frontend_event event, void *data)
 		break;
 	case OBS_FRONTEND_EVENT_PREVIEW_SCENE_CHANGED:
 		on_preview_scene_changed();
+		break;
+	case OBS_FRONTEND_EVENT_TRANSITION_STOPPED:
+		restore_transition_override();
 		break;
 	case OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED:
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
@@ -198,6 +228,10 @@ void sr_scene_tracker_stop(void)
 	g_preview_scene = NULL;
 	g_preview_guard = false;
 	g_preview_guard_ends = 0;
+	obs_source_release(g_transition_restore);
+	obs_source_release(g_transition_override);
+	g_transition_restore = NULL;
+	g_transition_override = NULL;
 	clear_return_mark();
 	pthread_mutex_unlock(&g_mutex);
 	pthread_mutex_destroy(&g_mutex);
@@ -240,6 +274,74 @@ char *sr_find_scene_with_source(const char *source_name)
 	return ctx.found_name;
 }
 
+static obs_source_t *find_transition_by_name(const char *name, bool native_stinger_only)
+{
+	if (!name || !*name)
+		return NULL;
+
+	obs_source_t *result = NULL;
+	struct obs_frontend_source_list transitions = {0};
+	obs_frontend_get_transitions(&transitions);
+	for (size_t i = 0; i < transitions.sources.num; i++) {
+		obs_source_t *transition = transitions.sources.array[i];
+		if (strcmp(obs_source_get_name(transition), name) != 0)
+			continue;
+		if (native_stinger_only &&
+		    strcmp(obs_source_get_unversioned_id(transition), "obs_stinger_transition") != 0)
+			continue;
+		result = obs_source_get_ref(transition);
+		break;
+	}
+	obs_frontend_source_list_free(&transitions);
+	return result;
+}
+
+static bool begin_transition_override(const char *transition_name)
+{
+	if (!transition_name || !*transition_name)
+		return false;
+
+	obs_source_t *override = find_transition_by_name(transition_name, true);
+	if (!override) {
+		blog(LOG_WARNING,
+		     "Pitel Instant Replay: native OBS Stinger '%s' was not found; using current transition",
+		     transition_name);
+		return false;
+	}
+
+	obs_source_t *current = obs_frontend_get_current_transition();
+	if (current == override) {
+		obs_source_release(current);
+		obs_source_release(override);
+		return false;
+	}
+
+	pthread_mutex_lock(&g_mutex);
+	const bool already_pending = g_transition_override != NULL;
+	if (!already_pending) {
+		g_transition_restore = current;
+		g_transition_override = override;
+	}
+	pthread_mutex_unlock(&g_mutex);
+
+	if (already_pending) {
+		blog(LOG_WARNING,
+		     "Pitel Instant Replay: transition override already in flight; keeping current OBS transition");
+		obs_source_release(current);
+		obs_source_release(override);
+		return false;
+	}
+
+	obs_frontend_set_current_transition(override);
+	return true;
+}
+
+struct sr_scene_switch_request {
+	char *scene_name;
+	char *transition_name;
+	bool returning;
+};
+
 static void switch_scene_task(void *param)
 {
 	char *name = param;
@@ -267,6 +369,56 @@ void sr_switch_to_scene(const char *scene_name)
 		return;
 	/* scene switching must happen on the UI thread */
 	obs_queue_task(OBS_TASK_UI, switch_scene_task, bstrdup(scene_name), false);
+}
+
+static void switch_scene_transition_task(void *param)
+{
+	struct sr_scene_switch_request *request = param;
+	if (!request)
+		return;
+
+	obs_source_t *scene = obs_get_source_by_name(request->scene_name);
+	if (scene) {
+		if (!request->returning) {
+			note_preview_scene();
+			sr_scene_tracker_note_replay_launch();
+		} else {
+			pthread_mutex_lock(&g_mutex);
+			bfree(g_return_target);
+			g_return_target = bstrdup(request->scene_name);
+			g_return_expires = os_gettime_ns() + SR_RETURN_WINDOW_NS;
+			pthread_mutex_unlock(&g_mutex);
+		}
+
+		begin_transition_override(request->transition_name);
+		obs_frontend_set_current_scene(scene);
+		obs_source_release(scene);
+	}
+
+	bfree(request->scene_name);
+	bfree(request->transition_name);
+	bfree(request);
+}
+
+static void queue_scene_with_transition(const char *scene_name, const char *transition_name, bool returning)
+{
+	if (!scene_name || !*scene_name)
+		return;
+
+	struct sr_scene_switch_request *request = bzalloc(sizeof(*request));
+	request->scene_name = bstrdup(scene_name);
+	request->transition_name = bstrdup(transition_name ? transition_name : "");
+	request->returning = returning;
+	obs_queue_task(OBS_TASK_UI, switch_scene_transition_task, request, false);
+}
+
+void sr_switch_to_scene_with_transition(const char *scene_name, const char *transition_name)
+{
+	if (!transition_name || !*transition_name) {
+		sr_switch_to_scene(scene_name);
+		return;
+	}
+	queue_scene_with_transition(scene_name, transition_name, false);
 }
 
 static void switch_scene_return_task(void *param)
@@ -301,6 +453,15 @@ void sr_switch_to_scene_return(const char *scene_name)
 	obs_queue_task(OBS_TASK_UI, switch_scene_return_task, bstrdup(scene_name), false);
 }
 
+void sr_switch_to_scene_return_with_transition(const char *scene_name, const char *transition_name)
+{
+	if (!transition_name || !*transition_name) {
+		sr_switch_to_scene_return(scene_name);
+		return;
+	}
+	queue_scene_with_transition(scene_name, transition_name, true);
+}
+
 bool sr_scene_tracker_consume_returning(void)
 {
 	bool match = false;
@@ -325,7 +486,7 @@ static void switch_to_source_scene_task(void *param)
 
 	char *scene = sr_find_scene_with_source(source_name);
 	if (!scene) {
-		blog(LOG_WARNING, "[sports-replay] '%s' is not in any scene, returning to the previous one",
+		blog(LOG_WARNING, "[pitel-instant-replay] '%s' is not in any scene, returning to the previous one",
 		     source_name);
 		scene = sr_scene_tracker_previous();
 	}
@@ -346,6 +507,8 @@ void sr_switch_to_scene_of_source_return(const char *source_name)
 
 void sr_scene_tracker_note_replay_launch(void)
 {
+	if (!g_started)
+		return;
 	pthread_mutex_lock(&g_mutex);
 	g_preview_guard = true;
 	g_preview_guard_ends = 0; /* guard until the replay leaves program */
@@ -354,6 +517,8 @@ void sr_scene_tracker_note_replay_launch(void)
 
 void sr_scene_tracker_end_replay_guard(void)
 {
+	if (!g_started)
+		return;
 	pthread_mutex_lock(&g_mutex);
 	if (g_preview_guard && !g_preview_guard_ends)
 		g_preview_guard_ends = os_gettime_ns() + SR_PREVIEW_GUARD_TAIL_NS;
