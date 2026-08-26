@@ -18,7 +18,28 @@ jobs:
           ref: feature/hardware-zero-copy
           fetch-depth: 0
       - name: Apply patch
-        run: python .github/scripts/patch-event-speed-override.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/patch-event-speed-override.py')
+          s = p.read_text(encoding='utf-8')
+          old = "    count=3,\n    label='controller preserves speed_override',"
+          new = "    count=2,\n    label='controller preserves speed_override',"
+          if old not in s:
+              raise SystemExit('controller helper count marker not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+          python .github/scripts/patch-event-speed-override.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/sr-event-controller.c')
+          s = p.read_text(encoding='utf-8')
+          old = "\t\t\t.speed_percent = record.speed_percent,\n\t\t\t.audio_mode = record.audio_mode,"
+          new = "\t\t\t.speed_percent = record.speed_percent,\n\t\t\t.speed_override = record.speed_override,\n\t\t\t.audio_mode = record.audio_mode,"
+          if s.count(old) != 1:
+              raise SystemExit(f'preferred-camera speed override marker count={s.count(old)}')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
       - name: Format sources
         run: |
           clang-format-19 -i src/sr-event-db.h src/sr-event-db.c src/sr-event-controller.c src/sr-replay-channel.c src/sr-event-dock.cpp
@@ -29,6 +50,7 @@ jobs:
           grep -q 'event.speed_override' src/sr-replay-channel.c
           grep -q 'QStringLiteral("--")' src/sr-event-dock.cpp
           grep -q 'EventDock.EventSpeed.Tooltip' data/locale/en-US.ini
+          test "$(grep -c 'speed_override = record.speed_override' src/sr-event-controller.c)" -eq 3
       - name: Commit product changes and remove helpers
         run: |
           rm .github/scripts/patch-event-speed-override.py .github/workflows/apply-event-speed-override.yml
