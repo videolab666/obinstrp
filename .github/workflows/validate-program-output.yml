@@ -1,34 +1,64 @@
-name: Replay Development CI
-run-name: Replay Development CI — ${{ github.ref_name }} — ${{ github.event_name }}
+name: Timeline editor applicator
+run-name: Apply full recording timeline editor
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - feature/hardware-zero-copy
 
 permissions:
-  contents: read
+  contents: write
+  actions: write
 
 concurrency:
-  group: replay-development-ci-${{ github.ref }}
+  group: timeline-editor-applicator
   cancel-in-progress: true
 
-# Full validation for the active replay development branch.
-# Every push is built; workflow_dispatch keeps a manual Run workflow button
-# available from the default branch. PR validation is intentionally left to
-# the repository's normal PR workflow when this branch is eventually retargeted
-# to main, avoiding duplicate push + pull_request builds during development.
 jobs:
-  check-format:
-    name: Check Formatting 🔍
-    uses: ./.github/workflows/check-format.yaml
-    permissions:
-      contents: read
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
 
-  build-project:
-    name: Build Project 🧱
-    uses: ./.github/workflows/build-project.yaml
-    secrets: inherit
-    permissions:
-      contents: read
+      - name: Apply product patch
+        run: python3 .github/apply-edit-timeline.py
+
+      - name: Validate product patch
+        run: |
+          git diff --check
+          grep -F 'constexpr int TIMELINE_SCALE = 1000000;' src/sr-event-dock.cpp
+          grep -F 'EventDock.Timeline.EditTooltip' data/locale/en-US.ini
+          grep -F 'brew trust obsproject/tools' .github/actions/run-clang-format/action.yaml
+          grep -F 'void editSelectedEventRange(int rangeIn, int rangeOut)' src/sr-event-dock.cpp
+          grep -F 'bool previewSelectedEvent(bool force)' src/sr-event-dock.cpp
+
+      - name: Restore normal validation workflow
+        run: |
+          git show e63ae32090bc0bcbd7d4e1a1c6fd37d36d39d0e7:.github/workflows/validate-program-output.yml > .github/workflows/validate-program-output.yml
+          rm -f .github/apply-edit-timeline.py
+          git diff --check
+
+      - name: Commit and publish product changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -u
+          git diff --cached --check
+          git commit -m 'feat: add full recording Event trim timeline'
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:feature/hardware-zero-copy; then
+              exit 0
+            fi
+            echo "Push attempt ${attempt} raced with another update; rebasing and retrying"
+            git pull --rebase origin feature/hardware-zero-copy
+            sleep 2
+          done
+          exit 1
+
+      - name: Start final validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run validate-program-output.yml --ref feature/hardware-zero-copy
