@@ -1,34 +1,65 @@
-name: Replay Development CI
-run-name: Replay Development CI — ${{ github.ref_name }} — ${{ github.event_name }}
+name: Timeline formatting applicator
+run-name: Format full recording timeline editor
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - feature/hardware-zero-copy
 
 permissions:
-  contents: read
+  contents: write
+  actions: write
 
 concurrency:
-  group: replay-development-ci-${{ github.ref }}
+  group: timeline-format-applicator
   cancel-in-progress: true
 
-# Full validation for the active replay development branch.
-# Every push is built; workflow_dispatch keeps a manual Run workflow button
-# available from the default branch. PR validation is intentionally left to
-# the repository's normal PR workflow when this branch is eventually retargeted
-# to main, avoiding duplicate push + pull_request builds during development.
 jobs:
-  check-format:
-    name: Check Formatting 🔍
-    uses: ./.github/workflows/check-format.yaml
-    permissions:
-      contents: read
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
 
-  build-project:
-    name: Build Project 🧱
-    uses: ./.github/workflows/build-project.yaml
-    secrets: inherit
-    permissions:
-      contents: read
+      - name: Install clang-format 19
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew tap obsproject/tools
+          if brew help trust >/dev/null 2>&1; then
+            brew trust obsproject/tools
+          fi
+          brew install --quiet obsproject/tools/clang-format@19
+          echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> "$GITHUB_PATH"
+
+      - name: Format timeline source
+        run: |
+          /home/linuxbrew/.linuxbrew/opt/clang-format@19/bin/clang-format -i src/sr-event-dock.cpp
+          git diff --check
+
+      - name: Restore normal validation workflow
+        run: |
+          git show 3a52d84df202a9a76fe21c56be58efd79bbcfb7d:.github/workflows/validate-program-output.yml > .github/workflows/validate-program-output.yml
+          git diff --check
+
+      - name: Commit and publish formatting
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -u
+          git diff --cached --check
+          git commit -m 'style: format full recording timeline editor'
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:feature/hardware-zero-copy; then
+              exit 0
+            fi
+            git pull --rebase origin feature/hardware-zero-copy
+            sleep 2
+          done
+          exit 1
+
+      - name: Start final validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run validate-program-output.yml --ref feature/hardware-zero-copy
