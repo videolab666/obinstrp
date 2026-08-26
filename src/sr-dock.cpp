@@ -740,12 +740,17 @@ public:
 		rootLabel->setWordWrap(true);
 		rootLayout->addWidget(rootLabel);
 
+		usageLabel = new QLabel(this);
+		usageLabel->setWordWrap(true);
+		usageLabel->setStyleSheet(QStringLiteral("font-weight: 600;"));
+		rootLayout->addWidget(usageLabel);
+
 		table = new QTableWidget(this);
 		table->setColumnCount(4);
 		table->setHorizontalHeaderLabels({T("Storage.Column.Session"), T("Storage.Column.Created"),
 						  T("Storage.Column.Size"), T("Storage.Column.Status")});
 		table->setSelectionBehavior(QAbstractItemView::SelectRows);
-		table->setSelectionMode(QAbstractItemView::SingleSelection);
+		table->setSelectionMode(QAbstractItemView::ExtendedSelection);
 		table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		table->verticalHeader()->setVisible(false);
 		table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -756,9 +761,11 @@ public:
 
 		auto *buttons = new QHBoxLayout();
 		auto *refresh = new QPushButton(T("Storage.Refresh"), this);
-		auto *remove = new QPushButton(T("Storage.Delete"), this);
+		auto *remove = new QPushButton(T("Storage.DeleteSelected"), this);
+		auto *removeAll = new QPushButton(T("Storage.DeleteAll"), this);
 		buttons->addWidget(refresh);
 		buttons->addWidget(remove);
+		buttons->addWidget(removeAll);
 		buttons->addStretch(1);
 		rootLayout->addLayout(buttons);
 
@@ -768,7 +775,8 @@ public:
 		rootLayout->addWidget(gcStatus);
 
 		connect(refresh, &QPushButton::clicked, this, [this]() { refreshSessions(); });
-		connect(remove, &QPushButton::clicked, this, [this]() { deleteSelectedSession(); });
+		connect(remove, &QPushButton::clicked, this, [this]() { deleteSelectedSessions(); });
+		connect(removeAll, &QPushButton::clicked, this, [this]() { deleteAllSessions(); });
 
 		statusTimer = new QTimer(this);
 		statusTimer->setInterval(2000);
@@ -777,7 +785,19 @@ public:
 		refreshSessions();
 	}
 
+protected:
+	void showEvent(QShowEvent *event) override
+	{
+		QWidget::showEvent(event);
+		refreshSessions();
+	}
+
 private:
+	void updateUsageLabel()
+	{
+		usageLabel->setText(T("Storage.UsedSummary").arg(formattedBytes(totalSessionBytes)).arg(sessionCount));
+	}
+
 	void refreshStatus()
 	{
 		char *rootRaw = sr_config_get_session_root();
@@ -786,6 +806,7 @@ private:
 		const QByteArray rootUtf8 = root.toUtf8();
 		const quint64 freeBytes = root.isEmpty() ? 0 : os_get_free_disk_space(rootUtf8.constData());
 		rootLabel->setText(T("Storage.RootSummary").arg(root).arg(formattedBytes(freeBytes)));
+		updateUsageLabel();
 
 		sr_storage_manager_status manager = {};
 		sr_storage_manager_get_status(&manager);
@@ -807,7 +828,6 @@ private:
 
 	void refreshSessions()
 	{
-		refreshStatus();
 		char *rootRaw = sr_config_get_session_root();
 		const QString root = QString::fromUtf8(rootRaw ? rootRaw : "");
 		bfree(rootRaw);
@@ -820,60 +840,139 @@ private:
 			if (QFileInfo(metadata).isFile())
 				sessions.append(candidate);
 		}
+
+		totalSessionBytes = 0;
+		sessionCount = sessions.size();
 		table->setRowCount(sessions.size());
 		for (int row = 0; row < sessions.size(); row++) {
 			const QFileInfo &session = sessions.at(row);
 			const QString path = session.absoluteFilePath();
 			const bool active = sr_session_path_is_active(path.toUtf8().constData());
+			const quint64 bytes = directoryBytes(path);
+			totalSessionBytes += bytes;
 			auto *name = new QTableWidgetItem(session.fileName());
 			name->setData(Qt::UserRole, path);
+			name->setData(Qt::UserRole + 1, QVariant::fromValue<qulonglong>(bytes));
 			table->setItem(row, 0, name);
 			const qint64 created = sessionCreatedUnix(path);
 			table->setItem(row, 1,
 				       new QTableWidgetItem(QDateTime::fromSecsSinceEpoch(created).toString(
 					       QStringLiteral("yyyy-MM-dd HH:mm:ss"))));
-			table->setItem(row, 2, new QTableWidgetItem(formattedBytes(directoryBytes(path))));
+			table->setItem(row, 2, new QTableWidgetItem(formattedBytes(bytes)));
 			table->setItem(row, 3,
 				       new QTableWidgetItem(active ? T("Storage.Active") : T("Storage.Inactive")));
 		}
+		refreshStatus();
 	}
 
-	void deleteSelectedSession()
+	QStringList selectedSessionPaths() const
 	{
-		const int row = table->currentRow();
-		QTableWidgetItem *item = row >= 0 ? table->item(row, 0) : nullptr;
-		if (!item)
-			return;
-		const QString path = item->data(Qt::UserRole).toString();
-		const QByteArray pathUtf8 = path.toUtf8();
-		if (sr_session_path_is_active(pathUtf8.constData())) {
-			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteActive"));
-			return;
+		QStringList paths;
+		if (!table->selectionModel())
+			return paths;
+		const QModelIndexList rows = table->selectionModel()->selectedRows(0);
+		for (const QModelIndex &index : rows) {
+			QTableWidgetItem *item = table->item(index.row(), 0);
+			if (item)
+				paths.append(item->data(Qt::UserRole).toString());
 		}
+		return paths;
+	}
 
+	QStringList allSessionPaths() const
+	{
+		QStringList paths;
+		for (int row = 0; row < table->rowCount(); row++) {
+			QTableWidgetItem *item = table->item(row, 0);
+			if (item)
+				paths.append(item->data(Qt::UserRole).toString());
+		}
+		return paths;
+	}
+
+	void deleteSelectedSessions()
+	{
+		const QStringList paths = selectedSessionPaths();
+		if (paths.isEmpty())
+			return;
+		deleteSessions(paths, false);
+	}
+
+	void deleteAllSessions()
+	{
+		const QStringList paths = allSessionPaths();
+		if (paths.isEmpty())
+			return;
+		deleteSessions(paths, true);
+	}
+
+	void deleteSessions(const QStringList &requestedPaths, bool all)
+	{
 		char *rootRaw = sr_config_get_session_root();
 		const QString canonicalRoot = QFileInfo(QString::fromUtf8(rootRaw ? rootRaw : "")).canonicalFilePath();
 		bfree(rootRaw);
-		const QFileInfo selected(path);
-		if (canonicalRoot.isEmpty() || selected.dir().canonicalPath() != canonicalRoot) {
+		if (canonicalRoot.isEmpty()) {
 			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteInvalid"));
 			return;
 		}
 
-		if (QMessageBox::question(this, T("Storage.DeleteTitle"),
-					  T("Storage.DeleteConfirm").arg(selected.fileName())) != QMessageBox::Yes)
-			return;
-		if (!QDir(path).removeRecursively()) {
-			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteFailed"));
+		QStringList deletable;
+		quint64 selectedBytes = 0;
+		int activeSkipped = 0;
+		int invalidSkipped = 0;
+		for (const QString &path : requestedPaths) {
+			const QFileInfo selected(path);
+			if (selected.dir().canonicalPath() != canonicalRoot) {
+				invalidSkipped++;
+				continue;
+			}
+			const QByteArray pathUtf8 = path.toUtf8();
+			if (sr_session_path_is_active(pathUtf8.constData())) {
+				activeSkipped++;
+				continue;
+			}
+			deletable.append(path);
+			selectedBytes += directoryBytes(path);
+		}
+
+		if (deletable.isEmpty()) {
+			QMessageBox::warning(this, T("Storage.DeleteTitle"),
+					     activeSkipped ? T("Storage.DeleteActive") : T("Storage.DeleteInvalid"));
 			return;
 		}
+
+		const QString question = T(all ? "Storage.DeleteAllConfirm" : "Storage.DeleteManyConfirm")
+						 .arg(deletable.size())
+						 .arg(formattedBytes(selectedBytes))
+						 .arg(activeSkipped);
+		if (QMessageBox::question(this, T("Storage.DeleteTitle"), question) != QMessageBox::Yes)
+			return;
+
+		int deleted = 0;
+		int errors = 0;
+		for (const QString &path : deletable) {
+			if (QDir(path).removeRecursively())
+				deleted++;
+			else
+				errors++;
+		}
 		refreshSessions();
+
+		const QString result =
+			T("Storage.DeleteManyResult").arg(deleted).arg(activeSkipped).arg(invalidSkipped).arg(errors);
+		if (errors || activeSkipped || invalidSkipped)
+			QMessageBox::information(this, T("Storage.DeleteTitle"), result);
+		else
+			gcStatus->setText(result);
 	}
 
 	QLabel *rootLabel = nullptr;
+	QLabel *usageLabel = nullptr;
 	QLabel *gcStatus = nullptr;
 	QTableWidget *table = nullptr;
 	QTimer *statusTimer = nullptr;
+	quint64 totalSessionBytes = 0;
+	int sessionCount = 0;
 };
 
 /* The live dock, so replays that go to air from a hotkey can be marked

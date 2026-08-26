@@ -1,62 +1,34 @@
-name: Replay UI patch applicator
-run-name: Apply Replay Setup and Storage UI
+name: Replay Development CI
+run-name: Replay Development CI — ${{ github.ref_name }} — ${{ github.event_name }}
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - feature/hardware-zero-copy
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
 
 concurrency:
-  group: replay-ui-product-apply
+  group: replay-development-ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Full validation for the active replay development branch.
+# Every push is built; workflow_dispatch keeps a manual Run workflow button
+# available from the default branch. PR validation is intentionally left to
+# the repository's normal PR workflow when this branch is eventually retargeted
+# to main, avoiding duplicate push + pull_request builds during development.
 jobs:
-  apply:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/hardware-zero-copy
-          fetch-depth: 0
+  check-format:
+    name: Check Formatting 🔍
+    uses: ./.github/workflows/check-format.yaml
+    permissions:
+      contents: read
 
-      - name: Apply requested product changes
-        run: python3 tools/apply_setup_storage_ui.py
-
-      - name: Install formatter
-        run: sudo apt-get update && sudo apt-get install -y clang-format
-
-      - name: Format changed C++ files
-        run: clang-format -i src/sr-event-dock.cpp src/sr-dock.cpp
-
-      - name: Restore normal CI and remove one-shot helpers
-        run: |
-          git show 5ace72aa2815f7efe954660c4ea22c38bdd278a6:.github/workflows/validate-program-output.yml > .github/workflows/validate-program-output.yml
-          rm -f tools/apply_setup_storage_ui.py .github/workflows/apply-setup-storage-ui.yml
-          git diff --check
-
-      - name: Commit and publish product patch
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -u
-          git diff --cached --check
-          git commit -m 'feat: streamline replay source setup and storage management'
-          for attempt in 1 2 3 4 5; do
-            if git push origin HEAD:feature/hardware-zero-copy; then
-              exit 0
-            fi
-            echo "Push attempt ${attempt} raced with another update; rebasing and retrying"
-            git pull --rebase origin feature/hardware-zero-copy
-            sleep 2
-          done
-          echo 'Could not publish product patch after retries' >&2
-          exit 1
-
-      - name: Start final full validation
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run validate-program-output.yml --ref feature/hardware-zero-copy
+  build-project:
+    name: Build Project 🧱
+    uses: ./.github/workflows/build-project.yaml
+    secrets: inherit
+    permissions:
+      contents: read

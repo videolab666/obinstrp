@@ -1766,6 +1766,45 @@ private:
 
 	bool openReplaySetup()
 	{
+		class ToggleSwitch final : public QCheckBox {
+		public:
+			explicit ToggleSwitch(QWidget *parent = nullptr) : QCheckBox(parent)
+			{
+				setCursor(Qt::PointingHandCursor);
+				setFixedSize(44, 24);
+				setFocusPolicy(Qt::StrongFocus);
+			}
+
+		protected:
+			bool hitButton(const QPoint &position) const override { return rect().contains(position); }
+
+			void paintEvent(QPaintEvent *event) override
+			{
+				Q_UNUSED(event);
+				QPainter painter(this);
+				painter.setRenderHint(QPainter::Antialiasing, true);
+				const QColor off = isEnabled() ? QColor(92, 92, 92) : QColor(68, 68, 68);
+				const QColor on = isEnabled() ? QColor(39, 174, 96) : QColor(76, 110, 88);
+				const QRectF track(1.0, 3.0, width() - 2.0, height() - 6.0);
+				painter.setPen(Qt::NoPen);
+				painter.setBrush(isChecked() ? on : off);
+				painter.drawRoundedRect(track, track.height() / 2.0, track.height() / 2.0);
+
+				const qreal diameter = track.height() - 4.0;
+				const qreal x = isChecked() ? track.right() - diameter - 2.0 : track.left() + 2.0;
+				painter.setBrush(isEnabled() ? QColor(250, 250, 250) : QColor(170, 170, 170));
+				painter.drawEllipse(QRectF(x, track.top() + 2.0, diameter, diameter));
+
+				if (hasFocus()) {
+					QPen focusPen(palette().highlight().color());
+					focusPen.setWidth(1);
+					painter.setPen(focusPen);
+					painter.setBrush(Qt::NoBrush);
+					painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 5, 5);
+				}
+			}
+		};
+
 		QDialog dialog(this);
 		dialog.setWindowTitle(T("EventDock.Setup.Title"));
 		dialog.resize(820, 500);
@@ -1787,27 +1826,19 @@ private:
 		hint->setStyleSheet(QStringLiteral("color: gray;"));
 		layout->addWidget(hint);
 
-		auto *programOutput = new QCheckBox(T("EventDock.Setup.ProgramOutput"), &dialog);
-		programOutput->setChecked(sr_program_recorder_selected());
-		programOutput->setEnabled(sr_program_recorder_supported());
-		programOutput->setToolTip(sr_program_recorder_supported()
-						  ? T("EventDock.Setup.ProgramOutput.Tooltip")
-						  : T("EventDock.Setup.ProgramOutput.Unsupported"));
-		layout->addWidget(programOutput);
-
 		auto *sources = new QTableWidget(&dialog);
-		sources->setColumnCount(5);
+		sources->setColumnCount(4);
 		sources->setHorizontalHeaderLabels({T("EventDock.Setup.Use"), T("EventDock.Setup.Source"),
-						    T("EventDock.Setup.Capture"), T("EventDock.Setup.Compatible"),
-						    T("EventDock.Setup.Type")});
+						    T("EventDock.Setup.Compatible"), T("EventDock.Setup.Type")});
 		sources->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		sources->setSelectionBehavior(QAbstractItemView::SelectRows);
+		sources->setSelectionMode(QAbstractItemView::NoSelection);
 		sources->setAlternatingRowColors(true);
 		sources->verticalHeader()->setVisible(false);
-		sources->verticalHeader()->setDefaultSectionSize(20);
+		sources->verticalHeader()->setDefaultSectionSize(30);
 		sources->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 		sources->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-		for (int column = 2; column < 5; column++)
+		for (int column = 2; column < 4; column++)
 			sources->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
 		layout->addWidget(sources, 1);
 
@@ -1836,68 +1867,128 @@ private:
 			sr_replay_setup_free_snapshot(&snapshot);
 		};
 
-		auto populateSources = [&](bool firstOpen) {
+		auto makeSwitchCell = [sources](ToggleSwitch *toggle) {
+			auto *container = new QWidget(sources);
+			auto *cellLayout = new QHBoxLayout(container);
+			cellLayout->setContentsMargins(5, 0, 5, 0);
+			cellLayout->setSpacing(0);
+			cellLayout->addWidget(toggle);
+			cellLayout->addStretch(1);
+			return container;
+		};
+
+		auto applyToggle = [&, this](ToggleSwitch *toggle, bool program, const QString &sourceName,
+					     bool enabled) {
+			sr_capture_recording_summary recording = {};
+			if (sr_capture_get_recording_summary(&recording) && recording.requested_count) {
+				if (QMessageBox::question(&dialog, T("EventDock.Setup.Title"),
+							  T("EventDock.Setup.StopRecordingFirst")) !=
+				    QMessageBox::Yes) {
+					QSignalBlocker blocker(toggle);
+					toggle->setChecked(!enabled);
+					return;
+				}
+				setAllRecording(false);
+			}
+
+			const QByteArray sourceUtf8 = sourceName.toUtf8();
+			const bool ok = program ? sr_replay_setup_set_program_output(enabled)
+						: sr_replay_setup_set_capture(sourceUtf8.constData(), enabled);
+			if (!ok) {
+				QSignalBlocker blocker(toggle);
+				toggle->setChecked(!enabled);
+				QMessageBox::warning(&dialog, T("EventDock.Setup.Title"),
+						     T("EventDock.Setup.ToggleFailed"));
+				return;
+			}
+
+			refreshSummary();
+			refreshSetupStatus();
+			refreshRecordingStatus();
+			refreshCameras();
+			status->setText(T("EventDock.Setup.ToggleApplied")
+						.arg(sourceName)
+						.arg(enabled ? T("EventDock.Setup.ProgramOn")
+							     : T("EventDock.Setup.ProgramOff")));
+		};
+
+		auto populateSources = [&]() {
 			sr_replay_setup_snapshot snapshot = {};
 			if (!sr_replay_setup_get_snapshot(&snapshot)) {
 				sources->setRowCount(0);
 				return;
 			}
-			const bool firstSetup = firstOpen && snapshot.capture_source_count == 0;
-			sources->setRowCount((int)snapshot.source_count);
+
+			sources->setRowCount((int)snapshot.source_count + 1);
+
+			// PROGRAM is a permanent pseudo-camera row. It is always visible even
+			// when the current platform cannot record it.
+			auto *programToggle = new ToggleSwitch(sources);
+			programToggle->setChecked(snapshot.program_output_enabled);
+			programToggle->setEnabled(snapshot.program_output_supported);
+			programToggle->setToolTip(snapshot.program_output_supported
+							  ? T("EventDock.Setup.ProgramOutput.Tooltip")
+							  : T("EventDock.Setup.ProgramOutput.Unsupported"));
+			sources->setCellWidget(0, 0, makeSwitchCell(programToggle));
+			sources->setItem(0, 1, new QTableWidgetItem(T("EventDock.Setup.ProgramOutputName")));
+			sources->setItem(0, 2,
+					 new QTableWidgetItem(snapshot.program_output_supported
+								      ? T("EventDock.Setup.Yes")
+								      : T("EventDock.Setup.No")));
+			sources->setItem(0, 3, new QTableWidgetItem(T("EventDock.Setup.ProgramOutputType")));
+			connect(programToggle, &QCheckBox::toggled, &dialog, [&, programToggle](bool enabled) {
+				applyToggle(programToggle, true, T("EventDock.Setup.ProgramOutputName"), enabled);
+			});
+
 			for (size_t i = 0; i < snapshot.source_count; i++) {
 				const sr_replay_setup_source &entry = snapshot.sources[i];
-				const int row = (int)i;
-				auto *use = new QTableWidgetItem();
-				Qt::ItemFlags useFlags = Qt::ItemIsSelectable | Qt::ItemIsUserCheckable;
-				if (entry.compatible || entry.has_capture)
-					useFlags |= Qt::ItemIsEnabled;
-				use->setFlags(useFlags);
-				use->setCheckState(entry.has_capture || (firstSetup && entry.compatible)
-							   ? Qt::Checked
-							   : Qt::Unchecked);
-				sources->setItem(row, 0, use);
-				sources->setItem(row, 1, new QTableWidgetItem(QString::fromUtf8(entry.name)));
-				QString captureState = T("EventDock.Setup.CaptureMissing");
-				if (entry.has_capture)
-					captureState = entry.capture_enabled ? T("EventDock.Setup.CaptureEnabled")
-									     : T("EventDock.Setup.CaptureDisabled");
-				auto *capture = new QTableWidgetItem(captureState);
-				capture->setData(Qt::UserRole, entry.has_capture);
-				capture->setData(Qt::UserRole + 1, entry.capture_enabled);
-				sources->setItem(row, 2, capture);
-				sources->setItem(row, 3,
+				const int row = (int)i + 1;
+				auto *toggle = new ToggleSwitch(sources);
+				const bool configured = entry.has_capture && entry.capture_enabled;
+				toggle->setChecked(configured);
+				toggle->setEnabled(entry.compatible || entry.has_capture);
+				const QString sourceName = QString::fromUtf8(entry.name);
+				toggle->setToolTip(entry.compatible
+							   ? T("EventDock.Setup.ToggleCameraTooltip").arg(sourceName)
+							   : T("EventDock.Setup.IncompatibleTooltip").arg(sourceName));
+				sources->setCellWidget(row, 0, makeSwitchCell(toggle));
+				sources->setItem(row, 1, new QTableWidgetItem(sourceName));
+				sources->setItem(row, 2,
 						 new QTableWidgetItem(entry.compatible ? T("EventDock.Setup.Yes")
 										       : T("EventDock.Setup.No")));
-				sources->setItem(row, 4, new QTableWidgetItem(QString::fromUtf8(entry.type_id)));
+				sources->setItem(row, 3, new QTableWidgetItem(QString::fromUtf8(entry.type_id)));
+				connect(toggle, &QCheckBox::toggled, &dialog, [&, toggle, sourceName](bool enabled) {
+					applyToggle(toggle, false, sourceName, enabled);
+				});
 			}
 			sr_replay_setup_free_snapshot(&snapshot);
 		};
 
 		refreshSummary();
-		populateSources(true);
+		populateSources();
 
 		auto *cameraBar = new QHBoxLayout();
 		auto *selectAll = new QPushButton(T("EventDock.Setup.SelectAll"), &dialog);
 		auto *selectNone = new QPushButton(T("EventDock.Setup.SelectNone"), &dialog);
-		auto *applyCameras = new QPushButton(T("EventDock.Setup.ApplyCameras"), &dialog);
 		cameraBar->addWidget(selectAll);
 		cameraBar->addWidget(selectNone);
 		cameraBar->addStretch(1);
-		cameraBar->addWidget(applyCameras);
 		layout->addLayout(cameraBar);
 
 		connect(selectAll, &QPushButton::clicked, &dialog, [sources]() {
 			for (int row = 0; row < sources->rowCount(); row++) {
-				QTableWidgetItem *use = sources->item(row, 0);
-				QTableWidgetItem *compatible = sources->item(row, 3);
-				if (use && compatible && compatible->text() == T("EventDock.Setup.Yes"))
-					use->setCheckState(Qt::Checked);
+				QWidget *cell = sources->cellWidget(row, 0);
+				auto *toggle = cell ? cell->findChild<ToggleSwitch *>() : nullptr;
+				if (toggle && toggle->isEnabled())
+					toggle->setChecked(true);
 			}
 		});
 		connect(selectNone, &QPushButton::clicked, &dialog, [sources]() {
 			for (int row = 0; row < sources->rowCount(); row++) {
-				if (QTableWidgetItem *use = sources->item(row, 0))
-					use->setCheckState(Qt::Unchecked);
+				QWidget *cell = sources->cellWidget(row, 0);
+				auto *toggle = cell ? cell->findChild<ToggleSwitch *>() : nullptr;
+				if (toggle && toggle->isEnabled())
+					toggle->setChecked(false);
 			}
 		});
 		connect(ensureAB, &QPushButton::clicked, &dialog, [&, this]() {
@@ -1912,51 +2003,6 @@ private:
 			}
 			refreshSummary();
 			refreshSetupStatus();
-		});
-		connect(applyCameras, &QPushButton::clicked, &dialog, [&, this]() {
-			sr_capture_recording_summary recording = {};
-			if (sr_capture_get_recording_summary(&recording) && recording.requested_count) {
-				if (QMessageBox::question(&dialog, T("EventDock.Setup.Title"),
-							  T("EventDock.Setup.StopRecordingFirst")) != QMessageBox::Yes)
-					return;
-				setAllRecording(false);
-			}
-
-			int changes = 0;
-			int failures = 0;
-			const bool desiredProgram = programOutput->isChecked();
-			if (desiredProgram != sr_program_recorder_selected()) {
-				if (sr_replay_setup_set_program_output(desiredProgram))
-					changes++;
-				else
-					failures++;
-			}
-			for (int row = 0; row < sources->rowCount(); row++) {
-				QTableWidgetItem *use = sources->item(row, 0);
-				QTableWidgetItem *name = sources->item(row, 1);
-				QTableWidgetItem *capture = sources->item(row, 2);
-				if (!use || !name || !capture)
-					continue;
-				const bool desired = use->checkState() == Qt::Checked;
-				const bool installed = capture->data(Qt::UserRole).toBool();
-				const bool enabled = capture->data(Qt::UserRole + 1).toBool();
-				if (desired == installed && (!desired || enabled))
-					continue;
-				const QByteArray sourceName = name->text().toUtf8();
-				if (sr_replay_setup_set_capture(sourceName.constData(), desired))
-					changes++;
-				else
-					failures++;
-			}
-			populateSources(false);
-			refreshSummary();
-			refreshSetupStatus();
-			refreshRecordingStatus();
-			refreshCameras();
-			status->setText(T("EventDock.Setup.Applied").arg(changes).arg(failures));
-			if (failures)
-				QMessageBox::warning(&dialog, T("EventDock.Setup.Title"),
-						     T("EventDock.Setup.ApplyFailed").arg(failures));
 		});
 
 		auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
