@@ -97,10 +97,10 @@ def patch_setup():
     p = 'src/sr-replay-setup.h'
     s = load(p)
     s = replace_exact(s,
-                      '\tbool event_transition_ready;\n\tchar scene_a[SR_REPLAY_SETUP_NAME_MAX];',
-                      '\tbool event_transition_ready;\n\tbool program_output_supported;\n\tbool program_output_enabled;\n'
+                      '\tbool bus_b_ready;\n\tbool event_transition_ready;\n\tchar scene_a[SR_REPLAY_SETUP_NAME_MAX];',
+                      '\tbool bus_b_ready;\n\tbool event_transition_ready;\n\tbool program_output_supported;\n\tbool program_output_enabled;\n'
                       '\tchar scene_a[SR_REPLAY_SETUP_NAME_MAX];',
-                      label='setup Program state')
+                      label='setup Program snapshot state')
     s = insert_before(s, '/* Create/repair two scene-backed Event Outputs for A/B playback.',
                       '/* Select/deselect final OBS Program/PGM as a persistent replay pseudo-angle. */\n'
                       'bool sr_replay_setup_set_program_output(bool enabled);\n\n',
