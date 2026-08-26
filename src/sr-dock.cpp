@@ -524,6 +524,15 @@ private:
 			return;
 		QByteArray cfgUtf8 = cfgPath.toUtf8();
 		obs_data_t *data = obs_data_create_from_json_file(cfgUtf8.constData());
+		bool migratedLegacy = false;
+		if (!data) {
+			char *legacyPath = obs_module_config_path("../sports-replay/played.json");
+			if (legacyPath) {
+				data = obs_data_create_from_json_file(legacyPath);
+				migratedLegacy = data != nullptr;
+			}
+			bfree(legacyPath);
+		}
 		if (!data)
 			return;
 
@@ -540,6 +549,8 @@ private:
 			obs_data_array_release(arr);
 		}
 		obs_data_release(data);
+		if (migratedLegacy)
+			savePlayedPaths();
 	}
 
 	void savePlayedPaths()

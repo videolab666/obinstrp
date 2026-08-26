@@ -64,7 +64,7 @@ struct sr_event_output {
 static const char *sr_event_output_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("SportsReplayEventOutput");
+	return obs_module_text("PitelInstantReplayEventOutput");
 }
 
 static void reset_audio_transport(struct sr_event_output *output)

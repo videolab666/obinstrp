@@ -613,7 +613,7 @@ static struct sr_master_audio_chunk *pop_chunk(struct sr_master_audio_state *sta
 static void *audio_worker(void *param)
 {
 	struct sr_master_audio_state *state = param;
-	os_set_thread_name("sports-replay-audio");
+	os_set_thread_name("pitel-replay-audio");
 
 	for (;;) {
 		bool finalize_idle = false;

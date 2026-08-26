@@ -32,11 +32,17 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "sports-replay\bin\64bit\sports-replay.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
-Source: "sports-replay\data\locale\*"; DestDir: "{app}\data\obs-plugins\sports-replay\locale"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "pitel-instant-replay\bin\64bit\pitel-instant-replay.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
+Source: "pitel-instant-replay\data\locale\*"; DestDir: "{app}\data\obs-plugins\pitel-instant-replay\locale"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; Remove the legacy module before installing the renamed module.
+Type: files; Name: "{app}\obs-plugins\64bit\sports-replay.dll"
+Type: files; Name: "{app}\obs-plugins\64bit\sports-replay.pdb"
+Type: filesandordirs; Name: "{app}\data\obs-plugins\sports-replay"
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{app}\data\obs-plugins\sports-replay"
+Type: filesandordirs; Name: "{app}\data\obs-plugins\pitel-instant-replay"
 
 [Code]
 { Detect the OBS Studio install folder from the registry, falling back to the

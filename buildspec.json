@@ -33,11 +33,11 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.systec.sports-replay"
+            "bundleId": "com.systec.pitel-instant-replay"
         }
     },
     "artifactName": "pitel-instant-replay",
-    "name": "sports-replay",
+    "name": "pitel-instant-replay",
     "displayName": "Pitel Instant Replay",
     "version": "1.4.0",
     "author": "Systec",

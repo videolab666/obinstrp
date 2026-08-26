@@ -274,7 +274,7 @@ struct sr_buffer *sr_capture_get_buffer(void *capture_data)
 static const char *sr_capture_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("SportsReplayCapture");
+	return obs_module_text("PitelInstantReplayCapture");
 }
 
 static void destroy_writer(struct sr_capture *c)

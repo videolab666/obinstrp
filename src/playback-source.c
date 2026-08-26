@@ -794,7 +794,7 @@ static void hk_send_to_program_cb(void *data, obs_hotkey_id id, obs_hotkey_t *ho
 static const char *sr_playback_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("SportsReplay");
+	return obs_module_text("PitelInstantReplay");
 }
 
 /* Reloads a clip when its configured path changed. Opening the file happens

@@ -469,7 +469,7 @@ static struct sr_writer_packet *pop_packet(struct sr_segment_writer *w)
 static void *writer_thread(void *param)
 {
 	struct sr_segment_writer *w = param;
-	os_set_thread_name("sports-replay-writer");
+	os_set_thread_name("pitel-replay-writer");
 
 	for (;;) {
 		struct sr_writer_packet *node = pop_packet(w);

@@ -103,7 +103,7 @@ static void run_policy_once(void)
 static void *manager_thread(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	os_set_thread_name("sports-replay-storage");
+	os_set_thread_name("pitel-replay-storage");
 	run_recovery_once();
 
 	while (!manager_should_stop()) {

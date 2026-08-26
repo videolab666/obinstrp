@@ -30,7 +30,7 @@ FetchContent_Declare(
   URL_HASH SHA3_256=628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   SOURCE_SUBDIR
-  __sports_replay_no_cmake__
+  __pitel_instant_replay_no_cmake__
 )
 FetchContent_MakeAvailable(sr_sqlite_source)
 

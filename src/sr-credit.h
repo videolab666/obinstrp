@@ -30,7 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * main plugin module, not the standalone plugin-support library. */
 static inline const char *sr_plugin_credit_html(char *buf, size_t size)
 {
-	snprintf(buf, size, "<a href=\"%s\">%s (%s) %s Systec</a>", PLUGIN_WEBSITE, obs_module_text("SportsReplay"),
-		 PLUGIN_VERSION, obs_module_text("Credit.By"));
+	snprintf(buf, size, "<a href=\"%s\">%s (%s) %s Systec</a>", PLUGIN_WEBSITE,
+		 obs_module_text("PitelInstantReplay"), PLUGIN_VERSION, obs_module_text("Credit.By"));
 	return buf;
 }
