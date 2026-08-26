@@ -2000,7 +2000,7 @@ private:
 		connect(selectAll, &QPushButton::clicked, &dialog, [sources]() {
 			for (int row = 0; row < sources->rowCount(); row++) {
 				QWidget *cell = sources->cellWidget(row, 0);
-				auto *toggle = cell ? cell->findChild<ToggleSwitch *>() : nullptr;
+				auto *toggle = cell ? cell->findChild<QCheckBox *>() : nullptr;
 				if (toggle && toggle->isEnabled())
 					toggle->setChecked(true);
 			}
@@ -2008,7 +2008,7 @@ private:
 		connect(selectNone, &QPushButton::clicked, &dialog, [sources]() {
 			for (int row = 0; row < sources->rowCount(); row++) {
 				QWidget *cell = sources->cellWidget(row, 0);
-				auto *toggle = cell ? cell->findChild<ToggleSwitch *>() : nullptr;
+				auto *toggle = cell ? cell->findChild<QCheckBox *>() : nullptr;
 				if (toggle && toggle->isEnabled())
 					toggle->setChecked(false);
 			}
