@@ -29,6 +29,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTableWidget>
@@ -75,6 +76,15 @@ qint64 sessionCreatedUnix(const QString &path)
 	return created;
 }
 
+QString sessionName(const QString &path)
+{
+	const QByteArray utf8 = path.toUtf8();
+	char *raw = sr_session_get_display_name(utf8.constData());
+	const QString result = raw && *raw ? QString::fromUtf8(raw) : QFileInfo(path).fileName();
+	bfree(raw);
+	return result;
+}
+
 class SrSessionPanel final : public QWidget {
 public:
 	explicit SrSessionPanel(sr_event_controller *eventController, QWidget *parent = nullptr)
@@ -93,17 +103,15 @@ public:
 
 		table = new QTableWidget(this);
 		table->setColumnCount(4);
-		table->setHorizontalHeaderLabels(
-			{T("Storage.Column.Session"), T("Storage.Column.Created"), T("Storage.Column.Size"),
-			 T("Storage.Column.Status")});
+		table->setHorizontalHeaderLabels({T("Storage.Column.Session"), T("Storage.Column.Created"),
+						  T("Storage.Column.Size"), T("Storage.Column.Status")});
 		table->setSelectionBehavior(QAbstractItemView::SelectRows);
 		table->setSelectionMode(QAbstractItemView::ExtendedSelection);
 		table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		table->verticalHeader()->setVisible(false);
 		table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-		table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-		table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-		table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+		for (int column = 1; column < 4; column++)
+			table->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
 		root->addWidget(table, 1);
 
 		auto *primary = new QHBoxLayout();
@@ -111,10 +119,12 @@ public:
 		openButton = new QPushButton(T("Session.Open"), this);
 		resumeButton = new QPushButton(T("Session.Resume"), this);
 		renameButton = new QPushButton(T("Session.Rename"), this);
+		returnToRecordingButton = new QPushButton(T("Session.ReturnToRecording"), this);
 		primary->addWidget(newButton);
 		primary->addWidget(openButton);
 		primary->addWidget(resumeButton);
 		primary->addWidget(renameButton);
+		primary->addWidget(returnToRecordingButton);
 		primary->addStretch(1);
 		root->addLayout(primary);
 
@@ -128,31 +138,25 @@ public:
 		secondary->addWidget(deleteButton);
 		root->addLayout(secondary);
 
-		hintLabel = new QLabel(T("Session.Hint"), this);
-		hintLabel->setWordWrap(true);
-		hintLabel->setStyleSheet(QStringLiteral("color: gray;"));
-		root->addWidget(hintLabel);
+		auto *hint = new QLabel(T("Session.Hint"), this);
+		hint->setWordWrap(true);
+		hint->setStyleSheet(QStringLiteral("color: gray;"));
+		root->addWidget(hint);
 
 		connect(newButton, &QPushButton::clicked, this, [this]() { createSession(); });
 		connect(openButton, &QPushButton::clicked, this, [this]() { openSelected(); });
 		connect(resumeButton, &QPushButton::clicked, this, [this]() { resumeSelected(); });
 		connect(renameButton, &QPushButton::clicked, this, [this]() { renameSelected(); });
+		connect(returnToRecordingButton, &QPushButton::clicked, this, [this]() { returnToRecording(); });
 		connect(refreshButton, &QPushButton::clicked, this, [this]() { refresh(); });
-		connect(clearTargetButton, &QPushButton::clicked, this, [this]() {
-			if (sr_session_recording_is_active()) {
-				QMessageBox::information(this, T("Session.Title"), T("Session.StopBeforeTarget"));
-				return;
-			}
-			sr_session_clear_record_target();
-			refresh();
-		});
+		connect(clearTargetButton, &QPushButton::clicked, this, [this]() { clearTarget(); });
 		connect(deleteButton, &QPushButton::clicked, this, [this]() { deleteSelected(); });
 		connect(table, &QTableWidget::itemDoubleClicked, this, [this](QTableWidgetItem *) { openSelected(); });
 		connect(table, &QTableWidget::itemSelectionChanged, this, [this]() { updateButtons(); });
 
 		timer = new QTimer(this);
 		timer->setInterval(2000);
-		connect(timer, &QTimer::timeout, this, [this]() { refresh(false); });
+		connect(timer, &QTimer::timeout, this, [this]() { refresh(); });
 		timer->start();
 		refresh();
 	}
@@ -184,11 +188,17 @@ private:
 
 	void updateButtons()
 	{
-		const QString path = singleSelectedPath();
-		const bool one = !path.isEmpty();
+		const bool one = !singleSelectedPath().isEmpty();
 		openButton->setEnabled(one);
-		resumeButton->setEnabled(one);
+		resumeButton->setEnabled(one && !sr_session_recording_is_active());
 		renameButton->setEnabled(one);
+
+		char *opened = sr_session_get_opened_path();
+		char *recording = sr_session_get_recording_path();
+		const bool canReturn = opened && recording && strcmp(opened, recording) != 0;
+		returnToRecordingButton->setVisible(canReturn);
+		bfree(opened);
+		bfree(recording);
 	}
 
 	bool stopRecordingForSessionChange()
@@ -205,6 +215,15 @@ private:
 		return true;
 	}
 
+	bool openPath(const QString &path)
+	{
+		if (path.isEmpty())
+			return false;
+		const QByteArray utf8 = path.toUtf8();
+		return controller ? sr_event_controller_open_session(controller, utf8.constData())
+				  : sr_session_open(utf8.constData());
+	}
+
 	void createSession()
 	{
 		if (!stopRecordingForSessionChange())
@@ -216,7 +235,7 @@ private:
 				     .trimmed();
 		if (!accepted)
 			return;
-		QByteArray utf8 = name.toUtf8();
+		const QByteArray utf8 = name.toUtf8();
 		char *created = nullptr;
 		if (!sr_session_create_new(utf8.constData(), true, true, &created) || !created) {
 			QMessageBox::warning(this, T("Session.Title"), T("Session.CreateFailed"));
@@ -231,13 +250,7 @@ private:
 
 	void openSelected()
 	{
-		const QString path = singleSelectedPath();
-		if (path.isEmpty())
-			return;
-		const QByteArray utf8 = path.toUtf8();
-		const bool ok = controller ? sr_event_controller_open_session(controller, utf8.constData())
-					   : sr_session_open(utf8.constData());
-		if (!ok)
+		if (!openPath(singleSelectedPath()))
 			QMessageBox::warning(this, T("Session.Title"), T("Session.OpenFailed"));
 		refresh();
 	}
@@ -245,22 +258,27 @@ private:
 	void resumeSelected()
 	{
 		const QString path = singleSelectedPath();
-		if (path.isEmpty())
+		if (path.isEmpty() || sr_session_recording_is_active())
 			return;
 		const QByteArray utf8 = path.toUtf8();
-		if (sr_session_recording_is_active() && !sr_session_path_is_active(utf8.constData()) &&
-		    !stopRecordingForSessionChange())
-			return;
 		if (!sr_session_set_record_target(utf8.constData())) {
 			QMessageBox::warning(this, T("Session.Title"), T("Session.TargetFailed"));
 			return;
 		}
-		/* Resume is explicit enough to make the target the editor session too.
-		 * Recording itself stays STOPPED until the normal START RECORD button. */
-		if (controller)
-			sr_event_controller_open_session(controller, utf8.constData());
-		else
-			sr_session_open(utf8.constData());
+		if (!openPath(path))
+			QMessageBox::warning(this, T("Session.Title"), T("Session.OpenFailed"));
+		refresh();
+	}
+
+	void returnToRecording()
+	{
+		char *recording = sr_session_get_recording_path();
+		if (!recording)
+			return;
+		const QString path = QString::fromUtf8(recording);
+		bfree(recording);
+		if (!openPath(path))
+			QMessageBox::warning(this, T("Session.Title"), T("Session.OpenFailed"));
 		refresh();
 	}
 
@@ -269,19 +287,27 @@ private:
 		const QString path = singleSelectedPath();
 		if (path.isEmpty())
 			return;
-		const QByteArray pathUtf8 = path.toUtf8();
-		char *currentRaw = sr_session_get_display_name(pathUtf8.constData());
-		const QString current = QString::fromUtf8(currentRaw ? currentRaw : "");
-		bfree(currentRaw);
+		const QString current = sessionName(path);
 		bool accepted = false;
 		const QString name = QInputDialog::getText(this, T("Session.RenameTitle"), T("Session.NamePrompt"),
 							   QLineEdit::Normal, current, &accepted)
 				     .trimmed();
 		if (!accepted || name.isEmpty())
 			return;
+		const QByteArray pathUtf8 = path.toUtf8();
 		const QByteArray nameUtf8 = name.toUtf8();
 		if (!sr_session_rename(pathUtf8.constData(), nameUtf8.constData()))
 			QMessageBox::warning(this, T("Session.Title"), T("Session.RenameFailed"));
+		refresh();
+	}
+
+	void clearTarget()
+	{
+		if (sr_session_recording_is_active()) {
+			QMessageBox::information(this, T("Session.Title"), T("Session.StopBeforeTarget"));
+			return;
+		}
+		sr_session_clear_record_target();
 		refresh();
 	}
 
@@ -323,9 +349,9 @@ private:
 		return states.isEmpty() ? T("Storage.Inactive") : states.join(QStringLiteral(" · "));
 	}
 
-	void refresh(bool rescanSizes = true)
+	void refresh()
 	{
-		QString preserve = singleSelectedPath();
+		const QString preserve = singleSelectedPath();
 		char *rootRaw = sr_config_get_session_root();
 		const QString rootPath = QString::fromUtf8(rootRaw ? rootRaw : "");
 		bfree(rootRaw);
@@ -333,35 +359,22 @@ private:
 		const QFileInfoList candidates = rootDir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time);
 		QFileInfoList sessions;
 		for (const QFileInfo &candidate : candidates) {
-			if (QFileInfo(QDir(candidate.absoluteFilePath()).filePath(QStringLiteral("session.json"))).isFile())
+			const QString metadata = QDir(candidate.absoluteFilePath()).filePath(QStringLiteral("session.json"));
+			if (QFileInfo(metadata).isFile())
 				sessions.append(candidate);
 		}
 
 		quint64 totalBytes = 0;
 		table->setRowCount(sessions.size());
+		int selectedRow = -1;
 		for (int row = 0; row < sessions.size(); row++) {
 			const QString path = sessions.at(row).absoluteFilePath();
 			const QByteArray pathUtf8 = path.toUtf8();
-			char *nameRaw = sr_session_get_display_name(pathUtf8.constData());
-			const QString displayName = QString::fromUtf8(nameRaw ? nameRaw : sessions.at(row).fileName().toUtf8());
-			bfree(nameRaw);
-
-			quint64 bytes = 0;
-			if (!rescanSizes) {
-				for (int oldRow = 0; oldRow < table->rowCount(); oldRow++) {
-					QTableWidgetItem *old = table->item(oldRow, 0);
-					if (old && old->data(Qt::UserRole).toString() == path) {
-						bytes = old->data(Qt::UserRole + 1).toULongLong();
-						break;
-					}
-				}
-			}
-			if (!bytes)
-				bytes = directoryBytes(path);
+			const quint64 bytes = directoryBytes(path);
 			totalBytes += bytes;
-			auto *nameItem = new QTableWidgetItem(displayName);
+
+			auto *nameItem = new QTableWidgetItem(sessionName(path));
 			nameItem->setData(Qt::UserRole, path);
-			nameItem->setData(Qt::UserRole + 1, QVariant::fromValue<qulonglong>(bytes));
 			nameItem->setToolTip(path);
 			table->setItem(row, 0, nameItem);
 			table->setItem(row, 1,
@@ -370,8 +383,10 @@ private:
 			table->setItem(row, 2, new QTableWidgetItem(formattedBytes(bytes)));
 			table->setItem(row, 3, new QTableWidgetItem(statusForPath(pathUtf8)));
 			if (!preserve.isEmpty() && preserve == path)
-				table->selectRow(row);
+				selectedRow = row;
 		}
+		if (selectedRow >= 0)
+			table->selectRow(selectedRow);
 
 		const QByteArray rootUtf8 = rootPath.toUtf8();
 		const quint64 freeBytes = rootPath.isEmpty() ? 0 : os_get_free_disk_space(rootUtf8.constData());
@@ -380,22 +395,17 @@ private:
 					   .arg(formattedBytes(totalBytes))
 					   .arg(formattedBytes(freeBytes)));
 
-		char *openRaw = sr_session_get_opened_path();
+		char *openedRaw = sr_session_get_opened_path();
 		char *targetRaw = sr_session_get_record_target_path();
 		char *recordRaw = sr_session_get_recording_path();
 		auto labelFor = [](char *path) {
-			if (!path)
-				return QStringLiteral("—");
-			char *name = sr_session_get_display_name(path);
-			QString result = QString::fromUtf8(name ? name : path);
-			bfree(name);
-			return result;
+			return path ? sessionName(QString::fromUtf8(path)) : QStringLiteral("—");
 		};
 		stateLabel->setText(T("Session.StateSummary")
-					    .arg(labelFor(openRaw))
+					    .arg(labelFor(openedRaw))
 					    .arg(labelFor(targetRaw))
 					    .arg(labelFor(recordRaw)));
-		bfree(openRaw);
+		bfree(openedRaw);
 		bfree(targetRaw);
 		bfree(recordRaw);
 		updateButtons();
@@ -404,12 +414,12 @@ private:
 	sr_event_controller *controller = nullptr;
 	QLabel *stateLabel = nullptr;
 	QLabel *diskLabel = nullptr;
-	QLabel *hintLabel = nullptr;
 	QTableWidget *table = nullptr;
 	QPushButton *newButton = nullptr;
 	QPushButton *openButton = nullptr;
 	QPushButton *resumeButton = nullptr;
 	QPushButton *renameButton = nullptr;
+	QPushButton *returnToRecordingButton = nullptr;
 	QTimer *timer = nullptr;
 };
 
@@ -428,22 +438,18 @@ void attachSessionManager(sr_event_controller *controller)
 	QTabWidget *tabs = findUnifiedDockTabs();
 	if (!tabs)
 		return;
-	int index = -1;
 	const QString storageTitle = T("Dock.TabStorage");
-	for (int i = 0; i < tabs->count(); i++) {
-		if (tabs->tabText(i) == storageTitle) {
-			index = i;
-			break;
-		}
-	}
-	if (index < 0)
+	for (int index = 0; index < tabs->count(); index++) {
+		if (tabs->tabText(index) != storageTitle)
+			continue;
+		QWidget *old = tabs->widget(index);
+		auto *panel = new SrSessionPanel(controller, tabs);
+		tabs->removeTab(index);
+		tabs->insertTab(index, panel, storageTitle);
+		if (old)
+			old->deleteLater();
 		return;
-	QWidget *old = tabs->widget(index);
-	auto *panel = new SrSessionPanel(controller, tabs);
-	tabs->removeTab(index);
-	tabs->insertTab(index, panel, storageTitle);
-	if (old)
-		old->deleteLater();
+	}
 }
 
 } // namespace
