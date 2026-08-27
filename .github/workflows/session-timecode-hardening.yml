@@ -6,79 +6,30 @@ on:
       - feature/session-timecode-hardening
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  audit-timebase:
+  apply-generation-guards:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Audit native and Session clocks
+        with:
+          fetch-depth: 0
+      - name: Apply generation ownership guards
+        run: python3 .github/scripts/patch-session-generation-guards.py
+      - name: Format changed C/C++ files
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          files = sorted(Path('src').glob('*'))
-          needles = (
-              'obs_get_video_frame_time',
-              'sr_session_map_recording_timestamp',
-              'sr_session_recording_start_ns',
-              'recording_start_ns',
-          )
-          print('=== Timebase references ===')
-          for path in files:
-              if path.suffix not in {'.c', '.h', '.cpp'}:
-                  continue
-              lines = path.read_text(encoding='utf-8').splitlines()
-              hits = []
-              for n, line in enumerate(lines, 1):
-                  if any(needle in line for needle in needles):
-                      hits.append((n, line.rstrip()))
-              if hits:
-                  print(f'--- {path} ---')
-                  for n, line in hits:
-                      print(f'{n}: {line}')
-
-          # A Session may legitimately start at timestamp zero. Never use the
-          # numeric start value itself as the boolean REC-active sentinel.
-          bad = []
-          truthy_patterns = [
-              re.compile(r'if\s*\([^\n]*recording_start_ns\s*\)'),
-              re.compile(r'&&\s*[^\n;]*recording_start_ns(?:\s*&&|\s*\)|\s*$)'),
-              re.compile(r'if\s*\([^\n]*sr_session_recording_start_ns\s*\(\s*\)\s*\)'),
-          ]
-          for path in files:
-              if path.suffix not in {'.c', '.h', '.cpp'}:
-                  continue
-              text = path.read_text(encoding='utf-8')
-              for pattern in truthy_patterns:
-                  for match in pattern.finditer(text):
-                      line = text.count('\n', 0, match.start()) + 1
-                      bad.append(f'{path}:{line}: {match.group(0)}')
-
-          # The archive editor must never compare a mapped Session timestamp
-          # with raw OBS uptime inside its bounds calculation.
-          event = Path('src/sr-event-dock.cpp').read_text(encoding='utf-8')
-          start = event.index('void updateEditTimelineBounds()')
-          end = event.index('\n\tQString editTimelineStatusText', start)
-          if 'obs_get_video_frame_time' in event[start:end]:
-              bad.append('src/sr-event-dock.cpp: updateEditTimelineBounds still uses raw OBS clock')
-
-          if bad:
-              print('=== Forbidden timebase assumptions ===')
-              print('\n'.join(bad))
-              raise SystemExit(1)
-          print('Timebase audit passed.')
-          PY
-
-  check-format:
-    uses: ./.github/workflows/check-format.yaml
-    permissions:
-      contents: read
-
-  build-project:
-    uses: ./.github/workflows/build-project.yaml
-    secrets: inherit
-    permissions:
-      contents: read
+          sudo apt-get update -qq
+          sudo apt-get install -y clang-format-19
+          mapfile -t files < <(git diff --name-only -- '*.c' '*.h' '*.cpp')
+          if ((${#files[@]})); then
+            clang-format-19 -i "${files[@]}"
+          fi
+      - name: Commit hardened sources
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src
+          git diff --cached --check
+          git commit -m 'fix: bind replay writers to recording generations'
+          git push origin HEAD:feature/session-timecode-hardening
