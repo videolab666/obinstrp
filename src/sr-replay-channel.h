@@ -49,6 +49,7 @@ struct sr_replay_channel_state {
 	bool backward;
 	bool loop;
 	bool partial_coverage;
+	bool preview_mode;
 	bool decoder_open;
 	bool hardware_decode;
 	uint64_t decode_requests;
@@ -65,6 +66,13 @@ bool sr_replay_channels_init(struct sr_event_controller *events);
 void sr_replay_channels_shutdown(void);
 
 bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char *camera_name);
+
+/* Cues a transient EDIT preview range. Unlike a normal Event cue, the visible
+ * transport bounds may span the recording around the requested playhead. The
+ * Event database is not modified and taking the bus should re-cue the Event
+ * normally first. */
+bool sr_replay_channel_cue_preview(enum sr_replay_bus bus, uint64_t event_id, const char *camera_name,
+				   uint64_t range_in_ns, uint64_t range_out_ns, uint64_t playhead_ns);
 
 /* Replaces only the camera backing an already-cued Event. The Event, playhead,
  * speed, direction, loop and play/pause state are preserved atomically. The

@@ -1,56 +1,34 @@
-name: Professional timeline applicator
-run-name: Apply professional replay timeline
+name: Replay Development CI
+run-name: Replay Development CI — ${{ github.ref_name }} — ${{ github.event_name }}
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - feature/hardware-zero-copy
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
 
 concurrency:
-  group: professional-timeline-applicator
+  group: replay-development-ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Full validation for the active replay development branch.
+# Every push is built; workflow_dispatch keeps a manual Run workflow button
+# available from the default branch. PR validation is intentionally left to
+# the repository's normal PR workflow when this branch is eventually retargeted
+# to main, avoiding duplicate push + pull_request builds during development.
 jobs:
-  apply:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/hardware-zero-copy
-          fetch-depth: 0
+  check-format:
+    name: Check Formatting 🔍
+    uses: ./.github/workflows/check-format.yaml
+    permissions:
+      contents: read
 
-      - name: Install clang-format 19
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-format-19
-
-      - name: Apply professional timeline patch
-        run: |
-          python3 .github/scripts/apply-professional-timeline.py
-          clang-format-19 -i src/sr-event-dock.cpp src/sr-replay-channel.c src/sr-replay-channel.h
-          git diff --check
-
-      - name: Commit product changes
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git diff --cached --check
-          git commit -m 'feat: add professional replay edit timeline'
-          for attempt in 1 2 3 4 5; do
-            if git push origin HEAD:feature/hardware-zero-copy; then
-              exit 0
-            fi
-            git pull --rebase origin feature/hardware-zero-copy
-            sleep 2
-          done
-          exit 1
-
-      - name: Start final validation
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run validate-program-output.yml --ref feature/hardware-zero-copy
+  build-project:
+    name: Build Project 🧱
+    uses: ./.github/workflows/build-project.yaml
+    secrets: inherit
+    permissions:
+      contents: read
