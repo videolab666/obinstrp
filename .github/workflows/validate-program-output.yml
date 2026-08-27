@@ -28,146 +28,10 @@ jobs:
           sudo apt-get install -y clang-format-19
           python3 -m pip install --user gersemi
 
-      - name: Apply multiview integration
+      - name: Apply and format product changes
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_once(path, old, new, label):
-              p = Path(path)
-              text = p.read_text(encoding="utf-8")
-              if new in text:
-                  return
-              count = text.count(old)
-              if count != 1:
-                  raise RuntimeError(f"{label}: expected one match, found {count}")
-              p.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-          # Bounded disk-player cache for lightweight multiview decoders.
-          replace_once(
-              "src/sr-disk-player.c",
-              '''struct sr_disk_player *sr_disk_player_create(const char *session_dir, const char *camera_name)\n{\n\tif (!session_dir || !*session_dir || !camera_name || !*camera_name)\n\t\treturn NULL;\n\n\tstruct sr_disk_player *p = bzalloc(sizeof(*p));\n\tp->session_dir = bstrdup(session_dir);\n\tp->camera_name = bstrdup(camera_name);\n\tp->current_position = -1;\n\tsr_frame_cache_init(&p->frame_cache, (size_t)SR_DISK_PLAYER_FRAME_CACHE_BYTES);\n\n\tif (!sr_disk_player_refresh(p)) {\n\t\tsr_disk_player_destroy(p);\n\t\treturn NULL;\n\t}\n\treturn p;\n}\n''',
-              '''struct sr_disk_player *sr_disk_player_create(const char *session_dir, const char *camera_name)\n{\n\treturn sr_disk_player_create_with_cache(session_dir, camera_name,\n\t\t\t\t\t       (size_t)SR_DISK_PLAYER_FRAME_CACHE_BYTES);\n}\n\nstruct sr_disk_player *sr_disk_player_create_with_cache(const char *session_dir, const char *camera_name,\n\t\t\t\t\t\t size_t max_cache_bytes)\n{\n\tif (!session_dir || !*session_dir || !camera_name || !*camera_name)\n\t\treturn NULL;\n\n\tstruct sr_disk_player *p = bzalloc(sizeof(*p));\n\tp->session_dir = bstrdup(session_dir);\n\tp->camera_name = bstrdup(camera_name);\n\tp->current_position = -1;\n\tsr_frame_cache_init(&p->frame_cache, max_cache_bytes);\n\n\tif (!sr_disk_player_refresh(p)) {\n\t\tsr_disk_player_destroy(p);\n\t\treturn NULL;\n\t}\n\treturn p;\n}\n''',
-              "disk-player cache constructor",
-          )
-
-          # Compile/integration hardening for the newly added multiview source.
-          replace_once(
-              "src/sr-multiview-dock.cpp",
-              '''#include <QImage>\n#include <QKeyEvent>\n#include <QLabel>\n#include <QMenu>''',
-              '''#include <QHideEvent>\n#include <QImage>\n#include <QKeyEvent>\n#include <QLabel>\n#include <QMap>\n#include <QMenu>''',
-              "multiview Qt map/hide includes",
-          )
-          replace_once(
-              "src/sr-multiview-dock.cpp",
-              '''#include <QPointer>\n#include <QPushButton>\n#include <QScrollArea>''',
-              '''#include <QPointer>\n#include <QPushButton>\n#include <QResizeEvent>\n#include <QScrollArea>\n#include <QShowEvent>''',
-              "multiview resize/show includes",
-          )
-          replace_once(
-              "src/sr-multiview-dock.cpp",
-              '''explicit SrMultiviewDock(sr_event_controller *eventController, QWidget *parent = nullptr)\n\t\t: QWidget(parent), controller(eventController)\n\t{\n\t\tsetObjectName''',
-              '''explicit SrMultiviewDock(sr_event_controller *eventController, QWidget *parent = nullptr) : QWidget(parent)\n\t{\n\t\t(void)eventController;\n\t\tsetObjectName''',
-              "multiview unused controller",
-          )
-          replace_once(
-              "src/sr-multiview-dock.cpp",
-              '''\t\thiddenCameras.intersect(QSet<QString>(cameraNames.begin(), cameraNames.end()));''',
-              '''\t\tQSet<QString> availableCameras;\n\t\tfor (const QString &camera : cameraNames)\n\t\t\tavailableCameras.insert(camera);\n\t\thiddenCameras.intersect(availableCameras);''',
-              "multiview Qt6 camera set",
-          )
-          replace_once(
-              "src/sr-multiview-dock.cpp",
-              '''\tvoid hideEvent(QHideEvent *event) override\n\t{\n\t\tQWidget::hideEvent(event);\n\t\t/* Hidden dock performs no new decode work. Worker threads stay asleep and\n\t\t * keep only their bounded warm caches for a quick reopen. */\n\t}''',
-              '''\tvoid hideEvent(QHideEvent *event) override\n\t{\n\t\tQWidget::hideEvent(event);\n\t\t/* Release all readers/decoders while the dock is hidden. The worker\n\t\t * threads remain asleep, so a closed Multiview costs no decoder or\n\t\t * segment-reader resources. */\n\t\tfor (const auto &tile : tiles)\n\t\t\ttile->decoder().setSource(QString(), QString());\n\t}''',
-              "multiview hidden decoder release",
-          )
-          replace_once(
-              "src/sr-multiview-dock.cpp",
-              '''\t\tfor (const auto &tile : tiles) {\n\t\t\tif (std::find(visible.begin(), visible.end(), tile.get()) == visible.end())\n\t\t\t\ttile->setVisible(false);\n\t\t}''',
-              '''\t\tfor (const auto &tile : tiles) {\n\t\t\tif (std::find(visible.begin(), visible.end(), tile.get()) == visible.end()) {\n\t\t\t\ttile->setVisible(false);\n\t\t\t\ttile->decoder().setSource(QString(), QString());\n\t\t\t}\n\t\t}''',
-              "multiview hidden tile decoder release",
-          )
-          replace_once(
-              "src/sr-multiview-dock.cpp",
-              '''\tsr_event_controller *controller = nullptr;\n\tQToolButton *cameraMenuButton''',
-              '''\tQToolButton *cameraMenuButton''',
-              "multiview controller member",
-          )
-
-          # Main Event dock becomes the single authoritative shared EDIT model.
-          replace_once(
-              "src/sr-event-dock.cpp",
-              '''#include "sr-event-controller.h"\n#include "sr-dock.h"\n#include "sr-event-export.h"''',
-              '''#include "sr-event-controller.h"\n#include "sr-dock.h"\n#include "sr-event-export.h"\n#include "sr-multiview-dock.h"''',
-              "event dock multiview include",
-          )
-          replace_once(
-              "src/sr-event-dock.cpp",
-              '''#include <QProgressBar>\n#include <QRubberBand>''',
-              '''#include <QProgressBar>\n#include <QPointer>\n#include <QRubberBand>''',
-              "event dock QPointer include",
-          )
-          replace_once(
-              "src/sr-event-dock.cpp",
-              '''\t\tangleHeader->addWidget(new QLabel(T("EventDock.Angles"), this));\n\t\tangleHeader->addStretch(1);\n\t\tauto *angleLegend = new QLabel(T("EventDock.AnglesLegend"), this);''',
-              '''\t\tangleHeader->addWidget(new QLabel(T("EventDock.Angles"), this));\n\t\tangleHeader->addStretch(1);\n\t\tauto *multiviewButton = new QToolButton(this);\n\t\tmultiviewButton->setText(T("Multiview.Open"));\n\t\tmultiviewButton->setAutoRaise(true);\n\t\tmultiviewButton->setToolTip(T("Multiview.OpenTooltip"));\n\t\tangleHeader->addWidget(multiviewButton);\n\t\tauto *angleLegend = new QLabel(T("EventDock.AnglesLegend"), this);''',
-              "event dock multiview button",
-          )
-          replace_once(
-              "src/sr-event-dock.cpp",
-              '''\t\tconnect(setupButton, &QToolButton::clicked, this, [this]() { openReplaySetup(); });\n\t\tconnect(up, &QPushButton::clicked, this, [this]() { moveRow(-1); });''',
-              '''\t\tconnect(setupButton, &QToolButton::clicked, this, [this]() { openReplaySetup(); });\n\t\tconnect(multiviewButton, &QToolButton::clicked, this, []() { sr_multiview_dock_show(); });\n\t\tconnect(up, &QPushButton::clicked, this, [this]() { moveRow(-1); });''',
-              "event dock multiview button connection",
-          )
-
-          public_anchor = '''\t~SrEventDock() override\n\t{\n\t\tif (exportJob) {\n\t\t\texportJob->cancel.store(true, std::memory_order_relaxed);\n\t\t\tif (exportJob->worker.joinable())\n\t\t\t\texportJob->worker.join();\n\t\t}\n\t\tif (anglePreviewJob && anglePreviewJob->worker.joinable())\n\t\t\tanglePreviewJob->worker.join();\n\t\tif (eventThumbnailJob && eventThumbnailJob->worker.joinable())\n\t\t\teventThumbnailJob->worker.join();\n\t}\n\nprivate:\n'''
-          public_replacement = '''\t~SrEventDock() override\n\t{\n\t\tif (exportJob) {\n\t\t\texportJob->cancel.store(true, std::memory_order_relaxed);\n\t\t\tif (exportJob->worker.joinable())\n\t\t\t\texportJob->worker.join();\n\t\t}\n\t\tif (anglePreviewJob && anglePreviewJob->worker.joinable())\n\t\t\tanglePreviewJob->worker.join();\n\t\tif (eventThumbnailJob && eventThumbnailJob->worker.joinable())\n\t\t\teventThumbnailJob->worker.join();\n\t}\n\n\tbool editorSnapshot(sr_event_editor_snapshot *snapshot)\n\t{\n\t\tif (!snapshot)\n\t\t\treturn false;\n\t\tstd::memset(snapshot, 0, sizeof(*snapshot));\n\t\tif (!controller)\n\t\t\treturn false;\n\n\t\tupdateEditTimelineBounds();\n\t\tsnapshot->edit_mode = !replayPlayoutActive();\n\t\tif (editTimelineHaveBounds) {\n\t\t\tsnapshot->record_start_ns = editTimelineStartNs;\n\t\t\tsnapshot->record_end_ns = editTimelineEndNs;\n\t\t}\n\n\t\tconst uint64_t eventId = selectedEventId();\n\t\tsr_event_record event = {};\n\t\tif (!eventId || !sr_event_controller_get_event(controller, eventId, &event))\n\t\t\treturn true;\n\n\t\tsnapshot->event_id = event.id;\n\t\tsnapshot->in_ns = event.in_ns;\n\t\tsnapshot->out_ns = event.out_ns;\n\t\tsnapshot->available = editTimelineHaveBounds && event.out_ns > event.in_ns;\n\t\tconst QString storedCamera = eventPreferredCamera(event);\n\t\tconst QByteArray storedUtf8 = storedCamera.toUtf8();\n\t\tif (!storedUtf8.isEmpty()) {\n\t\t\tstd::strncpy(snapshot->selected_camera, storedUtf8.constData(), sizeof(snapshot->selected_camera) - 1);\n\t\t\tsnapshot->selected_camera[sizeof(snapshot->selected_camera) - 1] = '\\0';\n\t\t}\n\n\t\tuint64_t playhead = editTimeline ? editTimeline->playheadTimestamp() : event.in_ns;\n\t\tsr_replay_channel_state state = {};\n\t\tif (sr_replay_channel_get_state(transportBus(), &state) && state.cued && state.preview_mode &&\n\t\t    state.event_id == event.id) {\n\t\t\tplayhead = state.playhead_ns;\n\t\t\tsnapshot->playing = state.playing && !state.paused;\n\t\t\tsnapshot->paused = state.paused;\n\t\t\tsnapshot->loop = state.loop;\n\t\t\tstd::strncpy(snapshot->preview_camera, state.camera_name, sizeof(snapshot->preview_camera) - 1);\n\t\t\tsnapshot->preview_camera[sizeof(snapshot->preview_camera) - 1] = '\\0';\n\t\t} else {\n\t\t\tsnapshot->loop = loopButton && loopButton->isChecked();\n\t\t\tconst QByteArray previewUtf8 = editPreviewCamera.toUtf8();\n\t\t\tif (!previewUtf8.isEmpty()) {\n\t\t\t\tstd::strncpy(snapshot->preview_camera, previewUtf8.constData(),\n\t\t\t\t\t     sizeof(snapshot->preview_camera) - 1);\n\t\t\t\tsnapshot->preview_camera[sizeof(snapshot->preview_camera) - 1] = '\\0';\n\t\t\t}\n\t\t}\n\t\tif (snapshot->available)\n\t\t\tplayhead = qBound(editTimelineStartNs, playhead, editTimelineEndNs);\n\t\tsnapshot->playhead_ns = playhead;\n\t\tsr_event_controller_free_event(&event);\n\t\treturn true;\n\t}\n\n\tbool editorSeek(uint64_t timestampNs)\n\t{\n\t\treturn !replayPlayoutActive() && previewSeekTo(timestampNs);\n\t}\n\n\tbool editorSetRange(uint64_t inNs, uint64_t outNs)\n\t{\n\t\tif (replayPlayoutActive() || !selectedEventId() || outNs <= inNs)\n\t\t\treturn false;\n\t\tconst uint64_t eventId = selectedEventId();\n\t\teditSelectedEventRange(inNs, outNs);\n\t\tsr_event_record event = {};\n\t\tif (!sr_event_controller_get_event(controller, eventId, &event))\n\t\t\treturn false;\n\t\tconst bool matched = event.in_ns == inNs && event.out_ns == outNs;\n\t\tsr_event_controller_free_event(&event);\n\t\treturn matched;\n\t}\n\n\tbool editorSetMarker(bool outMarker)\n\t{\n\t\tif (replayPlayoutActive() || !editTimeline || !editTimeline->hasSelection())\n\t\t\treturn false;\n\t\tsetEditMarkerAtPlayhead(outMarker);\n\t\treturn true;\n\t}\n\n\tbool editorGotoMarker(bool outMarker)\n\t{\n\t\tif (replayPlayoutActive() || !editTimeline || !editTimeline->hasSelection())\n\t\t\treturn false;\n\t\treturn previewSeekTo(outMarker ? editTimeline->selectionOut() : editTimeline->selectionIn());\n\t}\n\n\tbool editorStepFrames(int frames)\n\t{\n\t\tif (replayPlayoutActive() || !editTimelineHaveBounds || !editTimeline || !frames)\n\t\t\treturn false;\n\t\tstepEditFrames(frames);\n\t\treturn true;\n\t}\n\n\tbool editorSelectCamera(const QString &camera)\n\t{\n\t\tif (replayPlayoutActive() || !controller || !selectedEventId())\n\t\t\treturn false;\n\t\tconst uint64_t eventId = selectedEventId();\n\t\tselectAngle(camera);\n\t\tsr_event_record event = {};\n\t\tif (!sr_event_controller_get_event(controller, eventId, &event))\n\t\t\treturn false;\n\t\tconst QString stored = eventPreferredCamera(event);\n\t\tsr_event_controller_free_event(&event);\n\t\treturn stored == camera;\n\t}\n\n\tbool editorTogglePlay()\n\t{\n\t\tif (replayPlayoutActive() || !selectedEventId())\n\t\t\treturn false;\n\t\ttoggleEditPreview();\n\t\treturn true;\n\t}\n\n\tbool editorPlayFromIn()\n\t{\n\t\tif (replayPlayoutActive() || !selectedEventId())\n\t\t\treturn false;\n\t\tpreviewPlayFromIn();\n\t\treturn true;\n\t}\n\n\tbool editorSetLoop(bool enabled)\n\t{\n\t\tif (replayPlayoutActive() || !selectedEventId())\n\t\t\treturn false;\n\t\tif (loopButton) {\n\t\t\tconst QSignalBlocker blocker(loopButton);\n\t\t\tloopButton->setChecked(enabled);\n\t\t}\n\t\tsr_replay_channel_state state = {};\n\t\tif (sr_replay_channel_get_state(transportBus(), &state) && state.cued && state.preview_mode)\n\t\t\tsr_replay_channel_set_loop(transportBus(), enabled);\n\t\treturn true;\n\t}\n\nprivate:\n'''
-          replace_once("src/sr-event-dock.cpp", public_anchor, public_replacement, "event editor bridge methods")
-
-          replace_once(
-              "src/sr-event-dock.cpp",
-              '''\tuint64_t previewTargetEventId = 0;\n\tuint64_t previewLoadedEventId = 0;\n};\n\n} // namespace\n\nQWidget *sr_event_dock_create(struct sr_event_controller *controller, QWidget *parent)\n{\n\treturn new SrEventDock(controller, parent);\n}\n''',
-              '''\tuint64_t previewTargetEventId = 0;\n\tuint64_t previewLoadedEventId = 0;\n};\n\nQPointer<SrEventDock> g_event_dock;\n\n} // namespace\n\nQWidget *sr_event_dock_create(struct sr_event_controller *controller, QWidget *parent)\n{\n\tauto *dock = new SrEventDock(controller, parent);\n\tg_event_dock = dock;\n\treturn dock;\n}\n\nbool sr_event_dock_get_editor_snapshot(struct sr_event_editor_snapshot *snapshot)\n{\n\treturn g_event_dock && g_event_dock->editorSnapshot(snapshot);\n}\n\nbool sr_event_dock_editor_seek(uint64_t timestamp_ns)\n{\n\treturn g_event_dock && g_event_dock->editorSeek(timestamp_ns);\n}\n\nbool sr_event_dock_editor_set_range(uint64_t in_ns, uint64_t out_ns)\n{\n\treturn g_event_dock && g_event_dock->editorSetRange(in_ns, out_ns);\n}\n\nbool sr_event_dock_editor_set_marker(bool out_marker)\n{\n\treturn g_event_dock && g_event_dock->editorSetMarker(out_marker);\n}\n\nbool sr_event_dock_editor_goto_marker(bool out_marker)\n{\n\treturn g_event_dock && g_event_dock->editorGotoMarker(out_marker);\n}\n\nbool sr_event_dock_editor_step_frames(int frames)\n{\n\treturn g_event_dock && g_event_dock->editorStepFrames(frames);\n}\n\nbool sr_event_dock_editor_select_camera(const char *camera_name)\n{\n\treturn g_event_dock && g_event_dock->editorSelectCamera(QString::fromUtf8(camera_name ? camera_name : ""));\n}\n\nbool sr_event_dock_editor_toggle_play(void)\n{\n\treturn g_event_dock && g_event_dock->editorTogglePlay();\n}\n\nbool sr_event_dock_editor_play_from_in(void)\n{\n\treturn g_event_dock && g_event_dock->editorPlayFromIn();\n}\n\nbool sr_event_dock_editor_set_loop(bool enabled)\n{\n\treturn g_event_dock && g_event_dock->editorSetLoop(enabled);\n}\n''',
-              "event editor bridge wrappers",
-          )
-
-          # Register Replay Multiview as a separate OBS dock, sharing only state.
-          replace_once(
-              "src/sr-dock.cpp",
-              '''#include "sr-event-dock.h"\n#include "sr-thumb.h"''',
-              '''#include "sr-event-dock.h"\n#include "sr-multiview-dock.h"\n#include "sr-thumb.h"''',
-              "dock multiview include",
-          )
-          replace_once(
-              "src/sr-dock.cpp",
-              '''\tif (!obs_frontend_add_dock_by_id("pitel_instant_replay_dock", obs_module_text("Dock.Title"), tabs)) {\n\t\tdelete tabs;\n\t\treturn;\n\t}\n\tg_dock = clips;''',
-              '''\tif (!obs_frontend_add_dock_by_id("pitel_instant_replay_dock", obs_module_text("Dock.Title"), tabs)) {\n\t\tdelete tabs;\n\t\treturn;\n\t}\n\n\tauto *multiview = sr_multiview_dock_create(controller);\n\tif (!obs_frontend_add_dock_by_id("pitel_instant_replay_multiview_dock", obs_module_text("Multiview.Title"),\n\t\t\t\t     multiview))\n\t\tdelete multiview;\n\tg_dock = clips;''',
-              "dock multiview registration",
-          )
-
-          # Build the new dock.
-          replace_once(
-              "CMakeLists.txt",
-              '''    src/sr-event-dock.cpp\n    src/sr-replay-channel.c''',
-              '''    src/sr-event-dock.cpp\n    src/sr-multiview-dock.cpp\n    src/sr-replay-channel.c''',
-              "cmake multiview source",
-          )
-
-          strings_en = '''\n# Replay Multiview editor\nMultiview.Title="Pitel Instant Replay — Multiview"\nMultiview.Open="MULTIVIEW"\nMultiview.OpenTooltip="Open the synchronized multicamera replay editor."\nMultiview.Cameras="Cameras"\nMultiview.Quality="Quality"\nMultiview.QualityAuto="Auto"\nMultiview.QualitySource="Source"\nMultiview.Fps="Preview FPS"\nMultiview.FpsAuto="Auto"\nMultiview.AutoAngle="AUTO angle"\nMultiview.Waiting="Waiting for replay media…"\nMultiview.NoCoverage="No Event coverage"\nMultiview.NoMediaAtCursor="No media at cursor"\nMultiview.DecodeWaiting="Frame unavailable / decoding…"\nMultiview.NoTimeline="No active recording timeline"\nMultiview.SelectEvent="Select an Event in Replay Operator"\nMultiview.EditorUnavailable="Replay editor is unavailable"\nMultiview.PlayoutLocked="PLAYOUT — Multiview editing locked"\nMultiview.PlayPause="Play / Pause"\nMultiview.PlayFromIn="▶ IN→OUT"\nMultiview.SetIn="SET IN"\nMultiview.SetOut="SET OUT"\nMultiview.Loop="Loop"\n'''
-          strings_es = '''\n# Editor Replay Multiview\nMultiview.Title="Pitel Instant Replay — Multiview"\nMultiview.Open="MULTIVIEW"\nMultiview.OpenTooltip="Abrir el editor multicámara sincronizado de replay."\nMultiview.Cameras="Cámaras"\nMultiview.Quality="Calidad"\nMultiview.QualityAuto="Auto"\nMultiview.QualitySource="Fuente"\nMultiview.Fps="FPS de preview"\nMultiview.FpsAuto="Auto"\nMultiview.AutoAngle="Ángulo AUTO"\nMultiview.Waiting="Esperando medios de replay…"\nMultiview.NoCoverage="Sin cobertura del Event"\nMultiview.NoMediaAtCursor="Sin medios en el cursor"\nMultiview.DecodeWaiting="Frame no disponible / decodificando…"\nMultiview.NoTimeline="Sin timeline de grabación activa"\nMultiview.SelectEvent="Seleccione un Event en Replay Operator"\nMultiview.EditorUnavailable="El editor de replay no está disponible"\nMultiview.PlayoutLocked="PLAYOUT — edición Multiview bloqueada"\nMultiview.PlayPause="Play / Pause"\nMultiview.PlayFromIn="▶ IN→OUT"\nMultiview.SetIn="SET IN"\nMultiview.SetOut="SET OUT"\nMultiview.Loop="Loop"\n'''
-          for locale, block in [("data/locale/en-US.ini", strings_en), ("data/locale/es-ES.ini", strings_es)]:
-              p = Path(locale)
-              text = p.read_text(encoding="utf-8")
-              if "Multiview.Title=" not in text:
-                  p.write_text(text.rstrip() + "\n" + block.lstrip(), encoding="utf-8")
-
-          # Restore the real development CI in the product commit so the push
-          # validates the exact resulting tree and the helper does not persist.
-          Path(".github/workflows/validate-program-output.yml").write_text('''name: Replay Development CI\nrun-name: Replay Development CI — ${{ github.ref_name }} — ${{ github.event_name }}\n\non:\n  workflow_dispatch:\n  push:\n    branches:\n      - feature/hardware-zero-copy\n\npermissions:\n  contents: read\n\nconcurrency:\n  group: replay-development-ci-${{ github.ref }}\n  cancel-in-progress: true\n\n# Full validation for the active replay development branch.\n# Every push is built; workflow_dispatch keeps a manual Run workflow button\n# available from the default branch. PR validation is intentionally left to\n# the repository's normal PR workflow when this branch is eventually retargeted\n# to main, avoiding duplicate push + pull_request builds during development.\njobs:\n  check-format:\n    name: Check Formatting 🔍\n    uses: ./.github/workflows/check-format.yaml\n    permissions:\n      contents: read\n\n  build-project:\n    name: Build Project 🧱\n    uses: ./.github/workflows/build-project.yaml\n    secrets: inherit\n    permissions:\n      contents: read\n''', encoding="utf-8")
-          PY
-
+          python3 .github/apply-multiview.py
           clang-format-19 -i \
             src/sr-disk-player.c src/sr-disk-player.h \
             src/sr-event-dock.cpp src/sr-event-dock.h \
@@ -184,8 +48,7 @@ jobs:
             src/sr-disk-player.c src/sr-disk-player.h \
             src/sr-event-dock.cpp src/sr-event-dock.h \
             src/sr-multiview-dock.cpp src/sr-multiview-dock.h \
-            src/sr-dock.cpp data/locale/en-US.ini data/locale/es-ES.ini \
-            .github/workflows/validate-program-output.yml
+            src/sr-dock.cpp data/locale/en-US.ini data/locale/es-ES.ini
           if git diff --cached --quiet; then
             echo "Replay Multiview integration already applied."
             exit 0
