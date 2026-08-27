@@ -76,6 +76,27 @@ if(ENABLE_QT)
   )
 endif()
 
+# Keep the mature capture/render code unchanged while Session Manager owns the
+# transport/session policy around it. These two public capture functions are
+# renamed only inside capture-filter.c; sr-capture-session.c exposes the normal
+# API and wraps it with Recording Run lifecycle/timeline mapping.
+set_source_files_properties(
+  src/capture-filter.c
+  PROPERTIES COMPILE_DEFINITIONS
+             "SR_SESSION_RECORDING_PRODUCER;sr_capture_set_all_disk_recording=sr_capture_set_all_disk_recording_impl;sr_capture_get_recording_summary=sr_capture_get_recording_summary_impl"
+)
+
+# These modules are media producers/maintenance for the live recording target.
+# Their existing legacy sr_session_get_or_create_path() calls are intentionally
+# redirected by sr-session.h to Recording Session. Replay/editor modules are
+# not compiled with this flag and continue to read Opened Session.
+set_source_files_properties(
+  src/sr-program-recorder.c
+  src/sr-master-audio.c
+  src/sr-storage-manager.c
+  PROPERTIES COMPILE_DEFINITIONS "SR_SESSION_RECORDING_PRODUCER"
+)
+
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE
@@ -90,6 +111,7 @@ target_sources(
     src/sr-frame-cache.c
     src/sr-replay-decode.c
     src/capture-filter.c
+    src/sr-capture-session.c
     src/playback-source.c
     src/sr-scene-tracker.c
     src/sr-clip.c
