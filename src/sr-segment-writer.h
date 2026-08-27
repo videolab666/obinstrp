@@ -26,6 +26,7 @@ struct sr_segment_writer_config {
 	const char *session_dir;
 	const char *camera_name;
 	const char *camera_key; /* persistent OBS source UUID */
+	int64_t sync_offset_ns;
 	enum AVCodecID codec_id;
 	uint32_t width;
 	uint32_t height;
@@ -36,6 +37,9 @@ struct sr_segment_writer_config {
 	uint32_t target_segment_ms;
 	size_t max_queue_packets;
 	uint64_t min_free_bytes;
+	/* A resumed recording run must be visibly separated from the preceding
+	 * run even when its mapped timestamp is monotonic. */
+	bool start_discontinuity;
 };
 
 struct sr_segment_writer_stats {
