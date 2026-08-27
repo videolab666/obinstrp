@@ -44,6 +44,7 @@ struct sr_decoder {
 	AVCodecContext *ctx;
 	AVFrame *frame;
 	bool hardware;
+	bool transfer_hardware_to_system;
 };
 
 static enum AVPixelFormat obs_to_av_format(enum video_format format)
@@ -381,6 +382,18 @@ static AVCodecContext *alloc_decoder_context(const AVCodec *codec, const uint8_t
 	return ctx;
 }
 
+static AVBufferRef *create_isolated_intel_decode_device(void)
+{
+#ifdef _WIN32
+	AVBufferRef *device = NULL;
+	if (av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_D3D11VA, NULL, NULL, 0) < 0)
+		return NULL;
+	return device;
+#else
+	return NULL;
+#endif
+}
+
 static struct sr_decoder *create_decoder(enum AVCodecID codec_id, const uint8_t *extradata, int extradata_size,
 					 bool prefer_hardware)
 {
@@ -392,8 +405,11 @@ static struct sr_decoder *create_decoder(enum AVCodecID codec_id, const uint8_t 
 	if (!ctx)
 		return NULL;
 
+	const bool intel_adapter = sr_gpu_active_adapter_vendor_id() == SR_GPU_VENDOR_ID_INTEL;
 	AVBufferRef *hw_device = NULL;
-	if (prefer_hardware)
+	if (intel_adapter)
+		hw_device = create_isolated_intel_decode_device();
+	else if (prefer_hardware)
 		hw_device = sr_gpu_create_replay_decode_device();
 	if (hw_device) {
 		ctx->hw_device_ctx = av_buffer_ref(hw_device);
@@ -420,6 +436,7 @@ static struct sr_decoder *create_decoder(enum AVCodecID codec_id, const uint8_t 
 	struct sr_decoder *dec = bzalloc(sizeof(struct sr_decoder));
 	dec->ctx = ctx;
 	dec->frame = av_frame_alloc();
+	dec->transfer_hardware_to_system = intel_adapter && ctx->hw_device_ctx != NULL;
 	if (!dec->frame) {
 		avcodec_free_context(&dec->ctx);
 		bfree(dec);
@@ -467,6 +484,20 @@ bool sr_decoder_decode(struct sr_decoder *dec, const AVPacket *pkt, AVFrame **ou
 		return false;
 
 	dec->hardware = sr_gpu_frame_is_native(dec->frame);
+	if (dec->hardware && dec->transfer_hardware_to_system) {
+		AVFrame *software = av_frame_alloc();
+		if (!software)
+			return false;
+		if (av_hwframe_transfer_data(software, dec->frame, 0) < 0) {
+			av_frame_free(&software);
+			return false;
+		}
+		av_frame_copy_props(software, dec->frame);
+		av_frame_unref(dec->frame);
+		av_frame_move_ref(dec->frame, software);
+		av_frame_free(&software);
+	}
+
 	*out = dec->frame;
 	return true;
 }
