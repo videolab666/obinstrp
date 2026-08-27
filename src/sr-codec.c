@@ -76,6 +76,12 @@ static enum AVPixelFormat obs_to_av_format(enum video_format format)
 	}
 }
 
+static bool configure_bt709_limited(struct SwsContext *sws, bool full)
+{
+	const int *coeff = sws_getCoefficients(SWS_CS_ITU709);
+	return sws && sws_setColorspaceDetails(sws, coeff, full ? 1 : 0, coeff, 0, 0, 1 << 16, 1 << 16) >= 0;
+}
+
 static int gop_frames_from_interval(uint32_t fps_num, uint32_t fps_den, uint32_t gop_interval_ms)
 {
 	if (!gop_interval_ms || !fps_num || !fps_den)
@@ -241,9 +247,13 @@ static bool copy_nv12_direct(struct sr_encoder *enc, const struct obs_source_fra
 	/* Direct copy is valid only when the source is already limited-range NV12.
 	 * Full-range camera frames must pass through swscale so replay files have a
 	 * single BT.709 limited-range contract, matching the Program raw callback. */
-	if (!enc || !frame || frame->format != VIDEO_FORMAT_NV12 || frame->full_range || !frame->data[0] ||
-	    !frame->data[1] || frame->width != (uint32_t)enc->ctx->width ||
-	    frame->height != (uint32_t)enc->ctx->height)
+	if (!enc || !frame)
+		return false;
+	if (frame->format != VIDEO_FORMAT_NV12 || frame->full_range)
+		return false;
+	if (!frame->data[0] || !frame->data[1])
+		return false;
+	if (frame->width != (uint32_t)enc->ctx->width || frame->height != (uint32_t)enc->ctx->height)
 		return false;
 
 	av_image_copy_plane(enc->frame->data[0], enc->frame->linesize[0], frame->data[0], (int)frame->linesize[0],
@@ -289,10 +299,7 @@ AVPacket *sr_encoder_encode(struct sr_encoder *enc, const struct obs_source_fram
 		 * BT.709 limited NV12 so camera replay and PROGRAM use identical levels.
 		 * Applying this on every frame also handles a source changing range at
 		 * runtime without rebuilding the encoder. */
-		const int *coefficients = sws_getCoefficients(SWS_CS_ITU709);
-		const int source_full_range = frame->full_range ? 1 : 0;
-		if (sws_setColorspaceDetails(enc->sws, coefficients, source_full_range, coefficients, 0, 0, 1 << 16,
-					     1 << 16) < 0)
+		if (!configure_bt709_limited(enc->sws, frame->full_range))
 			return NULL;
 
 		const uint8_t *src_data[MAX_AV_PLANES] = {0};
