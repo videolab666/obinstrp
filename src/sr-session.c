@@ -237,7 +237,8 @@ static sqlite3 *open_session_sqlite(const char *session_dir)
 	if (!path)
 		return NULL;
 	sqlite3 *sql = NULL;
-	const int rc = sqlite3_open_v2(path, &sql, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
+	const int rc =
+		sqlite3_open_v2(path, &sql, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
 	bfree(path);
 	if (rc != SQLITE_OK) {
 		if (sql)
@@ -278,10 +279,15 @@ static uint64_t scan_index_pattern(const char *pattern, uint64_t current_max)
 			continue;
 		struct sr_index_file_header header;
 		if (fread(&header, 1, sizeof(header), file) == sizeof(header) &&
-		    memcmp(header.magic, SR_INDEX_MAGIC, sizeof(header.magic)) == 0) {
-			if (fseek(file, -(long)sizeof(struct sr_index_entry), SEEK_END) == 0) {
+		    memcmp(header.magic, SR_INDEX_MAGIC, sizeof(header.magic)) == 0 &&
+		    header.version == SR_SEGMENT_FORMAT_VERSION && fseek(file, 0, SEEK_END) == 0) {
+			const long file_size = ftell(file);
+			const long minimum_size = (long)(sizeof(header) + sizeof(struct sr_index_entry));
+			if (file_size >= minimum_size &&
+			    fseek(file, -(long)sizeof(struct sr_index_entry), SEEK_END) == 0) {
 				struct sr_index_entry entry;
-				if (fread(&entry, 1, sizeof(entry), file) == sizeof(entry) && entry.timestamp_ns > current_max)
+				if (fread(&entry, 1, sizeof(entry), file) == sizeof(entry) &&
+				    entry.timestamp_ns > current_max)
 					current_max = entry.timestamp_ns;
 			}
 		}
@@ -308,7 +314,8 @@ static uint64_t last_media_timestamp(const char *session_dir)
 	sqlite3 *sql = open_session_sqlite(session_dir);
 	if (sql) {
 		sqlite3_stmt *stmt = NULL;
-		if (sqlite3_prepare_v2(sql, "SELECT MAX(timeline_end_ns) FROM recording_runs", -1, &stmt, NULL) == SQLITE_OK &&
+		if (sqlite3_prepare_v2(sql, "SELECT MAX(timeline_end_ns) FROM recording_runs", -1, &stmt, NULL) ==
+			    SQLITE_OK &&
 		    sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
 			const uint64_t run_end = (uint64_t)sqlite3_column_int64(stmt, 0);
 			if (run_end > result)
@@ -581,8 +588,7 @@ bool sr_session_prepare_recording(uint64_t obs_now_ns)
 	const uint64_t previous_end = last_media_timestamp(g_recording_path);
 	g_recording_discontinuity = previous_end != 0;
 	g_recording_obs_start_ns = obs_now_ns;
-	g_recording_timeline_start_ns =
-		previous_end ? previous_end + frame_interval_ns() : obs_now_ns;
+	g_recording_timeline_start_ns = previous_end ? previous_end + frame_interval_ns() : obs_now_ns;
 	g_recording_run_id = 0;
 	if (!begin_recording_run_locked(obs_now_ns, g_recording_timeline_start_ns, g_recording_discontinuity)) {
 		bfree(g_recording_path);
@@ -603,7 +609,8 @@ void sr_session_finish_recording(uint64_t obs_now_ns)
 	pthread_mutex_lock(&g_session_mutex);
 	if (g_recording_path) {
 		finish_recording_run_locked(obs_now_ns);
-		blog(LOG_INFO, "Pitel Instant Replay: recording run %llu closed", (unsigned long long)g_recording_run_id);
+		blog(LOG_INFO, "Pitel Instant Replay: recording run %llu closed",
+		     (unsigned long long)g_recording_run_id);
 		bfree(g_recording_path);
 		g_recording_path = NULL;
 		g_recording_obs_start_ns = 0;
@@ -751,9 +758,10 @@ bool sr_session_resolve_camera(const char *session_dir, const char *camera_name,
 	sqlite3 *sql = open_session_sqlite(session_dir);
 	if (sql) {
 		sqlite3_stmt *stmt = NULL;
-		const char *query = have_current_key
-					    ? "SELECT stable_key,sync_offset_ns FROM cameras WHERE stable_key=? OR display_name=? ORDER BY stable_key=? DESC LIMIT 1"
-					    : "SELECT stable_key,sync_offset_ns FROM cameras WHERE display_name=? LIMIT 1";
+		const char *query =
+			have_current_key
+				? "SELECT stable_key,sync_offset_ns FROM cameras WHERE stable_key=? OR display_name=? ORDER BY stable_key=? DESC LIMIT 1"
+				: "SELECT stable_key,sync_offset_ns FROM cameras WHERE display_name=? LIMIT 1";
 		if (sqlite3_prepare_v2(sql, query, -1, &stmt, NULL) == SQLITE_OK) {
 			int index = 1;
 			if (have_current_key)

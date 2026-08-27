@@ -27,6 +27,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QDirIterator>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QHash>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
@@ -166,7 +167,7 @@ public:
 
 		timer = new QTimer(this);
 		timer->setInterval(2000);
-		connect(timer, &QTimer::timeout, this, [this]() { refresh(); });
+		connect(timer, &QTimer::timeout, this, [this]() { refresh(false); });
 		timer->start();
 		refresh();
 	}
@@ -389,10 +390,12 @@ private:
 		int deleted = 0;
 		int errors = 0;
 		for (const QString &path : deletable) {
-			if (QDir(path).removeRecursively())
+			if (QDir(path).removeRecursively()) {
+				sessionSizeCache.remove(path);
 				deleted++;
-			else
+			} else {
 				errors++;
+			}
 		}
 		refresh();
 
@@ -416,7 +419,7 @@ private:
 		return states.isEmpty() ? T("Storage.Inactive") : states.join(QStringLiteral(" · "));
 	}
 
-	void refresh()
+	void refresh(bool rescanSizes = true)
 	{
 		const QString preserve = singleSelectedPath();
 		char *rootRaw = sr_config_get_session_root();
@@ -438,7 +441,11 @@ private:
 		for (int row = 0; row < sessions.size(); row++) {
 			const QString path = sessions.at(row).absoluteFilePath();
 			const QByteArray pathUtf8 = path.toUtf8();
-			const quint64 bytes = directoryBytes(path);
+			quint64 bytes = sessionSizeCache.value(path, 0);
+			if (rescanSizes || !sessionSizeCache.contains(path)) {
+				bytes = directoryBytes(path);
+				sessionSizeCache.insert(path, bytes);
+			}
 			totalBytes += bytes;
 
 			auto *nameItem = new QTableWidgetItem(sessionName(path));
@@ -507,6 +514,7 @@ private:
 	QPushButton *renameButton = nullptr;
 	QPushButton *returnToRecordingButton = nullptr;
 	QTimer *timer = nullptr;
+	QHash<QString, quint64> sessionSizeCache;
 };
 
 QTabWidget *findUnifiedDockTabs()
