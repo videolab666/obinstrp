@@ -21,6 +21,8 @@ extern "C" {
 #endif
 
 #define SR_CAMERA_STABLE_KEY_MAX 64
+#define SR_PROGRAM_CAMERA_NAME "PROGRAM"
+#define SR_PROGRAM_CAMERA_KEY "program-output-v1"
 
 /* OBS source UUIDs are the persistent camera identity. Display names remain
  * operator-facing labels only and may be renamed without moving new replay
@@ -36,6 +38,8 @@ char *sr_camera_name_from_key(const char *key);
  * Positive means camera media timestamps are late and must be addressed as
  * global_timestamp + offset. Ambiguous duplicate capture filters fail closed. */
 bool sr_camera_sync_offset_ns(const char *camera_name, int64_t *offset_ns);
+
+bool sr_camera_is_program_name(const char *camera_name);
 
 uint32_t sr_camera_key_hash(const char *key);
 

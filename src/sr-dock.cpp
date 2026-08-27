@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "sr-dock.h"
 #include "sr-config.h"
 #include "sr-event-dock.h"
+#include "sr-multiview-dock.h"
 #include "sr-thumb.h"
 #include "sr-capture.h"
 #include "sr-credit.h"
@@ -37,6 +38,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDateTime>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -56,6 +58,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QPixmap>
 #include <QIcon>
 #include <QShowEvent>
+#include <QSpinBox>
 #include <QPainter>
 #include <QSet>
 #include <QPointer>
@@ -114,6 +117,38 @@ void populateStingerCombo(QComboBox *combo, const QStringList &names, const QStr
 	for (const QString &name : names)
 		combo->addItem(name, name);
 
+	int index = combo->findData(saved);
+	if (!saved.isEmpty() && index < 0) {
+		combo->addItem(T("Dock.StingerMissing").arg(saved), saved);
+		index = combo->count() - 1;
+	}
+	combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+QStringList nativeEventTransitions()
+{
+	QStringList names;
+	obs_frontend_source_list transitions = {};
+	obs_frontend_get_transitions(&transitions);
+	for (size_t i = 0; i < transitions.sources.num; i++) {
+		obs_source_t *transition = transitions.sources.array[i];
+		const char *transitionId = obs_source_get_unversioned_id(transition);
+		if (strcmp(transitionId, "obs_stinger_transition") == 0 || strcmp(transitionId, "cut_transition") == 0)
+			continue;
+		const QString name = QString::fromUtf8(obs_source_get_name(transition));
+		if (!name.isEmpty() && !names.contains(name))
+			names.append(name);
+	}
+	obs_frontend_source_list_free(&transitions);
+	names.sort(Qt::CaseInsensitive);
+	return names;
+}
+
+void populateEventTransitionCombo(QComboBox *combo, const QStringList &names, const QString &saved)
+{
+	combo->addItem(T("Dock.EventTransitionCut"), QString());
+	for (const QString &name : names)
+		combo->addItem(name, name);
 	int index = combo->findData(saved);
 	if (!saved.isEmpty() && index < 0) {
 		combo->addItem(T("Dock.StingerMissing").arg(saved), saved);
@@ -274,6 +309,8 @@ public:
 	/* UI thread. Flags a replay as aired and badges it if it is already
 	 * on the list; a replay saved seconds ago usually isn't yet, and the
 	 * folder watcher's refresh picks the badge up from playedPaths. */
+	void showSettings() { openSettings(); }
+
 	void markPlayed(const QString &path)
 	{
 		QString abs = QFileInfo(path).absoluteFilePath();
@@ -370,6 +407,54 @@ private:
 		populateStingerCombo(stingerOut, stingers, takeOut);
 		lay->addWidget(stingerOut);
 
+		auto *replaySpeedPolicyRow = new QHBoxLayout();
+		replaySpeedPolicyRow->addWidget(new QLabel(T("Dock.ReplaySpeedPolicy"), &dlg));
+		auto *replaySpeedPolicy = new QComboBox(&dlg);
+		replaySpeedPolicy->addItem(T("Dock.ReplaySpeedPolicy.Global"), SR_REPLAY_SPEED_GLOBAL);
+		replaySpeedPolicy->addItem(T("Dock.ReplaySpeedPolicy.Event"), SR_REPLAY_SPEED_EVENT);
+		replaySpeedPolicy->setCurrentIndex(
+			replaySpeedPolicy->findData((int)sr_config_get_replay_speed_policy()));
+		replaySpeedPolicyRow->addWidget(replaySpeedPolicy, 1);
+		lay->addLayout(replaySpeedPolicyRow);
+		auto *replaySpeedPolicyHint = new QLabel(T("Dock.ReplaySpeedPolicyHint"), &dlg);
+		replaySpeedPolicyHint->setWordWrap(true);
+		replaySpeedPolicyHint->setStyleSheet(QStringLiteral("color: gray;"));
+		lay->addWidget(replaySpeedPolicyHint);
+
+		char *eventTransitionRaw = sr_config_get_event_transition();
+		const QString eventTransition = QString::fromUtf8(eventTransitionRaw ? eventTransitionRaw : "");
+		bfree(eventTransitionRaw);
+		auto *eventTransitionRow = new QHBoxLayout();
+		eventTransitionRow->addWidget(new QLabel(T("Dock.EventTransition"), &dlg));
+		auto *eventTransitionCombo = new QComboBox(&dlg);
+		populateEventTransitionCombo(eventTransitionCombo, nativeEventTransitions(), eventTransition);
+		eventTransitionCombo->setMinimumWidth(180);
+		eventTransitionRow->addWidget(eventTransitionCombo, 1);
+		auto *eventTransitionMs = new QSpinBox(&dlg);
+		eventTransitionMs->setRange(50, 10000);
+		eventTransitionMs->setSingleStep(50);
+		eventTransitionMs->setValue((int)sr_config_get_event_transition_duration_ms());
+		eventTransitionRow->addWidget(eventTransitionMs);
+		eventTransitionRow->addWidget(new QLabel(T("Dock.EventTransitionMilliseconds"), &dlg));
+		lay->addLayout(eventTransitionRow);
+		auto *eventTransitionMatchSpeed = new QCheckBox(T("Dock.EventTransitionMatchReplaySpeed"), &dlg);
+		eventTransitionMatchSpeed->setChecked(sr_config_get_event_transition_match_replay_speed());
+		eventTransitionMatchSpeed->setToolTip(T("Dock.EventTransitionMatchReplaySpeedHint"));
+		lay->addWidget(eventTransitionMatchSpeed);
+		const bool haveEventTransition = !eventTransitionCombo->currentData().toString().isEmpty();
+		eventTransitionMs->setEnabled(haveEventTransition);
+		eventTransitionMatchSpeed->setEnabled(haveEventTransition);
+		connect(eventTransitionCombo, &QComboBox::currentIndexChanged, &dlg,
+			[eventTransitionCombo, eventTransitionMs, eventTransitionMatchSpeed](int) {
+				const bool enabled = !eventTransitionCombo->currentData().toString().isEmpty();
+				eventTransitionMs->setEnabled(enabled);
+				eventTransitionMatchSpeed->setEnabled(enabled);
+			});
+		auto *eventTransitionHint = new QLabel(T("Dock.EventTransitionHint"), &dlg);
+		eventTransitionHint->setWordWrap(true);
+		eventTransitionHint->setStyleSheet(QStringLiteral("color: gray;"));
+		lay->addWidget(eventTransitionHint);
+
 		auto *stingerHint = new QLabel(T("Dock.StingerHint"), &dlg);
 		stingerHint->setWordWrap(true);
 		stingerHint->setStyleSheet(QStringLiteral("color: gray;"));
@@ -428,6 +513,12 @@ private:
 			const QByteArray stingerOutName = stingerOut->currentData().toString().toUtf8();
 			sr_config_set_take_in_transition(stingerInName.constData());
 			sr_config_set_take_out_transition(stingerOutName.constData());
+			const QByteArray eventTransitionName = eventTransitionCombo->currentData().toString().toUtf8();
+			sr_config_set_event_transition(eventTransitionName.constData());
+			sr_config_set_event_transition_duration_ms((uint32_t)eventTransitionMs->value());
+			sr_config_set_event_transition_match_replay_speed(eventTransitionMatchSpeed->isChecked());
+			sr_config_set_replay_speed_policy(
+				static_cast<sr_replay_speed_policy>(replaySpeedPolicy->currentData().toInt()));
 
 			watchFolder();
 			refreshList();
@@ -444,7 +535,7 @@ private:
 
 	static QString playedConfigPath()
 	{
-		char *path = obs_module_config_path("played.json");
+		char *path = obs_module_config_path("standalone-v1/played.json");
 		QString result = path ? QString::fromUtf8(path) : QString();
 		bfree(path);
 		return result;
@@ -483,7 +574,7 @@ private:
 		if (cfgPath.isEmpty())
 			return;
 
-		char *dir = obs_module_config_path("");
+		char *dir = obs_module_config_path("standalone-v1");
 		if (dir) {
 			os_mkdirs(dir);
 			bfree(dir);
@@ -650,12 +741,17 @@ public:
 		rootLabel->setWordWrap(true);
 		rootLayout->addWidget(rootLabel);
 
+		usageLabel = new QLabel(this);
+		usageLabel->setWordWrap(true);
+		usageLabel->setStyleSheet(QStringLiteral("font-weight: 600;"));
+		rootLayout->addWidget(usageLabel);
+
 		table = new QTableWidget(this);
 		table->setColumnCount(4);
 		table->setHorizontalHeaderLabels({T("Storage.Column.Session"), T("Storage.Column.Created"),
 						  T("Storage.Column.Size"), T("Storage.Column.Status")});
 		table->setSelectionBehavior(QAbstractItemView::SelectRows);
-		table->setSelectionMode(QAbstractItemView::SingleSelection);
+		table->setSelectionMode(QAbstractItemView::ExtendedSelection);
 		table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		table->verticalHeader()->setVisible(false);
 		table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -666,9 +762,11 @@ public:
 
 		auto *buttons = new QHBoxLayout();
 		auto *refresh = new QPushButton(T("Storage.Refresh"), this);
-		auto *remove = new QPushButton(T("Storage.Delete"), this);
+		auto *remove = new QPushButton(T("Storage.DeleteSelected"), this);
+		auto *removeAll = new QPushButton(T("Storage.DeleteAll"), this);
 		buttons->addWidget(refresh);
 		buttons->addWidget(remove);
+		buttons->addWidget(removeAll);
 		buttons->addStretch(1);
 		rootLayout->addLayout(buttons);
 
@@ -678,7 +776,8 @@ public:
 		rootLayout->addWidget(gcStatus);
 
 		connect(refresh, &QPushButton::clicked, this, [this]() { refreshSessions(); });
-		connect(remove, &QPushButton::clicked, this, [this]() { deleteSelectedSession(); });
+		connect(remove, &QPushButton::clicked, this, [this]() { deleteSelectedSessions(); });
+		connect(removeAll, &QPushButton::clicked, this, [this]() { deleteAllSessions(); });
 
 		statusTimer = new QTimer(this);
 		statusTimer->setInterval(2000);
@@ -687,7 +786,19 @@ public:
 		refreshSessions();
 	}
 
+protected:
+	void showEvent(QShowEvent *event) override
+	{
+		QWidget::showEvent(event);
+		refreshSessions();
+	}
+
 private:
+	void updateUsageLabel()
+	{
+		usageLabel->setText(T("Storage.UsedSummary").arg(formattedBytes(totalSessionBytes)).arg(sessionCount));
+	}
+
 	void refreshStatus()
 	{
 		char *rootRaw = sr_config_get_session_root();
@@ -696,6 +807,7 @@ private:
 		const QByteArray rootUtf8 = root.toUtf8();
 		const quint64 freeBytes = root.isEmpty() ? 0 : os_get_free_disk_space(rootUtf8.constData());
 		rootLabel->setText(T("Storage.RootSummary").arg(root).arg(formattedBytes(freeBytes)));
+		updateUsageLabel();
 
 		sr_storage_manager_status manager = {};
 		sr_storage_manager_get_status(&manager);
@@ -717,7 +829,6 @@ private:
 
 	void refreshSessions()
 	{
-		refreshStatus();
 		char *rootRaw = sr_config_get_session_root();
 		const QString root = QString::fromUtf8(rootRaw ? rootRaw : "");
 		bfree(rootRaw);
@@ -730,60 +841,139 @@ private:
 			if (QFileInfo(metadata).isFile())
 				sessions.append(candidate);
 		}
+
+		totalSessionBytes = 0;
+		sessionCount = sessions.size();
 		table->setRowCount(sessions.size());
 		for (int row = 0; row < sessions.size(); row++) {
 			const QFileInfo &session = sessions.at(row);
 			const QString path = session.absoluteFilePath();
 			const bool active = sr_session_path_is_active(path.toUtf8().constData());
+			const quint64 bytes = directoryBytes(path);
+			totalSessionBytes += bytes;
 			auto *name = new QTableWidgetItem(session.fileName());
 			name->setData(Qt::UserRole, path);
+			name->setData(Qt::UserRole + 1, QVariant::fromValue<qulonglong>(bytes));
 			table->setItem(row, 0, name);
 			const qint64 created = sessionCreatedUnix(path);
 			table->setItem(row, 1,
 				       new QTableWidgetItem(QDateTime::fromSecsSinceEpoch(created).toString(
 					       QStringLiteral("yyyy-MM-dd HH:mm:ss"))));
-			table->setItem(row, 2, new QTableWidgetItem(formattedBytes(directoryBytes(path))));
+			table->setItem(row, 2, new QTableWidgetItem(formattedBytes(bytes)));
 			table->setItem(row, 3,
 				       new QTableWidgetItem(active ? T("Storage.Active") : T("Storage.Inactive")));
 		}
+		refreshStatus();
 	}
 
-	void deleteSelectedSession()
+	QStringList selectedSessionPaths() const
 	{
-		const int row = table->currentRow();
-		QTableWidgetItem *item = row >= 0 ? table->item(row, 0) : nullptr;
-		if (!item)
-			return;
-		const QString path = item->data(Qt::UserRole).toString();
-		const QByteArray pathUtf8 = path.toUtf8();
-		if (sr_session_path_is_active(pathUtf8.constData())) {
-			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteActive"));
-			return;
+		QStringList paths;
+		if (!table->selectionModel())
+			return paths;
+		const QModelIndexList rows = table->selectionModel()->selectedRows(0);
+		for (const QModelIndex &index : rows) {
+			QTableWidgetItem *item = table->item(index.row(), 0);
+			if (item)
+				paths.append(item->data(Qt::UserRole).toString());
 		}
+		return paths;
+	}
 
+	QStringList allSessionPaths() const
+	{
+		QStringList paths;
+		for (int row = 0; row < table->rowCount(); row++) {
+			QTableWidgetItem *item = table->item(row, 0);
+			if (item)
+				paths.append(item->data(Qt::UserRole).toString());
+		}
+		return paths;
+	}
+
+	void deleteSelectedSessions()
+	{
+		const QStringList paths = selectedSessionPaths();
+		if (paths.isEmpty())
+			return;
+		deleteSessions(paths, false);
+	}
+
+	void deleteAllSessions()
+	{
+		const QStringList paths = allSessionPaths();
+		if (paths.isEmpty())
+			return;
+		deleteSessions(paths, true);
+	}
+
+	void deleteSessions(const QStringList &requestedPaths, bool all)
+	{
 		char *rootRaw = sr_config_get_session_root();
 		const QString canonicalRoot = QFileInfo(QString::fromUtf8(rootRaw ? rootRaw : "")).canonicalFilePath();
 		bfree(rootRaw);
-		const QFileInfo selected(path);
-		if (canonicalRoot.isEmpty() || selected.dir().canonicalPath() != canonicalRoot) {
+		if (canonicalRoot.isEmpty()) {
 			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteInvalid"));
 			return;
 		}
 
-		if (QMessageBox::question(this, T("Storage.DeleteTitle"),
-					  T("Storage.DeleteConfirm").arg(selected.fileName())) != QMessageBox::Yes)
-			return;
-		if (!QDir(path).removeRecursively()) {
-			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteFailed"));
+		QStringList deletable;
+		quint64 selectedBytes = 0;
+		int activeSkipped = 0;
+		int invalidSkipped = 0;
+		for (const QString &path : requestedPaths) {
+			const QFileInfo selected(path);
+			if (selected.dir().canonicalPath() != canonicalRoot) {
+				invalidSkipped++;
+				continue;
+			}
+			const QByteArray pathUtf8 = path.toUtf8();
+			if (sr_session_path_is_active(pathUtf8.constData())) {
+				activeSkipped++;
+				continue;
+			}
+			deletable.append(path);
+			selectedBytes += directoryBytes(path);
+		}
+
+		if (deletable.isEmpty()) {
+			QMessageBox::warning(this, T("Storage.DeleteTitle"),
+					     activeSkipped ? T("Storage.DeleteActive") : T("Storage.DeleteInvalid"));
 			return;
 		}
+
+		const QString question = T(all ? "Storage.DeleteAllConfirm" : "Storage.DeleteManyConfirm")
+						 .arg(deletable.size())
+						 .arg(formattedBytes(selectedBytes))
+						 .arg(activeSkipped);
+		if (QMessageBox::question(this, T("Storage.DeleteTitle"), question) != QMessageBox::Yes)
+			return;
+
+		int deleted = 0;
+		int errors = 0;
+		for (const QString &path : deletable) {
+			if (QDir(path).removeRecursively())
+				deleted++;
+			else
+				errors++;
+		}
 		refreshSessions();
+
+		const QString result =
+			T("Storage.DeleteManyResult").arg(deleted).arg(activeSkipped).arg(invalidSkipped).arg(errors);
+		if (errors || activeSkipped || invalidSkipped)
+			QMessageBox::information(this, T("Storage.DeleteTitle"), result);
+		else
+			gcStatus->setText(result);
 	}
 
 	QLabel *rootLabel = nullptr;
+	QLabel *usageLabel = nullptr;
 	QLabel *gcStatus = nullptr;
 	QTableWidget *table = nullptr;
 	QTimer *statusTimer = nullptr;
+	quint64 totalSessionBytes = 0;
+	int sessionCount = 0;
 };
 
 /* The live dock, so replays that go to air from a hotkey can be marked
@@ -803,11 +993,11 @@ void mark_played_task(void *param)
 void sr_dock_register(struct sr_event_controller *controller)
 {
 	auto *tabs = new QTabWidget();
-	tabs->setObjectName(QStringLiteral("SportsReplayDock"));
+	tabs->setObjectName(QStringLiteral("PitelInstantReplayDock"));
 	tabs->setDocumentMode(true);
 
 	auto *operatorScroll = new QScrollArea(tabs);
-	operatorScroll->setObjectName(QStringLiteral("SportsReplayOperatorScroll"));
+	operatorScroll->setObjectName(QStringLiteral("PitelInstantReplayOperatorScroll"));
 	operatorScroll->setWidgetResizable(true);
 	operatorScroll->setFrameShape(QFrame::NoFrame);
 	operatorScroll->setWidget(sr_event_dock_create(controller, operatorScroll));
@@ -819,11 +1009,22 @@ void sr_dock_register(struct sr_event_controller *controller)
 	tabs->addTab(storage, T("Dock.TabStorage"));
 	tabs->setCurrentIndex(0);
 
-	if (!obs_frontend_add_dock_by_id("sports_replay_dock", obs_module_text("Dock.Title"), tabs)) {
+	if (!obs_frontend_add_dock_by_id("pitel_instant_replay_dock", obs_module_text("Dock.Title"), tabs)) {
 		delete tabs;
 		return;
 	}
+
+	auto *multiview = sr_multiview_dock_create(controller);
+	if (!obs_frontend_add_dock_by_id("pitel_instant_replay_multiview_dock", obs_module_text("Multiview.Title"),
+					 multiview))
+		delete multiview;
 	g_dock = clips;
+}
+
+void sr_dock_open_settings(void)
+{
+	if (g_dock)
+		g_dock->showSettings();
 }
 
 void sr_dock_mark_played(const char *path)

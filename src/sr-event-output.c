@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-event-output.h"
 
 #include "sr-camera-identity.h"
+#include "sr-gpu-video.h"
 #include "sr-master-audio-player.h"
 #include "sr-replay-channel.h"
 #include "sr-replay-playlist.h"
@@ -19,11 +20,11 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-session.h"
 
 #include <media-io/audio-io.h>
-#include <media-io/video-io.h>
 #include <obs-module.h>
 #include <plugin-support.h>
 #include <util/bmem.h>
 #include <util/platform.h>
+#include <util/threading.h>
 
 #include <libavutil/samplefmt.h>
 
@@ -42,6 +43,13 @@ struct sr_event_output {
 	uint32_t width;
 	uint32_t height;
 
+	/* video_tick advances/decode the transport. video_render consumes an
+	 * independent AVFrame reference while OBS owns the graphics context. For
+	 * D3D11VA this reference is only a GPU-surface ref, not a CPU image copy. */
+	pthread_mutex_t video_mutex;
+	AVFrame *video_frame;
+	struct sr_gpu_renderer *gpu_renderer;
+
 	struct sr_master_audio_player *audio_player;
 	bool audio_player_camera_mode;
 	char audio_camera[256];
@@ -56,36 +64,7 @@ struct sr_event_output {
 static const char *sr_event_output_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("SportsReplayEventOutput");
-}
-
-static void output_avframe(struct sr_event_output *output, AVFrame *decoded)
-{
-	struct obs_source_frame frame = {0};
-	frame.width = (uint32_t)decoded->width;
-	frame.height = (uint32_t)decoded->height;
-	frame.timestamp = os_gettime_ns();
-
-	switch (decoded->format) {
-	case AV_PIX_FMT_YUV420P:
-	case AV_PIX_FMT_YUVJ420P:
-		frame.format = VIDEO_FORMAT_I420;
-		break;
-	case AV_PIX_FMT_NV12:
-		frame.format = VIDEO_FORMAT_NV12;
-		break;
-	default:
-		return;
-	}
-
-	for (size_t i = 0; i < MAX_AV_PLANES; i++) {
-		frame.data[i] = decoded->data[i];
-		frame.linesize[i] = (uint32_t)decoded->linesize[i];
-	}
-
-	video_format_get_parameters(VIDEO_CS_709, VIDEO_RANGE_PARTIAL, frame.color_matrix, frame.color_range_min,
-				    frame.color_range_max);
-	obs_source_output_video(output->self, &frame);
+	return obs_module_text("PitelInstantReplayEventOutput");
 }
 
 static void reset_audio_transport(struct sr_event_output *output)
@@ -99,9 +78,11 @@ static void reset_audio_transport(struct sr_event_output *output)
 
 static bool ensure_audio_player(struct sr_event_output *output, const struct sr_replay_channel_state *state)
 {
-	const bool camera_audio =
+	const bool requested_camera_audio =
 		output->audio_mode == SR_EVENT_OUTPUT_AUDIO_CAMERA ||
 		(output->audio_mode == SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS && state->audio_mode == SR_REPLAY_AUDIO_CAMERA);
+	/* PROGRAM has no separate ISO audio track: its native audio is the final OBS mix. */
+	const bool camera_audio = requested_camera_audio && !sr_camera_is_program_name(state->camera_name);
 	if (output->audio_player && output->audio_player_camera_mode == camera_audio &&
 	    (!camera_audio || strcmp(output->audio_camera, state->camera_name) == 0))
 		return true;
@@ -288,6 +269,8 @@ static void *sr_event_output_create(obs_data_t *settings, obs_source_t *source)
 	output->bus = SR_REPLAY_BUS_A;
 	output->audio_mode = SR_EVENT_OUTPUT_AUDIO_FOLLOW_BUS;
 	output->replay_gain = 1.0f;
+	pthread_mutex_init(&output->video_mutex, NULL);
+	output->gpu_renderer = sr_gpu_renderer_create();
 	sr_event_output_update(output, settings);
 	return output;
 }
@@ -295,7 +278,18 @@ static void *sr_event_output_create(obs_data_t *settings, obs_source_t *source)
 static void sr_event_output_destroy(void *data)
 {
 	struct sr_event_output *output = data;
+	if (!output)
+		return;
+
+	pthread_mutex_lock(&output->video_mutex);
+	AVFrame *video_frame = output->video_frame;
+	output->video_frame = NULL;
+	pthread_mutex_unlock(&output->video_mutex);
+	av_frame_free(&video_frame);
+
+	sr_gpu_renderer_destroy(output->gpu_renderer);
 	sr_master_audio_player_destroy(output->audio_player);
+	pthread_mutex_destroy(&output->video_mutex);
 	bfree(output);
 }
 
@@ -310,9 +304,15 @@ static void sr_event_output_tick(void *data, float seconds)
 	if (sr_replay_channel_render(output->bus, clock_ns, &decoded, NULL, &ended) && decoded) {
 		output->width = (uint32_t)decoded->width;
 		output->height = (uint32_t)decoded->height;
-		output_avframe(output, decoded);
-		av_frame_free(&decoded);
+
+		pthread_mutex_lock(&output->video_mutex);
+		AVFrame *old_frame = output->video_frame;
+		output->video_frame = decoded;
+		decoded = NULL;
+		pthread_mutex_unlock(&output->video_mutex);
+		av_frame_free(&old_frame);
 	}
+	av_frame_free(&decoded);
 
 	if (ended && sr_replay_playlist_advance_on_end(output->bus)) {
 		ended = false;
@@ -331,6 +331,23 @@ static void sr_event_output_tick(void *data, float seconds)
 			sr_replay_take_return_on_end(output->bus, ended_state.event_id);
 		obs_source_media_ended(output->self);
 	}
+}
+
+static void sr_event_output_render(void *data, gs_effect_t *effect)
+{
+	UNUSED_PARAMETER(effect);
+	struct sr_event_output *output = data;
+	if (!output || !output->gpu_renderer)
+		return;
+
+	pthread_mutex_lock(&output->video_mutex);
+	AVFrame *frame = output->video_frame ? av_frame_clone(output->video_frame) : NULL;
+	pthread_mutex_unlock(&output->video_mutex);
+	if (!frame)
+		return;
+
+	sr_gpu_renderer_draw(output->gpu_renderer, frame, (uint32_t)frame->width, (uint32_t)frame->height);
+	av_frame_free(&frame);
 }
 
 static void sr_event_output_deactivate(void *data)
@@ -416,7 +433,8 @@ static uint32_t sr_event_output_height(void *data)
 struct obs_source_info sr_event_output_info = {
 	.id = SR_EVENT_OUTPUT_ID,
 	.type = OBS_SOURCE_TYPE_INPUT,
-	.output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE,
+	.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CUSTOM_DRAW |
+			OBS_SOURCE_SRGB,
 	.get_name = sr_event_output_get_name,
 	.create = sr_event_output_create,
 	.destroy = sr_event_output_destroy,
@@ -425,6 +443,7 @@ struct obs_source_info sr_event_output_info = {
 	.get_defaults = sr_event_output_defaults,
 	.get_properties = sr_event_output_properties,
 	.video_tick = sr_event_output_tick,
+	.video_render = sr_event_output_render,
 	.get_width = sr_event_output_width,
 	.get_height = sr_event_output_height,
 };

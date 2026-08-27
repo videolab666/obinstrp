@@ -50,12 +50,13 @@ while cutting memory use by roughly **50–100×**.
 For the stable RAM-replay version, download and run the installer from the
 [latest release](../../releases/latest).
 
-The vMix-style disk/Event operator is currently developed on
-`feature/disk-replay-core`. Open the latest successful workflow run for
-[pull request #1](../../pull/1/checks), download the Windows x64 artifact,
-unpack its inner `pitel-instant-replay-*-windows-x64.zip`, and copy the contained
-`obs-plugins` and `data` directories into the OBS installation directory.
-Close OBS before replacing plugin files, then restart it.
+The vMix-style disk/Event operator and GPU-resident Program recorder are
+currently developed on `feature/hardware-zero-copy`. Open the latest successful
+workflow run for [pull request #2](../../pull/2/checks), download the Windows
+x64 artifact, unpack its inner `pitel-instant-replay-*-windows-x64.zip`, and
+copy the contained `obs-plugins` and `data` directories into the OBS
+installation directory. Close OBS before replacing plugin files, then restart
+it.
 
 Open **Docks → Pitel Instant Replay — Instant Replay**. The unified dock starts on
 the **Replay operator** tab; the legacy saved-MP4 bin remains available on the
@@ -71,6 +72,9 @@ second tab. Development artifacts are unsigned and require OBS Studio 31+.
 2. In **Replay operator**, click **START RECORD**. Wait for the green `REC`
    status and increasing packet/MB counters before marking an Event. The dock
    reports encoder/write failures and a reached disk-space reserve directly.
+   The **Hardware / Performance** block shows the actual per-camera path
+   (`D3D11 -> NVENC/AMF` versus CPU fallback), video/GOP settings, disk queue,
+   dropped packets and A/B replay decode/cache status.
 3. Create an Event with **IN** then **OUT**, or use **-5/-10/-20** after the
    action. Empty Events are rejected until recorded packets are available.
 4. Add a **Pitel Instant Replay Event Output** source configured for bus A to a
@@ -89,12 +93,17 @@ second tab. Development artifacts are unsigned and require OBS Studio 31+.
 8. Open the **Storage** tab to see every replay session and its size, inspect the
    last automatic-cleanup result, or permanently delete a closed session. The
    active session is protected from manual deletion.
+9. Replay Setup can also record **PROGRAM**: the final composited OBS Program/PGM
+   output becomes a manual replay angle alongside ISO cameras. On Windows/D3D11
+   it stays GPU-resident through NVENC/AMF. PROGRAM is intentionally skipped by
+   automatic **Play Each Angle** tours, but remains available for manual Cue,
+   thumbnails and export.
 
 Continuous recording keeps its camera sources showing internally even when
 they are not in the current OBS scene. **STOP RECORD** releases those holds and
-stops every Pitel capture writer. The default disk-space reserve is 20 GB; set
-the recording folder, reserve, segment duration and optional native OBS
-Stingers from the dock settings.
+stops all selected ISO and PROGRAM replay writers. The default disk-space
+reserve is 20 GB; set the recording folder, reserve, segment duration and
+optional native OBS Stingers from the dock settings.
 
 ### Legacy RAM replay
 
@@ -152,23 +161,10 @@ cmake --preset windows-x64
 cmake --build --preset windows-x64
 ```
 
-## Support development
+## Project
 
-Plugins like this take a lot of time, testing and late nights to build and keep
-working across OBS updates. Pitel Instant Replay is free and open source, and it will
-stay that way. If it has been useful for your broadcasts, a small contribution
-helps me keep maintaining it, adding new features, and building more free tools
-for the community. Every bit is genuinely appreciated — thank you for your
-support! 🙏
-
-- 💵 **Payoneer** — `systecinformatica@gmail.com`
-- 🇦🇷 **Mercado Pago** (Argentina only) — alias `systecinformatica`
-- ₿ **USDT (TRC-20)** — `TTHh4B9k9nbp3DB1DKN2XcPrVurPZFvPpz`
-
-## Author
-
-Developed by **Systec** — [www.systecinformatica.com.ar](https://www.systecinformatica.com.ar)
+Pitel Instant Replay is maintained in [`videolab666/obinstrp`](https://github.com/videolab666/obinstrp).
 
 ## License
 
-GPL-2.0-or-later — Copyright (C) 2026 Systec (https://www.systecinformatica.com.ar)
+GPL-2.0-or-later. See `LICENSE` and `THIRD_PARTY_NOTICES.md` for licensing and historical third-party provenance.

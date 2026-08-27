@@ -40,6 +40,11 @@ struct sr_disk_player {
 	int64_t current_position;
 	uint64_t current_timestamp_ns;
 	AVFrame *current_frame;
+
+	uint64_t decode_requests;
+	uint64_t cache_hits;
+	uint64_t decoded_frames;
+	bool prefer_hardware_decode;
 };
 
 static void close_stream(struct sr_disk_player *p)
@@ -84,7 +89,9 @@ static bool open_segment(struct sr_disk_player *p, const struct sr_segment_descr
 		return false;
 	}
 
-	p->decoder = sr_decoder_create(info.codec_id, info.extradata, info.extradata_size);
+	p->decoder = p->prefer_hardware_decode
+			     ? sr_decoder_create_replay(info.codec_id, info.extradata, info.extradata_size)
+			     : sr_decoder_create(info.codec_id, info.extradata, info.extradata_size);
 	if (!p->decoder) {
 		close_stream(p);
 		return false;
@@ -112,6 +119,12 @@ static const struct sr_segment_descriptor *find_segment(struct sr_disk_player *p
 
 struct sr_disk_player *sr_disk_player_create(const char *session_dir, const char *camera_name)
 {
+	return sr_disk_player_create_with_cache(session_dir, camera_name, (size_t)SR_DISK_PLAYER_FRAME_CACHE_BYTES);
+}
+
+struct sr_disk_player *sr_disk_player_create_with_cache(const char *session_dir, const char *camera_name,
+							size_t max_cache_bytes)
+{
 	if (!session_dir || !*session_dir || !camera_name || !*camera_name)
 		return NULL;
 
@@ -119,13 +132,23 @@ struct sr_disk_player *sr_disk_player_create(const char *session_dir, const char
 	p->session_dir = bstrdup(session_dir);
 	p->camera_name = bstrdup(camera_name);
 	p->current_position = -1;
-	sr_frame_cache_init(&p->frame_cache, (size_t)SR_DISK_PLAYER_FRAME_CACHE_BYTES);
+	p->prefer_hardware_decode = true;
+	sr_frame_cache_init(&p->frame_cache, max_cache_bytes);
 
 	if (!sr_disk_player_refresh(p)) {
 		sr_disk_player_destroy(p);
 		return NULL;
 	}
 	return p;
+}
+
+void sr_disk_player_set_hardware_decode(struct sr_disk_player *p, bool enabled)
+{
+	if (!p || p->prefer_hardware_decode == enabled)
+		return;
+	p->prefer_hardware_decode = enabled;
+	close_stream(p);
+	sr_frame_cache_clear(&p->frame_cache);
 }
 
 void sr_disk_player_destroy(struct sr_disk_player *p)
@@ -195,6 +218,20 @@ bool sr_disk_player_get_bounds(const struct sr_disk_player *p, uint64_t *first_n
 	return true;
 }
 
+void sr_disk_player_get_performance(const struct sr_disk_player *p, struct sr_disk_player_performance *performance)
+{
+	if (!performance)
+		return;
+	memset(performance, 0, sizeof(*performance));
+	if (!p)
+		return;
+	performance->decoder_open = p->decoder != NULL;
+	performance->hardware_decode = p->decoder && sr_decoder_is_hardware(p->decoder);
+	performance->requests = p->decode_requests;
+	performance->cache_hits = p->cache_hits;
+	performance->decoded_frames = p->decoded_frames;
+}
+
 static bool output_current_clone(struct sr_disk_player *p, AVFrame **frame, uint64_t *actual_timestamp_ns)
 {
 	if (!p->current_frame)
@@ -228,6 +265,7 @@ static bool output_cached_clone(struct sr_disk_player *p, size_t position, uint6
 	AVFrame *cached = sr_frame_cache_find(&p->frame_cache, key);
 	if (!cached)
 		return false;
+	p->cache_hits++;
 
 	AVFrame *copy = av_frame_clone(cached);
 	if (!copy)
@@ -244,6 +282,7 @@ bool sr_disk_player_decode_at(struct sr_disk_player *p, uint64_t target_ns, AVFr
 {
 	if (!p || !frame)
 		return false;
+	p->decode_requests++;
 	*frame = NULL;
 	if (actual_timestamp_ns)
 		*actual_timestamp_ns = 0;
@@ -330,6 +369,7 @@ bool sr_disk_player_decode_at(struct sr_disk_player *p, uint64_t target_ns, AVFr
 		av_packet_free(&packet);
 		if (!got_frame || !decoded)
 			continue;
+		p->decoded_frames++;
 
 		uint64_t key = 0;
 		if (cache_key(p->opened_sequence, pos, &key))

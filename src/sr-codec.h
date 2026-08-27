@@ -19,11 +19,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 #include <obs-module.h>
-#include <libavcodec/avcodec.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include <libavcodec/avcodec.h>
 
 enum sr_encoder_backend {
 	SR_ENC_AUTO = 0,
@@ -41,6 +42,7 @@ enum sr_gop_interval {
 };
 
 struct sr_encoder;
+struct sr_gpu_encoder;
 struct sr_decoder;
 
 /* Creates a replay-optimized H.264 encoder. Tries hardware encoders first
@@ -53,8 +55,9 @@ struct sr_encoder *sr_encoder_create(uint32_t width, uint32_t height, uint32_t f
 void sr_encoder_destroy(struct sr_encoder *enc);
 
 /* Encodes one OBS frame (any common format; converted internally).
- * Returns an encoded packet owned by the caller, or NULL if the encoder
- * buffered the frame or the format is unsupported. */
+ * NV12 input at encoder size takes a direct plane-copy fast path and avoids
+ * swscale. Returns an encoded packet owned by the caller, or NULL if the
+ * encoder buffered the frame or the format is unsupported. */
 AVPacket *sr_encoder_encode(struct sr_encoder *enc, const struct obs_source_frame *frame);
 
 enum AVCodecID sr_encoder_codec_id(const struct sr_encoder *enc);
@@ -64,15 +67,50 @@ const char *sr_encoder_name(const struct sr_encoder *enc);
  * stored packets and to mux them to a file. Valid while the encoder lives. */
 void sr_encoder_get_extradata(const struct sr_encoder *enc, const uint8_t **data, int *size);
 
-/* Software decoder for the stored H.264 replay stream. extradata may be NULL. */
+/* Windows/D3D11 capture-to-encoder path. The target source is rendered by OBS
+ * into a GPU texture, converted on-GPU to an NV12 D3D11 hwframe, then submitted
+ * directly to h264_nvenc or h264_amf. SR_ENC_AUTO tries those two backends in
+ * that order. QSV/x264 and unsupported renderers return NULL so callers can
+ * continue through the portable CPU encoder above. */
+struct sr_gpu_encoder *sr_gpu_encoder_create(uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den,
+					     enum sr_encoder_backend backend, int qp, uint32_t gop_interval_ms);
+void sr_gpu_encoder_destroy(struct sr_gpu_encoder *enc);
+
+/* Must be called from an OBS graphics/render callback. On success, returns true;
+ * *packet may still be NULL when the hardware encoder is buffering. A false
+ * return marks a capability/runtime failure and the caller should switch back
+ * to the CPU path at a clean writer boundary. */
+bool sr_gpu_encoder_render_encode(struct sr_gpu_encoder *enc, obs_source_t *target, AVPacket **packet);
+/* Program/PGM path: encode an existing OBS GPU texture without source re-render. */
+bool sr_gpu_encoder_texture_encode(struct sr_gpu_encoder *enc, gs_texture_t *texture, AVPacket **packet);
+
+enum AVCodecID sr_gpu_encoder_codec_id(const struct sr_gpu_encoder *enc);
+const char *sr_gpu_encoder_name(const struct sr_gpu_encoder *enc);
+void sr_gpu_encoder_get_extradata(const struct sr_gpu_encoder *enc, const uint8_t **data, int *size);
+
+/* Portable software decoder. This constructor is retained for legacy RAM
+ * replay and tools that explicitly require CPU-addressable AVFrames. */
 struct sr_decoder *sr_decoder_create(enum AVCodecID codec_id, const uint8_t *extradata, int extradata_size);
+
+/* Disk/Event replay decoder. On Windows with the OBS D3D11 renderer it first
+ * tries FFmpeg D3D11VA against OBS's own ID3D11Device. Successful hardware
+ * decode returns AV_PIX_FMT_D3D11 frames, allowing the Event Output to keep
+ * the image on the GPU. Any setup/open failure falls back to the software
+ * decoder automatically. */
+struct sr_decoder *sr_decoder_create_replay(enum AVCodecID codec_id, const uint8_t *extradata, int extradata_size);
 void sr_decoder_destroy(struct sr_decoder *dec);
+
+/* Reports the currently active decoder path. Hardware becomes true after a
+ * native hardware frame has actually been received, rather than merely after
+ * a hardware device was requested. */
+bool sr_decoder_is_hardware(const struct sr_decoder *dec);
 
 /* Call when jumping to a non-sequential packet. */
 void sr_decoder_flush(struct sr_decoder *dec);
 
 /* Decodes one packet. On success *out points to a frame owned by the
- * decoder, valid until the next call. */
+ * decoder, valid until the next call. The replay constructor may return a
+ * hardware AVFrame; callers that cannot consume it must transfer it first. */
 bool sr_decoder_decode(struct sr_decoder *dec, const AVPacket *pkt, AVFrame **out);
 
 #ifdef __cplusplus

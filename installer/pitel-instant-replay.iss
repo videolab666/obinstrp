@@ -1,12 +1,12 @@
 ; Inno Setup installer for Pitel Instant Replay (OBS Studio plugin)
-; Author: Systec - https://www.systecinformatica.com.ar
+; Pitel Instant Replay standalone installer
 
 #define MyName "Pitel Instant Replay for OBS Studio"
 #ifndef MyVersion
   #define MyVersion "1.0.0"
 #endif
-#define MyPublisher "Systec"
-#define MyURL "https://www.systecinformatica.com.ar"
+#define MyPublisher "videolab666"
+#define MyURL "https://github.com/videolab666/obinstrp"
 
 [Setup]
 AppName={#MyName}
@@ -32,11 +32,12 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "sports-replay\bin\64bit\sports-replay.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
-Source: "sports-replay\data\locale\*"; DestDir: "{app}\data\obs-plugins\sports-replay\locale"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "pitel-instant-replay\bin\64bit\pitel-instant-replay.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
+Source: "pitel-instant-replay\data\locale\*"; DestDir: "{app}\data\obs-plugins\pitel-instant-replay\locale"; Flags: ignoreversion recursesubdirs createallsubdirs
+
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{app}\data\obs-plugins\sports-replay"
+Type: filesandordirs; Name: "{app}\data\obs-plugins\pitel-instant-replay"
 
 [Code]
 { Detect the OBS Studio install folder from the registry, falling back to the

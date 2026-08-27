@@ -49,6 +49,8 @@ static bool g_preview_guard;                /* a replay is on air: keep it out o
 static uint64_t g_preview_guard_ends;       /* 0 = guard runs until the replay leaves program */
 static obs_source_t *g_transition_restore;  /* ref held while a one-shot override is active */
 static obs_source_t *g_transition_override; /* ref held while a one-shot override is active */
+static int g_transition_duration_restore;
+static bool g_transition_duration_overridden;
 
 /* call with g_mutex held */
 static void clear_return_mark(void)
@@ -157,12 +159,18 @@ static void restore_transition_override(void)
 {
 	obs_source_t *restore = NULL;
 	obs_source_t *override = NULL;
+	int restore_duration = 0;
+	bool restore_duration_enabled = false;
 
 	pthread_mutex_lock(&g_mutex);
 	restore = g_transition_restore;
 	override = g_transition_override;
+	restore_duration = g_transition_duration_restore;
+	restore_duration_enabled = g_transition_duration_overridden;
 	g_transition_restore = NULL;
 	g_transition_override = NULL;
+	g_transition_duration_restore = 0;
+	g_transition_duration_overridden = false;
 	pthread_mutex_unlock(&g_mutex);
 
 	if (!override) {
@@ -171,8 +179,10 @@ static void restore_transition_override(void)
 	}
 
 	obs_source_t *current = obs_frontend_get_current_transition();
-	if (current == override && restore)
+	if (current == override && restore && restore != override)
 		obs_frontend_set_current_transition(restore);
+	if (restore_duration_enabled)
+		obs_frontend_set_transition_duration(restore_duration);
 	obs_source_release(current);
 	obs_source_release(override);
 	obs_source_release(restore);
@@ -296,31 +306,31 @@ static obs_source_t *find_transition_by_name(const char *name, bool native_sting
 	return result;
 }
 
-static bool begin_transition_override(const char *transition_name)
+static bool begin_transition_override(const char *transition_name, bool native_stinger_only, uint32_t duration_ms)
 {
 	if (!transition_name || !*transition_name)
 		return false;
 
-	obs_source_t *override = find_transition_by_name(transition_name, true);
+	obs_source_t *override = find_transition_by_name(transition_name, native_stinger_only);
 	if (!override) {
 		blog(LOG_WARNING,
-		     "Pitel Instant Replay: native OBS Stinger '%s' was not found; using current transition",
+		     native_stinger_only
+			     ? "Pitel Instant Replay: native OBS Stinger '%s' was not found; using current transition"
+			     : "Pitel Instant Replay: OBS Event Transition '%s' was not found; using current transition",
 		     transition_name);
 		return false;
 	}
 
 	obs_source_t *current = obs_frontend_get_current_transition();
-	if (current == override) {
-		obs_source_release(current);
-		obs_source_release(override);
-		return false;
-	}
-
 	pthread_mutex_lock(&g_mutex);
 	const bool already_pending = g_transition_override != NULL;
 	if (!already_pending) {
 		g_transition_restore = current;
 		g_transition_override = override;
+		if (duration_ms) {
+			g_transition_duration_restore = obs_frontend_get_transition_duration();
+			g_transition_duration_overridden = true;
+		}
 	}
 	pthread_mutex_unlock(&g_mutex);
 
@@ -332,14 +342,19 @@ static bool begin_transition_override(const char *transition_name)
 		return false;
 	}
 
-	obs_frontend_set_current_transition(override);
+	if (current != override)
+		obs_frontend_set_current_transition(override);
+	if (duration_ms)
+		obs_frontend_set_transition_duration((int)duration_ms);
 	return true;
 }
 
 struct sr_scene_switch_request {
 	char *scene_name;
 	char *transition_name;
+	uint32_t transition_duration_ms;
 	bool returning;
+	bool native_stinger_only;
 };
 
 static void switch_scene_task(void *param)
@@ -390,7 +405,8 @@ static void switch_scene_transition_task(void *param)
 			pthread_mutex_unlock(&g_mutex);
 		}
 
-		begin_transition_override(request->transition_name);
+		begin_transition_override(request->transition_name, request->native_stinger_only,
+					  request->transition_duration_ms);
 		obs_frontend_set_current_scene(scene);
 		obs_source_release(scene);
 	}
@@ -400,7 +416,8 @@ static void switch_scene_transition_task(void *param)
 	bfree(request);
 }
 
-static void queue_scene_with_transition(const char *scene_name, const char *transition_name, bool returning)
+static void queue_scene_with_transition(const char *scene_name, const char *transition_name, bool returning,
+					bool native_stinger_only, uint32_t duration_ms)
 {
 	if (!scene_name || !*scene_name)
 		return;
@@ -408,7 +425,9 @@ static void queue_scene_with_transition(const char *scene_name, const char *tran
 	struct sr_scene_switch_request *request = bzalloc(sizeof(*request));
 	request->scene_name = bstrdup(scene_name);
 	request->transition_name = bstrdup(transition_name ? transition_name : "");
+	request->transition_duration_ms = duration_ms;
 	request->returning = returning;
+	request->native_stinger_only = native_stinger_only;
 	obs_queue_task(OBS_TASK_UI, switch_scene_transition_task, request, false);
 }
 
@@ -418,7 +437,17 @@ void sr_switch_to_scene_with_transition(const char *scene_name, const char *tran
 		sr_switch_to_scene(scene_name);
 		return;
 	}
-	queue_scene_with_transition(scene_name, transition_name, false);
+	queue_scene_with_transition(scene_name, transition_name, false, true, 0);
+}
+
+void sr_switch_to_scene_with_transition_duration(const char *scene_name, const char *transition_name,
+						 uint32_t duration_ms)
+{
+	if (!transition_name || !*transition_name) {
+		sr_switch_to_scene(scene_name);
+		return;
+	}
+	queue_scene_with_transition(scene_name, transition_name, false, false, duration_ms);
 }
 
 static void switch_scene_return_task(void *param)
@@ -442,8 +471,8 @@ static void switch_scene_return_task(void *param)
 }
 
 /* Same as sr_switch_to_scene(), but marks the activation as a "return to
- * previous scene" bounce: if the scene we land on itself holds a Sports
- * Replay source with autoplay + "return to previous" configured, that
+ * previous scene" bounce: if the scene we land on itself holds a Pitel Instant Replay
+ * replay source with autoplay + "return to previous" configured, that
  * source must not treat this as a deliberate trigger and auto-capture a
  * fresh replay - otherwise two such scenes ping-pong forever. */
 void sr_switch_to_scene_return(const char *scene_name)
@@ -459,7 +488,7 @@ void sr_switch_to_scene_return_with_transition(const char *scene_name, const cha
 		sr_switch_to_scene_return(scene_name);
 		return;
 	}
-	queue_scene_with_transition(scene_name, transition_name, true);
+	queue_scene_with_transition(scene_name, transition_name, true, true, 0);
 }
 
 bool sr_scene_tracker_consume_returning(void)

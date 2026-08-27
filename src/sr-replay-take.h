@@ -20,10 +20,21 @@ extern "C" {
 
 struct sr_event_controller;
 
-/* Starts the selected bus, marks its Event played and cuts program to the
- * scene containing a Pitel Instant Replay Event Output source configured for that
- * bus. The scene must already exist in the OBS scene collection. */
+/* Starts the selected bus, marks its Event played and switches program to the
+ * scene containing a Pitel Instant Replay Event Output source configured for
+ * that bus. The first live -> replay switch may use the configured TAKE IN
+ * Stinger. The scene must already exist in the OBS scene collection. */
 bool sr_replay_take_bus(struct sr_event_controller *events, enum sr_replay_bus bus);
+
+/* UI-thread readiness check for vMix-style Event Transitions. True only when
+ * A and B Event Output sources are both present in two distinct OBS scenes,
+ * so an Event/angle can be pre-cued on the opposite bus and transitioned to. */
+bool sr_replay_take_event_transition_ready(void);
+
+/* Called by the sequence engine after it has pre-cued the next Event/angle on
+ * the opposite bus. The actual start + scene switch is queued on the OBS UI
+ * thread and uses the configured Event Transition/duration, never TAKE IN. */
+void sr_replay_take_advance_event_async(struct sr_event_controller *events, enum sr_replay_bus bus);
 
 /* Returns the replay bus currently on Program. Outside a replay scene,
  * falls back to A when it is cued, otherwise B. Used by hardware angle
@@ -44,8 +55,7 @@ bool sr_replay_take_return(struct sr_event_controller *events);
 
 /* Queues an automatic return on the OBS UI thread after an Event reaches
  * OUT. The request is ignored if another Event/bus has taken over before the
- * task runs. Event List playback calls this only after its final playable
- * item, so intermediate highlights remain on the replay scene. */
+ * task runs. Event List/angle playback calls this only after its final item. */
 void sr_replay_take_return_on_end(enum sr_replay_bus bus, uint64_t event_id);
 
 /* Called by an Event Output after it has actually left Program. The bus check

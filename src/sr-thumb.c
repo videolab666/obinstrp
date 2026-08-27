@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
 #include <libswscale/swscale.h>
 
 bool sr_thumbnail_rgba(const char *path, int w, int h, uint8_t **out)
@@ -119,22 +120,40 @@ bool sr_disk_thumbnail_rgba(const char *session_dir, const char *camera_name, ui
 			have_frame = sr_disk_player_decode_at(player, first_ns, &frame, NULL);
 	}
 
+	/* Disk replay normally decodes through D3D11VA on Windows. swscale cannot
+	 * read an AV_PIX_FMT_D3D11 surface directly, so download this one UI still
+	 * to a software frame. Normal replay remains GPU-resident. */
+	AVFrame *software_frame = frame;
+	AVFrame *transferred = NULL;
+	if (have_frame && frame && frame->hw_frames_ctx) {
+		transferred = av_frame_alloc();
+		if (!transferred || av_hwframe_transfer_data(transferred, frame, 0) < 0) {
+			av_frame_free(&transferred);
+			have_frame = false;
+		} else {
+			av_frame_copy_props(transferred, frame);
+			software_frame = transferred;
+		}
+	}
+
 	bool ok = false;
-	if (have_frame && frame) {
-		struct SwsContext *sws = sws_getContext(frame->width, frame->height, frame->format, w, h,
-							AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
+	if (have_frame && software_frame) {
+		struct SwsContext *sws = sws_getContext(software_frame->width, software_frame->height,
+							software_frame->format, w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR,
+							NULL, NULL, NULL);
 		if (sws) {
 			uint8_t *buf = bzalloc((size_t)w * h * 4);
 			uint8_t *dst[4] = {buf, NULL, NULL, NULL};
 			int dst_linesize[4] = {w * 4, 0, 0, 0};
-			sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, frame->height, dst,
-				  dst_linesize);
+			sws_scale(sws, (const uint8_t *const *)software_frame->data, software_frame->linesize, 0,
+				  software_frame->height, dst, dst_linesize);
 			sws_freeContext(sws);
 			*out = buf;
 			ok = true;
 		}
 	}
 
+	av_frame_free(&transferred);
 	av_frame_free(&frame);
 	sr_disk_player_destroy(player);
 	return ok;

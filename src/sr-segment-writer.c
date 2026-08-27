@@ -337,9 +337,13 @@ static bool open_segment(struct sr_segment_writer *w, uint64_t start_ns, bool di
 	ih.sequence = sequence;
 	ih.segment_start_ns = start_ns;
 
+	/* Publish complete headers immediately. The live scrubber is allowed to
+	 * discover active .part files, so leaving these records in stdio buffers
+	 * creates a window where a valid active segment looks corrupt. Flush the
+	 * segment header/extradata first, then publish the matching index header. */
 	const bool ok = write_exact(w->segment_file, &sh, sizeof(sh)) &&
-			write_exact(w->segment_file, w->extradata, sh.extradata_size) &&
-			write_exact(w->index_file, &ih, sizeof(ih));
+			write_exact(w->segment_file, w->extradata, sh.extradata_size) && fflush(w->segment_file) == 0 &&
+			write_exact(w->index_file, &ih, sizeof(ih)) && fflush(w->index_file) == 0;
 	if (!ok) {
 		blog(LOG_ERROR, "Pitel Instant Replay: failed to write segment header for camera '%s'", w->camera_name);
 		w->current_segment_failed = true;
@@ -469,7 +473,7 @@ static struct sr_writer_packet *pop_packet(struct sr_segment_writer *w)
 static void *writer_thread(void *param)
 {
 	struct sr_segment_writer *w = param;
-	os_set_thread_name("sports-replay-writer");
+	os_set_thread_name("pitel-replay-writer");
 
 	for (;;) {
 		struct sr_writer_packet *node = pop_packet(w);

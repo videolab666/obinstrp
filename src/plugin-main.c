@@ -9,13 +9,16 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include <obs-module.h>
+#include <obs-frontend-api.h>
 #include <plugin-support.h>
 
 #include "sr-camera-list.h"
+#include "sr-capture.h"
 #include "sr-config.h"
 #include "sr-dock.h"
 #include "sr-event-controller.h"
 #include "sr-master-audio.h"
+#include "sr-program-recorder.h"
 #include "sr-replay-channel.h"
 #include "sr-replay-playlist.h"
 #include "sr-replay-take.h"
@@ -271,36 +274,37 @@ static void register_event_hotkeys(void)
 	for (size_t i = 0; i < SR_ANGLE_HOTKEY_COUNT; i++)
 		hk_angles[i] = OBS_INVALID_HOTKEY_ID;
 
-	hk_event_in = obs_hotkey_register_frontend("SportsReplay.EventIn", obs_module_text("Hotkey.EventIn"),
+	hk_event_in = obs_hotkey_register_frontend("PitelInstantReplay.EventIn", obs_module_text("Hotkey.EventIn"),
 						   event_mark_in_cb, NULL);
-	hk_event_out = obs_hotkey_register_frontend("SportsReplay.EventOut", obs_module_text("Hotkey.EventOut"),
+	hk_event_out = obs_hotkey_register_frontend("PitelInstantReplay.EventOut", obs_module_text("Hotkey.EventOut"),
 						    event_mark_out_cb, NULL);
-	hk_event_5 = obs_hotkey_register_frontend("SportsReplay.EventLast5", obs_module_text("Hotkey.EventLast5"),
+	hk_event_5 = obs_hotkey_register_frontend("PitelInstantReplay.EventLast5", obs_module_text("Hotkey.EventLast5"),
 						  event_mark_5_cb, NULL);
-	hk_event_10 = obs_hotkey_register_frontend("SportsReplay.EventLast10", obs_module_text("Hotkey.EventLast10"),
-						   event_mark_10_cb, NULL);
-	hk_event_20 = obs_hotkey_register_frontend("SportsReplay.EventLast20", obs_module_text("Hotkey.EventLast20"),
-						   event_mark_20_cb, NULL);
-	hk_take_a =
-		obs_hotkey_register_frontend("SportsReplay.TakeA", obs_module_text("Hotkey.TakeA"), take_a_cb, NULL);
-	hk_take_b =
-		obs_hotkey_register_frontend("SportsReplay.TakeB", obs_module_text("Hotkey.TakeB"), take_b_cb, NULL);
-	hk_take_toggle = obs_hotkey_register_frontend("SportsReplay.TakeToggle", obs_module_text("Hotkey.TakeToggle"),
-						      take_toggle_cb, NULL);
-	hk_return_live = obs_hotkey_register_frontend("SportsReplay.ReturnLive", obs_module_text("Hotkey.ReturnLive"),
-						      return_live_cb, NULL);
-	hk_playlist_a = obs_hotkey_register_frontend("SportsReplay.PlaylistA", obs_module_text("Hotkey.PlaylistA"),
-						     playlist_a_cb, NULL);
-	hk_playlist_b = obs_hotkey_register_frontend("SportsReplay.PlaylistB", obs_module_text("Hotkey.PlaylistB"),
-						     playlist_b_cb, NULL);
-	hk_playlist_next = obs_hotkey_register_frontend("SportsReplay.PlaylistNext",
+	hk_event_10 = obs_hotkey_register_frontend("PitelInstantReplay.EventLast10",
+						   obs_module_text("Hotkey.EventLast10"), event_mark_10_cb, NULL);
+	hk_event_20 = obs_hotkey_register_frontend("PitelInstantReplay.EventLast20",
+						   obs_module_text("Hotkey.EventLast20"), event_mark_20_cb, NULL);
+	hk_take_a = obs_hotkey_register_frontend("PitelInstantReplay.TakeA", obs_module_text("Hotkey.TakeA"), take_a_cb,
+						 NULL);
+	hk_take_b = obs_hotkey_register_frontend("PitelInstantReplay.TakeB", obs_module_text("Hotkey.TakeB"), take_b_cb,
+						 NULL);
+	hk_take_toggle = obs_hotkey_register_frontend("PitelInstantReplay.TakeToggle",
+						      obs_module_text("Hotkey.TakeToggle"), take_toggle_cb, NULL);
+	hk_return_live = obs_hotkey_register_frontend("PitelInstantReplay.ReturnLive",
+						      obs_module_text("Hotkey.ReturnLive"), return_live_cb, NULL);
+	hk_playlist_a = obs_hotkey_register_frontend("PitelInstantReplay.PlaylistA",
+						     obs_module_text("Hotkey.PlaylistA"), playlist_a_cb, NULL);
+	hk_playlist_b = obs_hotkey_register_frontend("PitelInstantReplay.PlaylistB",
+						     obs_module_text("Hotkey.PlaylistB"), playlist_b_cb, NULL);
+	hk_playlist_next = obs_hotkey_register_frontend("PitelInstantReplay.PlaylistNext",
 							obs_module_text("Hotkey.PlaylistNext"), playlist_next_cb, NULL);
-	hk_playlist_stop = obs_hotkey_register_frontend("SportsReplay.PlaylistStop",
+	hk_playlist_stop = obs_hotkey_register_frontend("PitelInstantReplay.PlaylistStop",
 							obs_module_text("Hotkey.PlaylistStop"), playlist_stop_cb, NULL);
 
 	static const char *const angle_ids[SR_ANGLE_HOTKEY_COUNT] = {
-		"SportsReplay.Angle1", "SportsReplay.Angle2", "SportsReplay.Angle3", "SportsReplay.Angle4",
-		"SportsReplay.Angle5", "SportsReplay.Angle6", "SportsReplay.Angle7", "SportsReplay.Angle8",
+		"PitelInstantReplay.Angle1", "PitelInstantReplay.Angle2", "PitelInstantReplay.Angle3",
+		"PitelInstantReplay.Angle4", "PitelInstantReplay.Angle5", "PitelInstantReplay.Angle6",
+		"PitelInstantReplay.Angle7", "PitelInstantReplay.Angle8",
 	};
 	static const char *const angle_text[SR_ANGLE_HOTKEY_COUNT] = {
 		"Hotkey.Angle1", "Hotkey.Angle2", "Hotkey.Angle3", "Hotkey.Angle4",
@@ -360,6 +364,19 @@ static void unregister_event_hotkeys(void)
 	hk_playlist_stop = OBS_INVALID_HOTKEY_ID;
 }
 
+static void frontend_event(enum obs_frontend_event event, void *data)
+{
+	UNUSED_PARAMETER(data);
+	if (event != OBS_FRONTEND_EVENT_FINISHED_LOADING && event != OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED)
+		return;
+
+	size_t source_count = 0;
+	sr_capture_set_all_disk_recording(false, &source_count);
+	obs_log(LOG_INFO,
+		"Pitel Instant Replay: replay source selection restored, REC state reset to STOPPED for %zu source(s)",
+		source_count);
+}
+
 bool obs_module_load(void)
 {
 	sr_config_init();
@@ -370,7 +387,15 @@ bool obs_module_load(void)
 		obs_log(LOG_ERROR, "Pitel Instant Replay: could not initialize master replay audio capture");
 		return false;
 	}
+	if (!sr_program_recorder_init()) {
+		sr_master_audio_free();
+		sr_session_free();
+		sr_config_free();
+		obs_log(LOG_ERROR, "Pitel Instant Replay: could not initialize PROGRAM replay recorder");
+		return false;
+	}
 	if (!sr_storage_cleanup_init()) {
+		sr_program_recorder_free();
 		sr_master_audio_free();
 		sr_session_free();
 		sr_config_free();
@@ -386,6 +411,7 @@ bool obs_module_load(void)
 		sr_event_controller_destroy(event_controller);
 		event_controller = NULL;
 		sr_storage_cleanup_free();
+		sr_program_recorder_free();
 		sr_master_audio_free();
 		sr_session_free();
 		sr_config_free();
@@ -403,12 +429,14 @@ bool obs_module_load(void)
 
 void obs_module_post_load(void)
 {
+	obs_frontend_add_event_callback(frontend_event, NULL);
 	sr_scene_tracker_start();
 	sr_dock_register(event_controller);
 }
 
 void obs_module_unload(void)
 {
+	obs_frontend_remove_event_callback(frontend_event, NULL);
 	sr_scene_tracker_stop();
 	unregister_event_hotkeys();
 	sr_storage_manager_stop();
@@ -418,6 +446,7 @@ void obs_module_unload(void)
 	sr_event_controller_destroy(event_controller);
 	event_controller = NULL;
 	sr_storage_cleanup_free();
+	sr_program_recorder_free();
 	sr_master_audio_free();
 	sr_session_free();
 	sr_config_free();

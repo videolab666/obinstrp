@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-replay-channel.h"
 
 #include "sr-disk-player.h"
+#include "sr-config.h"
 #include "sr-event-controller.h"
 #include "sr-replay-coverage.h"
 #include "sr-session.h"
@@ -47,11 +48,14 @@ struct sr_replay_channel {
 	bool backward;
 	bool loop;
 	bool partial_coverage;
+	bool preview_mode;
 	bool need_frame;
 };
 
 struct sr_replay_channels {
 	struct sr_event_controller *events;
+	pthread_mutex_t controller_speed_mutex;
+	double controller_speed_percent;
 	struct sr_replay_channel buses[SR_REPLAY_BUS_COUNT];
 };
 
@@ -131,6 +135,7 @@ static void clear_locked(struct sr_replay_channel *channel)
 	channel->backward = false;
 	channel->loop = false;
 	channel->partial_coverage = false;
+	channel->preview_mode = false;
 	channel->need_frame = false;
 }
 
@@ -162,6 +167,8 @@ bool sr_replay_channels_init(struct sr_event_controller *events)
 
 	struct sr_replay_channels *channels = bzalloc(sizeof(*channels));
 	channels->events = events;
+	pthread_mutex_init(&channels->controller_speed_mutex, NULL);
+	channels->controller_speed_percent = 100.0;
 	for (size_t i = 0; i < SR_REPLAY_BUS_COUNT; i++) {
 		pthread_mutex_init(&channels->buses[i].mutex, NULL);
 		channels->buses[i].speed_percent = 100.0;
@@ -184,6 +191,7 @@ void sr_replay_channels_shutdown(void)
 		pthread_mutex_unlock(&channels->buses[i].mutex);
 		pthread_mutex_destroy(&channels->buses[i].mutex);
 	}
+	pthread_mutex_destroy(&channels->controller_speed_mutex);
 	bfree(channels);
 }
 
@@ -228,7 +236,11 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	const uint64_t in_ns = coverage.playable_in_ns;
 	const uint64_t out_ns = coverage.playable_out_ns;
 	const bool partial = coverage.coverage != SR_REPLAY_COVERAGE_FULL;
-	const double speed = event.speed_percent;
+	const bool event_speed_override = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL &&
+					  event.speed_override;
+	const double speed = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL && !event_speed_override
+				     ? sr_replay_channel_get_controller_speed()
+				     : event.speed_percent;
 	const uint64_t event_in_ns = event.in_ns;
 	const uint64_t event_out_ns = event.out_ns;
 	sr_event_controller_free_event(&event);
@@ -277,6 +289,89 @@ bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char
 	blog(LOG_INFO, "Pitel Instant Replay: cued Event %llu on bus %c, camera '%s', %.3f s%s",
 	     (unsigned long long)event_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', camera_name,
 	     (double)(out_ns - in_ns) / 1e9, partial ? " (partial media coverage)" : "");
+	return true;
+}
+
+bool sr_replay_channel_cue_preview(enum sr_replay_bus bus, uint64_t event_id, const char *camera_name,
+				   uint64_t range_in_ns, uint64_t range_out_ns, uint64_t playhead_ns)
+{
+	struct sr_replay_channel *channel = get_bus(bus);
+	if (!channel || !event_id || !camera_name || !*camera_name || range_out_ns <= range_in_ns)
+		return false;
+
+	if (playhead_ns < range_in_ns)
+		playhead_ns = range_in_ns;
+	if (playhead_ns > range_out_ns)
+		playhead_ns = range_out_ns;
+
+	struct sr_replay_coverage_info coverage = {0};
+	if (!sr_replay_coverage_query_at(camera_name, range_in_ns, range_out_ns, playhead_ns, &coverage) ||
+	    coverage.coverage == SR_REPLAY_COVERAGE_NONE)
+		return false;
+
+	uint64_t first_ns = 0;
+	uint64_t last_ns = 0;
+	struct sr_disk_player *player = open_camera_player(camera_name, &first_ns, &last_ns);
+	if (!player)
+		return false;
+
+	uint64_t target_ns = playhead_ns;
+	if (target_ns < coverage.playable_in_ns)
+		target_ns = coverage.playable_in_ns;
+	if (target_ns > coverage.playable_out_ns)
+		target_ns = coverage.playable_out_ns;
+
+	uint64_t target_media_ns = 0;
+	AVFrame *probe_frame = NULL;
+	if (!global_to_camera_media(target_ns, coverage.sync_offset_ns, &target_media_ns) ||
+	    !sr_disk_player_decode_at(player, target_media_ns, &probe_frame, NULL) || !probe_frame) {
+		av_frame_free(&probe_frame);
+		sr_disk_player_destroy(player);
+		return false;
+	}
+	av_frame_free(&probe_frame);
+
+	char *new_camera_name = bstrdup(camera_name);
+	if (!new_camera_name) {
+		sr_disk_player_destroy(player);
+		return false;
+	}
+
+	double speed = sr_replay_channel_get_controller_speed();
+	struct sr_event_record event = {0};
+	if (g_channels && g_channels->events && sr_event_controller_get_event(g_channels->events, event_id, &event)) {
+		const bool override = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL &&
+				      event.speed_override;
+		if (sr_config_get_replay_speed_policy() != SR_REPLAY_SPEED_GLOBAL || override)
+			speed = event.speed_percent;
+		sr_event_controller_free_event(&event);
+	}
+
+	pthread_mutex_lock(&channel->mutex);
+	const enum sr_replay_audio_mode audio_mode = channel->audio_mode;
+	clear_locked(channel);
+	channel->audio_mode = audio_mode;
+	channel->player = player;
+	channel->camera_name = new_camera_name;
+	channel->event_id = event_id;
+	channel->event_in_ns = range_in_ns;
+	channel->event_out_ns = range_out_ns;
+	channel->in_ns = coverage.playable_in_ns;
+	channel->out_ns = coverage.playable_out_ns;
+	channel->playhead_ns = target_ns;
+	channel->sync_offset_ns = coverage.sync_offset_ns;
+	channel->speed_percent = speed;
+	channel->cued = true;
+	channel->playing = false;
+	channel->paused = true;
+	channel->partial_coverage = coverage.coverage != SR_REPLAY_COVERAGE_FULL;
+	channel->preview_mode = true;
+	channel->need_frame = true;
+	pthread_mutex_unlock(&channel->mutex);
+
+	blog(LOG_DEBUG, "Pitel Instant Replay: EDIT preview Event %llu on bus %c, camera '%s', %.3f s",
+	     (unsigned long long)event_id, bus == SR_REPLAY_BUS_A ? 'A' : 'B', camera_name,
+	     (double)(target_ns - range_in_ns) / 1e9);
 	return true;
 }
 
@@ -494,6 +589,38 @@ bool sr_replay_channel_set_speed(enum sr_replay_bus bus, double speed_percent)
 	return true;
 }
 
+bool sr_replay_channel_set_controller_speed(double speed_percent)
+{
+	struct sr_replay_channels *channels = g_channels;
+	if (!channels || !isfinite(speed_percent))
+		return false;
+	if (speed_percent < 10.0)
+		speed_percent = 10.0;
+	if (speed_percent > 400.0)
+		speed_percent = 400.0;
+
+	pthread_mutex_lock(&channels->controller_speed_mutex);
+	channels->controller_speed_percent = speed_percent;
+	pthread_mutex_unlock(&channels->controller_speed_mutex);
+
+	if (sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL) {
+		sr_replay_channel_set_speed(SR_REPLAY_BUS_A, speed_percent);
+		sr_replay_channel_set_speed(SR_REPLAY_BUS_B, speed_percent);
+	}
+	return true;
+}
+
+double sr_replay_channel_get_controller_speed(void)
+{
+	struct sr_replay_channels *channels = g_channels;
+	if (!channels)
+		return 100.0;
+	pthread_mutex_lock(&channels->controller_speed_mutex);
+	const double speed = channels->controller_speed_percent;
+	pthread_mutex_unlock(&channels->controller_speed_mutex);
+	return speed;
+}
+
 bool sr_replay_channel_set_audio_mode(enum sr_replay_bus bus, enum sr_replay_audio_mode audio_mode)
 {
 	struct sr_replay_channel *channel = get_bus(bus);
@@ -647,6 +774,16 @@ bool sr_replay_channel_get_state(enum sr_replay_bus bus, struct sr_replay_channe
 	state->backward = channel->backward;
 	state->loop = channel->loop;
 	state->partial_coverage = channel->partial_coverage;
+	state->preview_mode = channel->preview_mode;
+	if (channel->player) {
+		struct sr_disk_player_performance performance;
+		sr_disk_player_get_performance(channel->player, &performance);
+		state->decoder_open = performance.decoder_open;
+		state->hardware_decode = performance.hardware_decode;
+		state->decode_requests = performance.requests;
+		state->decode_cache_hits = performance.cache_hits;
+		state->decoded_frames = performance.decoded_frames;
+	}
 	if (channel->camera_name)
 		strncpy(state->camera_name, channel->camera_name, sizeof(state->camera_name) - 1);
 	pthread_mutex_unlock(&channel->mutex);

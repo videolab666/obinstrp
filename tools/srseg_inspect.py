@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect Sports Replay .srseg/.sridx files without OBS or FFmpeg bindings.
+"""Inspect Pitel Instant Replay .srseg/.sridx files without OBS or FFmpeg bindings.
 
 Format v1 is intentionally little-endian and currently targets Windows x64.
 This tool validates headers, packet framing, index offsets/timestamps, keyframe

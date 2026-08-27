@@ -14,6 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-event-controller.h"
 #include "sr-event-output.h"
 #include "sr-replay-playlist.h"
+#include "sr-replay-setup.h"
 #include "sr-scene-tracker.h"
 
 #include <obs-frontend-api.h>
@@ -26,6 +27,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 static char *g_return_scene;
 static char *output_source_name(enum sr_replay_bus bus);
+static bool return_live(void);
 
 struct live_audio_snapshot {
 	obs_source_t *source;
@@ -114,44 +116,24 @@ static void get_live_audio_settings(enum sr_replay_bus bus, enum sr_live_audio_p
 	obs_source_release(source);
 }
 
-struct find_output_ctx {
-	enum sr_replay_bus bus;
-	char *source_name;
-};
-
-static bool find_output_source(void *param, obs_source_t *source)
-{
-	struct find_output_ctx *ctx = param;
-	if (!ctx || ctx->source_name)
-		return false;
-	if (strcmp(obs_source_get_unversioned_id(source), SR_EVENT_OUTPUT_ID) != 0)
-		return true;
-
-	obs_data_t *settings = obs_source_get_settings(source);
-	const int bus = (int)obs_data_get_int(settings, SR_EVENT_OUTPUT_SETTING_BUS);
-	obs_data_release(settings);
-	if (bus != (int)ctx->bus)
-		return true;
-
-	ctx->source_name = bstrdup(obs_source_get_name(source));
-	return false;
-}
-
 static char *output_source_name(enum sr_replay_bus bus)
 {
-	struct find_output_ctx ctx = {.bus = bus};
-	obs_enum_sources(find_output_source, &ctx);
-	return ctx.source_name;
+	return sr_replay_setup_find_output_source_name(bus);
 }
 
 static char *output_scene_name(enum sr_replay_bus bus)
 {
-	char *source_name = output_source_name(bus);
-	if (!source_name)
-		return NULL;
-	char *scene_name = sr_find_scene_with_source(source_name);
-	bfree(source_name);
-	return scene_name;
+	return sr_replay_setup_find_output_scene_name(bus);
+}
+
+bool sr_replay_take_event_transition_ready(void)
+{
+	char *scene_a = output_scene_name(SR_REPLAY_BUS_A);
+	char *scene_b = output_scene_name(SR_REPLAY_BUS_B);
+	const bool ready = scene_a && *scene_a && scene_b && *scene_b && strcmp(scene_a, scene_b) != 0;
+	bfree(scene_a);
+	bfree(scene_b);
+	return ready;
 }
 
 static bool scene_name_matches(const char *current_name, const char *a, const char *b)
@@ -215,6 +197,98 @@ bool sr_replay_take_bus(struct sr_event_controller *events, enum sr_replay_bus b
 		blog(LOG_WARNING, "Pitel Instant Replay: TAKE %c succeeded but Event %llu could not be marked played",
 		     bus == SR_REPLAY_BUS_A ? 'A' : 'B', (unsigned long long)state.event_id);
 	return true;
+}
+
+struct sr_event_advance_request {
+	struct sr_event_controller *events;
+	enum sr_replay_bus bus;
+};
+
+static void event_advance_task(void *param)
+{
+	struct sr_event_advance_request *request = param;
+	if (!request)
+		return;
+
+	struct sr_replay_channel_state state = {0};
+	char *target_scene = NULL;
+	char *scene_a = NULL;
+	char *scene_b = NULL;
+	obs_source_t *current = NULL;
+	bool in_replay = false;
+	bool success = false;
+
+	if (!sr_replay_channel_get_state(request->bus, &state) || !state.cued || !state.event_id)
+		goto cleanup;
+
+	target_scene = output_scene_name(request->bus);
+	scene_a = output_scene_name(SR_REPLAY_BUS_A);
+	scene_b = output_scene_name(SR_REPLAY_BUS_B);
+	current = obs_frontend_get_current_scene();
+	const char *current_name = current ? obs_source_get_name(current) : NULL;
+	in_replay = scene_name_matches(current_name, scene_a, scene_b);
+	if (!target_scene || !*target_scene || !in_replay || (current_name && strcmp(current_name, target_scene) == 0))
+		goto cleanup;
+
+	if (!sr_replay_channel_play(request->bus))
+		goto cleanup;
+
+	/* Keep live-audio Duck/Mute active while the old replay source fades/slides
+	 * away. Its later deactivation sees a different active bus and therefore
+	 * cannot restore live audio underneath the new replay. */
+	enum sr_live_audio_policy live_audio_policy;
+	double live_duck_db;
+	get_live_audio_settings(request->bus, &live_audio_policy, &live_duck_db);
+	apply_live_audio(request->bus, live_audio_policy, live_duck_db);
+
+	char *event_transition = sr_config_get_event_transition();
+	uint32_t duration_ms = sr_config_get_event_transition_duration_ms();
+	if (event_transition && *event_transition && sr_config_get_event_transition_match_replay_speed() &&
+	    state.speed_percent > 0.0) {
+		double scaled_ms = (double)duration_ms * 100.0 / state.speed_percent;
+		if (scaled_ms < 50.0)
+			scaled_ms = 50.0;
+		if (scaled_ms > 10000.0)
+			scaled_ms = 10000.0;
+		duration_ms = (uint32_t)llround(scaled_ms);
+	}
+	if (event_transition && *event_transition)
+		sr_switch_to_scene_with_transition_duration(target_scene, event_transition, duration_ms);
+	else
+		sr_switch_to_scene(target_scene);
+	bfree(event_transition);
+
+	if (!sr_event_controller_set_played(request->events, state.event_id, true))
+		blog(LOG_WARNING,
+		     "Pitel Instant Replay: Event Transition succeeded but Event %llu was not marked played",
+		     (unsigned long long)state.event_id);
+	success = true;
+
+cleanup:
+	obs_source_release(current);
+	bfree(target_scene);
+	bfree(scene_a);
+	bfree(scene_b);
+	if (!success) {
+		blog(LOG_WARNING,
+		     "Pitel Instant Replay: A/B Event Transition to bus %c failed; stopping the sequence and returning live",
+		     request->bus == SR_REPLAY_BUS_A ? 'A' : 'B');
+		sr_replay_playlist_stop(request->bus);
+		sr_replay_channel_stop(request->bus);
+		if (in_replay)
+			return_live();
+	}
+	bfree(request);
+}
+
+void sr_replay_take_advance_event_async(struct sr_event_controller *events, enum sr_replay_bus bus)
+{
+	if (!events || (bus != SR_REPLAY_BUS_A && bus != SR_REPLAY_BUS_B))
+		return;
+	struct sr_event_advance_request *request = bzalloc(sizeof(*request));
+	request->events = events;
+	request->bus = bus;
+	obs_queue_task(OBS_TASK_UI, event_advance_task, request, false);
 }
 
 static bool return_live(void)

@@ -11,15 +11,24 @@ the Free Software Foundation; either version 2 of the License, or
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
-
-#include <libavutil/frame.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#include <libavutil/frame.h>
+
 struct sr_disk_player;
+
+struct sr_disk_player_performance {
+	bool decoder_open;
+	bool hardware_decode;
+	uint64_t requests;
+	uint64_t cache_hits;
+	uint64_t decoded_frames;
+};
 
 /* Persistent keyframe-aware reader for one camera in one continuous replay
  * session. Unlike sr_disk_decode_frame_at(), this object keeps the catalog,
@@ -27,6 +36,18 @@ struct sr_disk_player;
  * It is the core that will later replace RAM-snapshot playback for timeline
  * events and jog/shuttle operation. */
 struct sr_disk_player *sr_disk_player_create(const char *session_dir, const char *camera_name);
+
+/* Same persistent player with a caller-selected software-frame cache budget.
+ * Multiview uses a much smaller cache per camera than the A/B playout buses so
+ * a 6-9 angle editor cannot multiply the default replay cache by camera count. */
+struct sr_disk_player *sr_disk_player_create_with_cache(const char *session_dir, const char *camera_name,
+							size_t max_cache_bytes);
+
+/* Selects whether newly opened segments prefer the D3D11 replay decoder.
+ * Changing this closes the current decoder and clears cached frames. A/B uses
+ * the default hardware-preferred mode; multiview can opt into the safer
+ * software decoder on problematic hybrid/iGPU adapters. */
+void sr_disk_player_set_hardware_decode(struct sr_disk_player *player, bool enabled);
 void sr_disk_player_destroy(struct sr_disk_player *player);
 
 /* Rescans the camera's segment directory, including a readable active .part
@@ -36,6 +57,13 @@ bool sr_disk_player_refresh(struct sr_disk_player *player);
 
 /* Returns the current indexed media range for this camera. */
 bool sr_disk_player_get_bounds(const struct sr_disk_player *player, uint64_t *first_ns, uint64_t *last_ns);
+
+/* Lightweight transport diagnostics. The caller must serialize access with
+ * decode/seek operations (sr_replay_channel already does this with its bus
+ * mutex). hardware_decode becomes true only after a native D3D11 frame has
+ * actually been produced by the decoder. */
+void sr_disk_player_get_performance(const struct sr_disk_player *player,
+				    struct sr_disk_player_performance *performance);
 
 /* Decodes the newest frame at/before target_ns. Random/backward seeks start at
  * the nearest preceding keyframe and decode forward. Sequential forward calls

@@ -28,6 +28,10 @@ struct sr_event_controller;
  * OBS frontend. Call once, after the frontend is ready. */
 void sr_dock_register(struct sr_event_controller *controller);
 
+/* Opens the unified settings dialog from compact operator controls, including
+ * the gear beside the global REC button. Must be called on the UI thread. */
+void sr_dock_open_settings(void);
+
 /* Marks a saved replay as already gone to air, the same way launching one
  * from the dock does. For replays that go straight to program from a hotkey:
  * they were watched, so the panel has to show it. No-op if the dock isn't

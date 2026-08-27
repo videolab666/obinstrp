@@ -20,6 +20,7 @@ the Free Software Foundation; either version 2 of the License, or
 #define DEFAULT_MIN_FREE_BYTES (20ULL * 1024ULL * 1024ULL * 1024ULL)
 #define DEFAULT_PURGE_TARGET_BYTES (25ULL * 1024ULL * 1024ULL * 1024ULL)
 #define DEFAULT_SEGMENT_DURATION_MS 4000u
+#define DEFAULT_EVENT_TRANSITION_DURATION_MS 200u
 
 static pthread_mutex_t g_mutex;
 static char *g_save_dir;
@@ -31,8 +32,13 @@ static enum sr_storage_low_space_action g_low_space_action;
 static uint32_t g_segment_duration_ms;
 static char *g_take_in_transition;
 static char *g_take_out_transition;
+static char *g_event_transition;
+static uint32_t g_event_transition_duration_ms;
+static bool g_event_transition_match_replay_speed;
+static enum sr_replay_speed_policy g_replay_speed_policy;
+static bool g_program_output_enabled;
 
-/* Default location when the user hasn't chosen one: <Videos>/Pitel Instant Replay,
+/* Default location when the user hasn't chosen one: <Videos>/Pitel Instant Replay/Recorder,
  * created if needed. Falls back to the plugin config dir. */
 static char *default_save_dir(void)
 {
@@ -41,9 +47,9 @@ static char *default_save_dir(void)
 	if (home && *home) {
 		dstr_copy(&d, home);
 		dstr_replace(&d, "\\", "/");
-		dstr_cat(&d, "/Videos/Pitel Instant Replay");
+		dstr_cat(&d, "/Videos/Pitel Instant Replay/Recorder");
 	} else {
-		char *cfg = obs_module_config_path("replays");
+		char *cfg = obs_module_config_path("standalone-v1/replays");
 		dstr_copy(&d, cfg ? cfg : "replays");
 		bfree(cfg);
 	}
@@ -68,7 +74,7 @@ static char *default_session_root(const char *save_dir)
 
 static void save_locked(void)
 {
-	char *dir = obs_module_config_path("");
+	char *dir = obs_module_config_path("standalone-v1");
 	if (dir) {
 		os_mkdirs(dir);
 		bfree(dir);
@@ -85,8 +91,13 @@ static void save_locked(void)
 	obs_data_set_int(data, "segment_duration_ms", g_segment_duration_ms);
 	obs_data_set_string(data, "take_in_transition", g_take_in_transition ? g_take_in_transition : "");
 	obs_data_set_string(data, "take_out_transition", g_take_out_transition ? g_take_out_transition : "");
+	obs_data_set_string(data, "event_transition", g_event_transition ? g_event_transition : "");
+	obs_data_set_int(data, "event_transition_duration_ms", g_event_transition_duration_ms);
+	obs_data_set_bool(data, "event_transition_match_replay_speed", g_event_transition_match_replay_speed);
+	obs_data_set_int(data, "replay_speed_policy", (long long)g_replay_speed_policy);
+	obs_data_set_bool(data, "program_output_enabled", g_program_output_enabled);
 
-	char *path = obs_module_config_path("config.json");
+	char *path = obs_module_config_path("standalone-v1/config.json");
 	if (path)
 		obs_data_save_json(data, path);
 	bfree(path);
@@ -97,7 +108,7 @@ void sr_config_init(void)
 {
 	pthread_mutex_init(&g_mutex, NULL);
 
-	char *path = obs_module_config_path("config.json");
+	char *path = obs_module_config_path("standalone-v1/config.json");
 	obs_data_t *data = path ? obs_data_create_from_json_file(path) : NULL;
 	bfree(path);
 
@@ -129,8 +140,20 @@ void sr_config_init(void)
 
 	const char *take_in = data ? obs_data_get_string(data, "take_in_transition") : "";
 	const char *take_out = data ? obs_data_get_string(data, "take_out_transition") : "";
+	const char *event_transition = data ? obs_data_get_string(data, "event_transition") : "";
+	const int64_t event_transition_ms = data ? obs_data_get_int(data, "event_transition_duration_ms") : 0;
+	const int64_t replay_speed_policy = data ? obs_data_get_int(data, "replay_speed_policy") : 0;
 	g_take_in_transition = bstrdup(take_in ? take_in : "");
 	g_take_out_transition = bstrdup(take_out ? take_out : "");
+	g_event_transition = bstrdup(event_transition ? event_transition : "");
+	g_event_transition_duration_ms = event_transition_ms >= 50 && event_transition_ms <= 10000
+						 ? (uint32_t)event_transition_ms
+						 : DEFAULT_EVENT_TRANSITION_DURATION_MS;
+	g_event_transition_match_replay_speed = data ? obs_data_get_bool(data, "event_transition_match_replay_speed")
+						     : false;
+	g_replay_speed_policy = replay_speed_policy == SR_REPLAY_SPEED_EVENT ? SR_REPLAY_SPEED_EVENT
+									     : SR_REPLAY_SPEED_GLOBAL;
+	g_program_output_enabled = data ? obs_data_get_bool(data, "program_output_enabled") : false;
 
 	os_mkdirs(g_save_dir);
 	os_mkdirs(g_session_root);
@@ -145,10 +168,12 @@ void sr_config_free(void)
 	bfree(g_session_root);
 	bfree(g_take_in_transition);
 	bfree(g_take_out_transition);
+	bfree(g_event_transition);
 	g_save_dir = NULL;
 	g_session_root = NULL;
 	g_take_in_transition = NULL;
 	g_take_out_transition = NULL;
+	g_event_transition = NULL;
 	pthread_mutex_destroy(&g_mutex);
 }
 
@@ -312,6 +337,93 @@ void sr_config_set_take_out_transition(const char *transition_name)
 	pthread_mutex_lock(&g_mutex);
 	bfree(g_take_out_transition);
 	g_take_out_transition = bstrdup(transition_name ? transition_name : "");
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+char *sr_config_get_event_transition(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	char *result = get_transition_name(g_event_transition);
+	pthread_mutex_unlock(&g_mutex);
+	return result;
+}
+
+void sr_config_set_event_transition(const char *transition_name)
+{
+	pthread_mutex_lock(&g_mutex);
+	bfree(g_event_transition);
+	g_event_transition = bstrdup(transition_name ? transition_name : "");
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+uint32_t sr_config_get_event_transition_duration_ms(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const uint32_t result = g_event_transition_duration_ms;
+	pthread_mutex_unlock(&g_mutex);
+	return result;
+}
+
+void sr_config_set_event_transition_duration_ms(uint32_t milliseconds)
+{
+	if (milliseconds < 50)
+		milliseconds = 50;
+	if (milliseconds > 10000)
+		milliseconds = 10000;
+	pthread_mutex_lock(&g_mutex);
+	g_event_transition_duration_ms = milliseconds;
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+bool sr_config_get_event_transition_match_replay_speed(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const bool value = g_event_transition_match_replay_speed;
+	pthread_mutex_unlock(&g_mutex);
+	return value;
+}
+
+void sr_config_set_event_transition_match_replay_speed(bool enabled)
+{
+	pthread_mutex_lock(&g_mutex);
+	g_event_transition_match_replay_speed = enabled;
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+enum sr_replay_speed_policy sr_config_get_replay_speed_policy(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const enum sr_replay_speed_policy value = g_replay_speed_policy;
+	pthread_mutex_unlock(&g_mutex);
+	return value;
+}
+
+void sr_config_set_replay_speed_policy(enum sr_replay_speed_policy policy)
+{
+	if (policy != SR_REPLAY_SPEED_EVENT)
+		policy = SR_REPLAY_SPEED_GLOBAL;
+	pthread_mutex_lock(&g_mutex);
+	g_replay_speed_policy = policy;
+	save_locked();
+	pthread_mutex_unlock(&g_mutex);
+}
+
+bool sr_config_get_program_output_enabled(void)
+{
+	pthread_mutex_lock(&g_mutex);
+	const bool value = g_program_output_enabled;
+	pthread_mutex_unlock(&g_mutex);
+	return value;
+}
+
+void sr_config_set_program_output_enabled(bool enabled)
+{
+	pthread_mutex_lock(&g_mutex);
+	g_program_output_enabled = enabled;
 	save_locked();
 	pthread_mutex_unlock(&g_mutex);
 }

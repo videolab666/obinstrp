@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-event-controller.h"
 
 #include "sr-camera-identity.h"
+#include "sr-capture.h"
 #include "sr-event-db.h"
 #include "sr-media-guard.h"
 #include "sr-session.h"
@@ -94,6 +95,7 @@ static bool update_flag_locked(struct sr_event_controller *controller, uint64_t 
 		.out_ns = record.out_ns,
 		.preferred_camera_id = record.preferred_camera_id,
 		.speed_percent = record.speed_percent,
+		.speed_override = record.speed_override,
 		.audio_mode = record.audio_mode,
 		.protected_event = change_played ? record.protected_event : protected_event,
 		.played = change_played ? played : record.played,
@@ -211,7 +213,22 @@ bool sr_event_controller_quick_mark(struct sr_event_controller *controller, uint
 	if (post_roll_ns > (uint64_t)INT64_MAX - now_ns)
 		return false;
 
-	const uint64_t in_ns = now_ns > pre_roll_ns ? now_ns - pre_roll_ns : 0;
+	/* A -5/-10/-20 quick mark is a request for up to that much recorded
+	 * history, not permission to invent time before REC began. Keep the Event
+	 * itself inside the current recording run so its stored/list duration,
+	 * replay bounds and export bounds all agree from the moment it is created.
+	 * recording_start_ns is a stable video-clock boundary; unlike the published
+	 * duration it does not lag the producer status refresh interval. */
+	uint64_t effective_pre_roll_ns = pre_roll_ns;
+	struct sr_capture_recording_summary recording = {0};
+	if (sr_capture_get_recording_summary(&recording) && recording.recording_start_ns) {
+		const uint64_t available_ns =
+			now_ns > recording.recording_start_ns ? now_ns - recording.recording_start_ns : 0;
+		if (effective_pre_roll_ns > available_ns)
+			effective_pre_roll_ns = available_ns;
+	}
+
+	const uint64_t in_ns = now_ns > effective_pre_roll_ns ? now_ns - effective_pre_roll_ns : 0;
 	const uint64_t out_ns = now_ns + post_roll_ns;
 	const struct sr_event_write event = default_event(in_ns, out_ns, post_roll_ns != 0);
 
@@ -278,6 +295,7 @@ bool sr_event_controller_set_preferred_camera(struct sr_event_controller *contro
 			.out_ns = record.out_ns,
 			.preferred_camera_id = camera_id,
 			.speed_percent = record.speed_percent,
+			.speed_override = record.speed_override,
 			.audio_mode = record.audio_mode,
 			.protected_event = record.protected_event,
 			.played = record.played,
@@ -463,6 +481,7 @@ bool sr_event_controller_duplicate(struct sr_event_controller *controller, uint6
 		.out_ns = record.out_ns,
 		.preferred_camera_id = record.preferred_camera_id,
 		.speed_percent = record.speed_percent,
+		.speed_override = record.speed_override,
 		.audio_mode = record.audio_mode,
 		.protected_event = record.protected_event,
 		.played = record.played,

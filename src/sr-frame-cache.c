@@ -9,8 +9,10 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "sr-frame-cache.h"
+#include "sr-gpu-video.h"
 
 #include <libavutil/imgutils.h>
+#include <libavutil/pixfmt.h>
 #include <util/bmem.h>
 
 #include <limits.h>
@@ -20,6 +22,15 @@ static size_t frame_bytes(const AVFrame *frame)
 {
 	if (!frame || frame->width <= 0 || frame->height <= 0)
 		return 0;
+
+	/* D3D11 cache entries are independent NV12 textures rather than refs to
+	 * FFmpeg's decoder pool. Budget them by their real logical image size so
+	 * the existing byte-bounded LRU also bounds replay VRAM use. */
+	if (frame->format == AV_PIX_FMT_D3D11) {
+		const uint64_t pixels = (uint64_t)frame->width * (uint64_t)frame->height;
+		const uint64_t bytes = pixels + pixels / 2ULL;
+		return bytes > (uint64_t)SIZE_MAX ? SIZE_MAX : (size_t)bytes;
+	}
 
 	const int size = av_image_get_buffer_size((enum AVPixelFormat)frame->format, frame->width, frame->height, 1);
 	if (size > 0)
@@ -137,7 +148,7 @@ bool sr_frame_cache_store(struct sr_frame_cache *cache, uint64_t key, const AVFr
 	if (!bytes || bytes > cache->max_bytes)
 		return false;
 
-	AVFrame *copy = av_frame_clone(frame);
+	AVFrame *copy = sr_gpu_frame_clone_for_cache(frame);
 	if (!copy)
 		return false;
 

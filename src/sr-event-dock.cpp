@@ -11,12 +11,18 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-event-dock.h"
 
 #include "sr-camera-list.h"
+#include "sr-camera-identity.h"
 #include "sr-capture.h"
+#include "sr-config.h"
 #include "sr-event-controller.h"
+#include "sr-dock.h"
 #include "sr-event-export.h"
+#include "sr-multiview-dock.h"
 #include "sr-replay-channel.h"
 #include "sr-replay-coverage.h"
 #include "sr-replay-playlist.h"
+#include "sr-program-recorder.h"
+#include "sr-replay-setup.h"
 #include "sr-replay-take.h"
 #include "sr-storage-cleanup.h"
 #include "sr-session.h"
@@ -26,8 +32,12 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-module.h>
 #include <util/bmem.h>
 
+#include <algorithm>
 #include <cstring>
+#include <cmath>
 #include <atomic>
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -36,25 +46,49 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <QAbstractItemView>
 #include <QAbstractItemDelegate>
+#include <QAction>
+#include <QApplication>
+#include <QColor>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
+#include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QInputDialog>
+#include <QItemSelectionModel>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QListWidget>
+#include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
+#include <QPainter>
 #include <QPushButton>
 #include <QProgressBar>
+#include <QPointer>
+#include <QRubberBand>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QStackedWidget>
 #include <QStandardPaths>
+#include <QStyledItemDelegate>
+#include <QStyle>
+#include <QStyleOptionSlider>
 #include <QStringList>
 #include <QTableWidget>
+#include <QTabBar>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QVector>
+#include <QWheelEvent>
 #include <QWidget>
 
 #define NS_PER_SECOND 1000000000ULL
@@ -97,6 +131,28 @@ QString replayClockText(uint64_t ns)
 		.arg(minutes, 2, 10, QChar('0'))
 		.arg(seconds, 2, 10, QChar('0'))
 		.arg(millis, 3, 10, QChar('0'));
+}
+
+QString recordingDurationText(uint64_t ns)
+{
+	const uint64_t totalSeconds = ns / NS_PER_SECOND;
+	const uint64_t hours = totalSeconds / 3600ULL;
+	const uint64_t minutes = (totalSeconds / 60ULL) % 60ULL;
+	const uint64_t seconds = totalSeconds % 60ULL;
+	return QStringLiteral("%1:%2:%3")
+		.arg(hours, 2, 10, QChar('0'))
+		.arg(minutes, 2, 10, QChar('0'))
+		.arg(seconds, 2, 10, QChar('0'));
+}
+
+QString recordingFpsText()
+{
+	struct obs_video_info video = {};
+	if (!obs_get_video_info(&video) || !video.fps_num || !video.fps_den)
+		return QStringLiteral("—");
+	if (video.fps_num % video.fps_den == 0)
+		return QString::number(video.fps_num / video.fps_den);
+	return QString::number((double)video.fps_num / (double)video.fps_den, 'f', 2);
 }
 
 QStringList captureCameraNames()
@@ -145,6 +201,107 @@ QString channelSummary(enum sr_replay_bus bus, const QString &label)
 		.arg(flags);
 }
 
+QString encoderShortName(const char *name)
+{
+	const QString encoder = QString::fromUtf8(name ? name : "");
+	if (encoder.contains(QStringLiteral("nvenc"), Qt::CaseInsensitive))
+		return QStringLiteral("NVENC");
+	if (encoder.contains(QStringLiteral("amf"), Qt::CaseInsensitive))
+		return QStringLiteral("AMF");
+	if (encoder.contains(QStringLiteral("qsv"), Qt::CaseInsensitive))
+		return QStringLiteral("QSV");
+	if (encoder.contains(QStringLiteral("x264"), Qt::CaseInsensitive))
+		return QStringLiteral("x264");
+	return encoder.isEmpty() ? QStringLiteral("—") : encoder;
+}
+
+QString capturePerformancePath(const sr_capture_performance_entry &entry)
+{
+	const QString encoder = encoderShortName(entry.encoder_name);
+	switch (entry.path) {
+	case SR_CAPTURE_PERF_GPU_D3D11:
+		return QStringLiteral("D3D11 → %1").arg(encoder);
+	case SR_CAPTURE_PERF_CPU:
+		return QStringLiteral("CPU → %1").arg(encoder);
+	case SR_CAPTURE_PERF_ERROR:
+		return T("EventDock.Performance.Error");
+	case SR_CAPTURE_PERF_WAITING:
+	default:
+		return T("EventDock.Performance.Waiting");
+	}
+}
+
+QString captureFallbackText(enum sr_capture_gpu_fallback_reason reason)
+{
+	switch (reason) {
+	case SR_CAPTURE_GPU_FALLBACK_CREATE_FAILED:
+		return T("EventDock.Performance.FallbackCreate");
+	case SR_CAPTURE_GPU_FALLBACK_RUNTIME_FAILED:
+		return T("EventDock.Performance.FallbackRuntime");
+	case SR_CAPTURE_GPU_FALLBACK_NONE:
+	default:
+		return QString();
+	}
+}
+
+QString captureVideoMode(const sr_capture_performance_entry &entry)
+{
+	if (!entry.width || !entry.height)
+		return QStringLiteral("—");
+	QString fps = QStringLiteral("—");
+	if (entry.fps_num && entry.fps_den) {
+		if (entry.fps_num % entry.fps_den == 0)
+			fps = QString::number(entry.fps_num / entry.fps_den);
+		else
+			fps = QString::number((double)entry.fps_num / (double)entry.fps_den, 'f', 2);
+	}
+	return QStringLiteral("%1×%2 @ %3").arg(entry.width).arg(entry.height).arg(fps);
+}
+
+QString captureGopMode(const sr_capture_performance_entry &entry)
+{
+	const QString gop = entry.gop_ms ? QStringLiteral("%1 ms").arg(entry.gop_ms) : QStringLiteral("All-I");
+	return QStringLiteral("%1 / QP %2").arg(gop).arg(entry.qp);
+}
+
+QString captureDiskState(const sr_capture_performance_entry &entry)
+{
+	if (!entry.disk_requested)
+		return T("EventDock.Performance.Off");
+	if (entry.reserve_blocked)
+		return T("EventDock.Performance.Reserve");
+	if (entry.writer_failed)
+		return T("EventDock.Performance.WriteError");
+	if (!entry.writer_active)
+		return T("EventDock.Performance.Starting");
+	return T("EventDock.Performance.Recording").arg((double)entry.bytes_written / (1024.0 * 1024.0), 0, 'f', 1);
+}
+
+QString replayPerformanceSummary(enum sr_replay_bus bus, const QString &label)
+{
+	sr_replay_channel_state state = {};
+	if (!sr_replay_channel_get_state(bus, &state) || !state.cued)
+		return T("EventDock.Performance.ReplayEmpty").arg(label);
+
+	QString decoder = T("EventDock.Performance.Waiting");
+	if (state.decoder_open)
+		decoder = state.hardware_decode ? QStringLiteral("D3D11VA") : QStringLiteral("Software");
+
+	QString video = QStringLiteral("—");
+	if (state.width && state.height)
+		video = QStringLiteral("%1×%2").arg(state.width).arg(state.height);
+	const uint64_t hitPercent = state.decode_requests ? state.decode_cache_hits * 100ULL / state.decode_requests
+							  : 0ULL;
+	return T("EventDock.Performance.Replay")
+		.arg(label)
+		.arg(decoder)
+		.arg(video)
+		.arg(hitPercent)
+		.arg(state.decode_cache_hits)
+		.arg(state.decode_requests)
+		.arg(state.decoded_frames);
+}
+
 QString safeFilePart(const QString &value)
 {
 	QString safe;
@@ -191,8 +348,68 @@ struct ExportJob {
 	sr_event_export_result result = {};
 };
 
-constexpr int ANGLE_PREVIEW_WIDTH = 128;
-constexpr int ANGLE_PREVIEW_HEIGHT = 72;
+constexpr int ANGLE_PREVIEW_WIDTH = 176;
+constexpr int ANGLE_PREVIEW_HEIGHT = 99;
+constexpr int EVENT_THUMB_WIDTH = 192;
+constexpr int EVENT_THUMB_HEIGHT = 108;
+constexpr int EVENT_THUMB_DISPLAY_WIDTH = 176;
+constexpr int EVENT_THUMB_DISPLAY_HEIGHT = 99;
+constexpr int EVENT_THUMB_CELL_WIDTH = 184;
+constexpr int EVENT_THUMB_CELL_HEIGHT = 142;
+constexpr size_t EVENT_THUMB_BATCH = 24;
+constexpr size_t ANGLE_PREVIEW_CACHE_EVENTS = 12;
+constexpr int TIMELINE_SCALE = 1000000;
+
+class SrEventThumbnailDelegate : public QStyledItemDelegate {
+public:
+	explicit SrEventThumbnailDelegate(QObject *parent = nullptr) : QStyledItemDelegate(parent) {}
+
+	QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const override
+	{
+		return QSize(EVENT_THUMB_CELL_WIDTH, EVENT_THUMB_CELL_HEIGHT);
+	}
+
+	void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override
+	{
+		QStyleOptionViewItem itemOption(option);
+		initStyleOption(&itemOption, index);
+		const QIcon icon = itemOption.icon;
+		const QString text = itemOption.text;
+
+		itemOption.icon = QIcon();
+		itemOption.text.clear();
+		QStyle *style = itemOption.widget ? itemOption.widget->style() : QApplication::style();
+		style->drawControl(QStyle::CE_ItemViewItem, &itemOption, painter, itemOption.widget);
+
+		const QRect content = option.rect.adjusted(4, 3, -4, -3);
+		const QRect imageBox(content.left(), content.top(), content.width(), EVENT_THUMB_DISPLAY_HEIGHT);
+		if (!icon.isNull()) {
+			const QIcon::Mode mode = !(option.state & QStyle::State_Enabled)   ? QIcon::Disabled
+						 : (option.state & QStyle::State_Selected) ? QIcon::Selected
+											   : QIcon::Normal;
+			QPixmap pixmap = icon.pixmap(QSize(EVENT_THUMB_WIDTH, EVENT_THUMB_HEIGHT), mode);
+			if (!pixmap.isNull()) {
+				QSize drawSize = pixmap.size();
+				drawSize.scale(QSize(EVENT_THUMB_DISPLAY_WIDTH, EVENT_THUMB_DISPLAY_HEIGHT),
+					       Qt::KeepAspectRatio);
+				QRect target(QPoint(0, 0), drawSize);
+				target.moveCenter(imageBox.center());
+				painter->save();
+				painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
+				painter->drawPixmap(target, pixmap);
+				painter->restore();
+			}
+		}
+
+		const QRect textRect(content.left(), imageBox.bottom() + 4, content.width(),
+				     std::max(0, content.bottom() - imageBox.bottom() - 3));
+		painter->save();
+		painter->setPen((option.state & QStyle::State_Selected) ? option.palette.highlightedText().color()
+									: option.palette.text().color());
+		painter->drawText(textRect, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, text);
+		painter->restore();
+	}
+};
 
 struct AnglePreviewResult {
 	std::string camera;
@@ -213,6 +430,36 @@ struct AnglePreviewJob {
 	std::thread worker;
 };
 
+struct EventThumbnailResult {
+	uint64_t eventId = 0;
+	uint64_t inNs = 0;
+	uint64_t outNs = 0;
+	std::vector<uint8_t> rgba;
+};
+
+struct EventThumbnailTask {
+	uint64_t eventId = 0;
+	uint64_t inNs = 0;
+	uint64_t outNs = 0;
+	std::string camera;
+	uint64_t timestampNs = 0;
+};
+
+struct EventThumbnailJob {
+	uint64_t generation = 0;
+	std::string sessionDir;
+	std::vector<EventThumbnailTask> tasks;
+	std::vector<EventThumbnailResult> results;
+	std::atomic<bool> done{false};
+	std::thread worker;
+};
+
+struct CachedEventThumbnail {
+	uint64_t inNs = 0;
+	uint64_t outNs = 0;
+	QIcon icon;
+};
+
 void runAnglePreviewJob(AnglePreviewJob *job)
 {
 	for (const AnglePreviewTask &task : job->tasks) {
@@ -223,6 +470,26 @@ void runAnglePreviewJob(AnglePreviewJob *job)
 					   ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT, &rgba) &&
 		    rgba) {
 			const size_t bytes = (size_t)ANGLE_PREVIEW_WIDTH * ANGLE_PREVIEW_HEIGHT * 4;
+			result.rgba.assign(rgba, rgba + bytes);
+		}
+		bfree(rgba);
+		job->results.emplace_back(std::move(result));
+	}
+	job->done.store(true, std::memory_order_release);
+}
+
+void runEventThumbnailJob(EventThumbnailJob *job)
+{
+	for (const EventThumbnailTask &task : job->tasks) {
+		uint8_t *rgba = nullptr;
+		EventThumbnailResult result;
+		result.eventId = task.eventId;
+		result.inNs = task.inNs;
+		result.outNs = task.outNs;
+		if (sr_disk_thumbnail_rgba(job->sessionDir.c_str(), task.camera.c_str(), task.timestampNs,
+					   EVENT_THUMB_WIDTH, EVENT_THUMB_HEIGHT, &rgba) &&
+		    rgba) {
+			const size_t bytes = (size_t)EVENT_THUMB_WIDTH * EVENT_THUMB_HEIGHT * 4;
 			result.rgba.assign(rgba, rgba + bytes);
 		}
 		bfree(rgba);
@@ -274,6 +541,961 @@ void runExportJob(ExportJob *job)
 	job->done.store(true, std::memory_order_release);
 }
 
+class SrRangeSlider : public QSlider {
+public:
+	enum class Mode {
+		Transport,
+		Sequence,
+		Edit,
+	};
+
+	using RangeHandler = std::function<void(int, int)>;
+	using ClickHandler = std::function<void(int)>;
+
+	explicit SrRangeSlider(QWidget *parent = nullptr) : QSlider(Qt::Horizontal, parent) {}
+
+	void setRangeHandler(RangeHandler handler) { rangeHandler = std::move(handler); }
+	void setClickHandler(ClickHandler handler) { clickHandler = std::move(handler); }
+
+	void setMode(Mode nextMode)
+	{
+		if (mode == nextMode)
+			return;
+		mode = nextMode;
+		dragHandle = EditHandle::None;
+		if (mode != Mode::Edit)
+			hasEditSelection = false;
+		update();
+	}
+
+	Mode currentMode() const { return mode; }
+	bool editingRange() const { return mode == Mode::Edit && dragHandle != EditHandle::None; }
+
+	void setEditSelection(int rangeIn, int rangeOut)
+	{
+		rangeIn = qBound(minimum(), rangeIn, maximum());
+		rangeOut = qBound(minimum(), rangeOut, maximum());
+		if (rangeOut <= rangeIn) {
+			clearSelection();
+			return;
+		}
+		hasEditSelection = true;
+		editIn = rangeIn;
+		editOut = rangeOut;
+		update();
+	}
+
+	void clearSelection()
+	{
+		dragHandle = EditHandle::None;
+		hasEditSelection = false;
+		update();
+	}
+
+	void setProgressTint(const QColor &color)
+	{
+		progressTint = color;
+		update();
+	}
+
+	void clearProgressTint()
+	{
+		progressTint = QColor();
+		update();
+	}
+
+protected:
+	void mousePressEvent(QMouseEvent *event) override
+	{
+		if (!isEnabled() || event->button() != Qt::LeftButton) {
+			QSlider::mousePressEvent(event);
+			return;
+		}
+
+		if (mode == Mode::Sequence) {
+			event->accept();
+			return;
+		}
+
+		if (mode != Mode::Edit) {
+			QSlider::mousePressEvent(event);
+			return;
+		}
+
+		const QPoint position = event->position().toPoint();
+		if (hasEditSelection) {
+			const int inDistance = qAbs(position.x() - pixelForValue(editIn));
+			const int outDistance = qAbs(position.x() - pixelForValue(editOut));
+			constexpr int hitRadius = 12;
+			if (qMin(inDistance, outDistance) <= hitRadius) {
+				dragHandle = inDistance <= outDistance ? EditHandle::In : EditHandle::Out;
+				event->accept();
+				return;
+			}
+		}
+
+		const int clicked = valueAtX(position.x());
+		setValue(clicked);
+		if (clickHandler)
+			clickHandler(clicked);
+		event->accept();
+	}
+
+	void mouseMoveEvent(QMouseEvent *event) override
+	{
+		if (mode != Mode::Edit || dragHandle == EditHandle::None) {
+			QSlider::mouseMoveEvent(event);
+			return;
+		}
+
+		const int next = valueAtX(event->position().toPoint().x());
+		if (dragHandle == EditHandle::In)
+			editIn = qBound(minimum(), next, qMax(minimum(), editOut - 1));
+		else
+			editOut = qBound(qMin(maximum(), editIn + 1), next, maximum());
+		event->accept();
+		update();
+	}
+
+	void mouseReleaseEvent(QMouseEvent *event) override
+	{
+		if (mode != Mode::Edit || dragHandle == EditHandle::None || event->button() != Qt::LeftButton) {
+			QSlider::mouseReleaseEvent(event);
+			return;
+		}
+
+		const EditHandle released = dragHandle;
+		dragHandle = EditHandle::None;
+		if (released != EditHandle::None && rangeHandler)
+			rangeHandler(editIn, editOut);
+		event->accept();
+		update();
+	}
+
+	void paintEvent(QPaintEvent *event) override
+	{
+		if (mode != Mode::Edit) {
+			QSlider::paintEvent(event);
+
+			if (!progressTint.isValid())
+				return;
+			QStyleOptionSlider option;
+			initStyleOption(&option);
+			const QRect groove =
+				style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+			const int left = pixelForValue(minimum());
+			const int right = pixelForValue(value());
+			if (right <= left)
+				return;
+			QColor tint = progressTint;
+			tint.setAlpha(210);
+			QPainter painter(this);
+			painter.setPen(Qt::NoPen);
+			painter.setBrush(tint);
+			painter.drawRoundedRect(QRect(left, groove.center().y() - 4, right - left, 8), 3, 3);
+			return;
+		}
+
+		QStyleOptionSlider option;
+		initStyleOption(&option);
+		option.subControls = QStyle::SC_SliderGroove | QStyle::SC_SliderTickmarks;
+		QPainter painter(this);
+		style()->drawComplexControl(QStyle::CC_Slider, &option, &painter, this);
+
+		const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+		if (!hasEditSelection)
+			return;
+
+		const int left = pixelForValue(editIn);
+		const int right = pixelForValue(editOut);
+		QColor highlight = palette().color(QPalette::Highlight);
+		QColor fill = highlight;
+		fill.setAlpha(105);
+		painter.setPen(Qt::NoPen);
+		painter.setBrush(fill);
+		painter.drawRoundedRect(QRect(left, groove.center().y() - 5, qMax(1, right - left), 10), 3, 3);
+
+		const int playhead = pixelForValue(value());
+		if (value() >= editIn && value() <= editOut) {
+			QColor playheadColor = palette().color(QPalette::Text);
+			playheadColor.setAlpha(190);
+			painter.setPen(QPen(playheadColor, 1));
+			painter.drawLine(playhead, groove.center().y() - 9, playhead, groove.center().y() + 9);
+		}
+
+		auto drawHandle = [&](int x, const QString &label) {
+			painter.setPen(QPen(highlight, 2));
+			painter.setBrush(highlight);
+			painter.drawRoundedRect(QRect(x - 5, groove.center().y() - 8, 10, 16), 3, 3);
+			QRect labelRect(x - 18, 0, 36, qMax(11, groove.top()));
+			painter.setPen(palette().color(QPalette::Text));
+			painter.drawText(labelRect, Qt::AlignHCenter | Qt::AlignBottom, label);
+		};
+		drawHandle(left, QStringLiteral("IN"));
+		drawHandle(right, QStringLiteral("OUT"));
+	}
+
+private:
+	enum class EditHandle {
+		None,
+		In,
+		Out,
+	};
+
+	int valueAtX(int x) const
+	{
+		QStyleOptionSlider option;
+		initStyleOption(&option);
+		const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+		const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
+		const int sliderMin = groove.x();
+		const int sliderMax = groove.right() - handle.width() + 1;
+		const int pos = qBound(0, x - sliderMin - handle.width() / 2, qMax(0, sliderMax - sliderMin));
+		return QStyle::sliderValueFromPosition(minimum(), maximum(), pos, qMax(1, sliderMax - sliderMin),
+						       option.upsideDown);
+	}
+
+	int pixelForValue(int sliderValue) const
+	{
+		QStyleOptionSlider option;
+		initStyleOption(&option);
+		const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+		const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
+		const int span = qMax(1, groove.width() - handle.width());
+		return groove.x() + handle.width() / 2 +
+		       QStyle::sliderPositionFromValue(minimum(), maximum(), sliderValue, span, option.upsideDown);
+	}
+
+	RangeHandler rangeHandler;
+	ClickHandler clickHandler;
+	Mode mode = Mode::Transport;
+	EditHandle dragHandle = EditHandle::None;
+	int editIn = 0;
+	int editOut = 0;
+	bool hasEditSelection = false;
+	QColor progressTint;
+};
+
+class SrReplayTimeline : public QWidget {
+public:
+	enum class DragTarget {
+		None,
+		Playhead,
+		In,
+		Out,
+	};
+
+	enum class Command {
+		TogglePlay,
+		GotoIn,
+		GotoOut,
+		SetIn,
+		SetOut,
+		StepBack,
+		StepForward,
+		StepBackFast,
+		StepForwardFast,
+	};
+
+	using ScrubHandler = std::function<void(uint64_t, DragTarget)>;
+	using RangeHandler = std::function<void(uint64_t, uint64_t)>;
+	using CommandHandler = std::function<void(Command)>;
+
+	explicit SrReplayTimeline(QWidget *parent = nullptr) : QWidget(parent)
+	{
+		setFocusPolicy(Qt::StrongFocus);
+		setMouseTracking(true);
+		setMinimumHeight(72);
+		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	}
+
+	void setScrubHandler(ScrubHandler handler) { scrubHandler = std::move(handler); }
+	void setRangeHandler(RangeHandler handler) { rangeHandler = std::move(handler); }
+	void setCommandHandler(CommandHandler handler) { commandHandler = std::move(handler); }
+
+	void setMinimumDuration(uint64_t ns) { minimumDurationNs = std::max<uint64_t>(1, ns); }
+
+	void setRecordingBounds(uint64_t startNs, uint64_t endNs)
+	{
+		if (!startNs || endNs <= startNs) {
+			haveRecording = false;
+			recordStartNs = 0;
+			recordEndNs = 0;
+			viewStartNs = 0;
+			viewEndNs = 0;
+			update();
+			return;
+		}
+
+		const bool first = !haveRecording;
+		recordStartNs = startNs;
+		recordEndNs = endNs;
+		haveRecording = true;
+		if (first || !zoomLocked || viewEndNs <= viewStartNs)
+			fitView();
+		else
+			clampView();
+		update();
+	}
+
+	void setSelection(uint64_t inNs, uint64_t outNs)
+	{
+		if (!haveRecording || outNs <= inNs) {
+			haveSelection = false;
+			update();
+			return;
+		}
+		haveSelection = true;
+		selectionInNs = inNs;
+		selectionOutNs = outNs;
+		if (zoomLocked && (selectionOutNs < viewStartNs || selectionInNs > viewEndNs)) {
+			const uint64_t midpoint = selectionInNs + (selectionOutNs - selectionInNs) / 2;
+			centerView(midpoint);
+		}
+		update();
+	}
+
+	void clearSelection()
+	{
+		haveSelection = false;
+		dragTarget = DragTarget::None;
+		update();
+	}
+
+	void setPlayhead(uint64_t timestampNs)
+	{
+		if (dragTarget != DragTarget::None)
+			return;
+		playheadNs = clampToRecording(timestampNs);
+		update();
+	}
+
+	uint64_t playheadTimestamp() const { return playheadNs; }
+	uint64_t selectionIn() const { return selectionInNs; }
+	uint64_t selectionOut() const { return selectionOutNs; }
+	bool hasSelection() const { return haveSelection; }
+	bool isDragging() const { return dragTarget != DragTarget::None; }
+	bool isZoomed() const { return zoomLocked; }
+
+	void fitView()
+	{
+		if (!haveRecording)
+			return;
+		zoomLocked = false;
+		viewStartNs = recordStartNs;
+		viewEndNs = recordEndNs;
+		update();
+	}
+
+	void centerOnLive()
+	{
+		if (!haveRecording)
+			return;
+		if (!zoomLocked) {
+			playheadNs = recordEndNs;
+			update();
+			return;
+		}
+		const uint64_t span = viewSpan();
+		viewEndNs = recordEndNs;
+		viewStartNs = span >= recordEndNs - recordStartNs ? recordStartNs : recordEndNs - span;
+		playheadNs = recordEndNs;
+		update();
+	}
+
+	double zoomFactor() const
+	{
+		if (!haveRecording || viewSpan() == 0)
+			return 1.0;
+		return (double)(recordEndNs - recordStartNs) / (double)viewSpan();
+	}
+
+protected:
+	void paintEvent(QPaintEvent *) override
+	{
+		QPainter painter(this);
+		painter.setRenderHint(QPainter::Antialiasing, false);
+		painter.fillRect(rect(), palette().window());
+		if (!haveRecording || viewEndNs <= viewStartNs) {
+			painter.setPen(palette().color(QPalette::Disabled, QPalette::Text));
+			painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("No recording"));
+			return;
+		}
+
+		const QRect timeline = timelineRect();
+		QColor track = palette().color(QPalette::Base);
+		track.setAlpha(180);
+		painter.fillRect(timeline, track);
+		painter.setPen(palette().color(QPalette::Mid));
+		painter.drawRect(timeline.adjusted(0, 0, -1, -1));
+
+		paintRuler(painter, timeline);
+
+		if (haveSelection) {
+			const int left = xFromTimestamp(selectionInNs);
+			const int right = xFromTimestamp(selectionOutNs);
+			const int clippedLeft = qBound(timeline.left(), left, timeline.right());
+			const int clippedRight = qBound(timeline.left(), right, timeline.right());
+			if (clippedRight > clippedLeft) {
+				QColor fill = palette().color(QPalette::Highlight);
+				fill.setAlpha(95);
+				painter.fillRect(QRect(clippedLeft, timeline.top() + 18, clippedRight - clippedLeft,
+						       timeline.height() - 19),
+						 fill);
+			}
+			paintMarker(painter, selectionInNs, QStringLiteral("IN"), false, timeline);
+			paintMarker(painter, selectionOutNs, QStringLiteral("OUT"), true, timeline);
+		}
+
+		if (playheadNs >= viewStartNs && playheadNs <= viewEndNs) {
+			const int x = xFromTimestamp(playheadNs);
+			QColor red(QStringLiteral("#e24a4a"));
+			painter.setPen(QPen(red, 2));
+			painter.drawLine(x, timeline.top(), x, timeline.bottom());
+			QPolygon triangle;
+			triangle << QPoint(x - 5, timeline.top()) << QPoint(x + 5, timeline.top())
+				 << QPoint(x, timeline.top() + 7);
+			painter.setBrush(red);
+			painter.setPen(Qt::NoPen);
+			painter.drawPolygon(triangle);
+		}
+
+		if (recordEndNs >= viewStartNs && recordEndNs <= viewEndNs) {
+			const int liveX = xFromTimestamp(recordEndNs);
+			QColor live = palette().color(QPalette::Highlight);
+			live.setAlpha(150);
+			painter.setPen(QPen(live, 1, Qt::DashLine));
+			painter.drawLine(liveX, timeline.top() + 18, liveX, timeline.bottom());
+		}
+
+		painter.setPen(palette().color(QPalette::Text));
+		const QString zoomText = zoomLocked ? QStringLiteral("%1×").arg(zoomFactor(), 0, 'f', 1)
+						    : QStringLiteral("FIT");
+		painter.drawText(QRect(timeline.right() - 70, 1, 66, 15), Qt::AlignRight | Qt::AlignVCenter, zoomText);
+	}
+
+	void mousePressEvent(QMouseEvent *event) override
+	{
+		if (!isEnabled() || !haveRecording || event->button() != Qt::LeftButton) {
+			QWidget::mousePressEvent(event);
+			return;
+		}
+		setFocus(Qt::MouseFocusReason);
+		const QPoint position = event->position().toPoint();
+		const QRect timeline = timelineRect();
+		dragOffsetPixels = 0;
+		if (haveSelection && markerHitRect(selectionInNs, false, timeline).contains(position)) {
+			dragTarget = DragTarget::In;
+			dragOffsetPixels = position.x() - xFromTimestamp(selectionInNs);
+			applyDrag(selectionInNs);
+		} else if (haveSelection && markerHitRect(selectionOutNs, true, timeline).contains(position)) {
+			dragTarget = DragTarget::Out;
+			dragOffsetPixels = position.x() - xFromTimestamp(selectionOutNs);
+			applyDrag(selectionOutNs);
+		} else {
+			/* The playhead owns the whole timeline body. IN/OUT can only be
+			 * grabbed by their blue label handles, so an overlapping red cursor
+			 * never drags an Event boundary by accident. */
+			dragTarget = DragTarget::Playhead;
+			applyDrag(timestampFromX(position.x()));
+		}
+		event->accept();
+	}
+
+	void mouseMoveEvent(QMouseEvent *event) override
+	{
+		const QPoint position = event->position().toPoint();
+		if (dragTarget == DragTarget::None || !(event->buttons() & Qt::LeftButton)) {
+			const QRect timeline = timelineRect();
+			const bool markerHover = haveSelection &&
+						 (markerHitRect(selectionInNs, false, timeline).contains(position) ||
+						  markerHitRect(selectionOutNs, true, timeline).contains(position));
+			setCursor(markerHover ? Qt::SizeHorCursor : Qt::ArrowCursor);
+			QWidget::mouseMoveEvent(event);
+			return;
+		}
+		const int effectiveX =
+			position.x() -
+			((dragTarget == DragTarget::In || dragTarget == DragTarget::Out) ? dragOffsetPixels : 0);
+		applyDrag(timestampFromX(effectiveX));
+		event->accept();
+	}
+
+	void mouseReleaseEvent(QMouseEvent *event) override
+	{
+		if (event->button() != Qt::LeftButton || dragTarget == DragTarget::None) {
+			QWidget::mouseReleaseEvent(event);
+			return;
+		}
+		const DragTarget released = dragTarget;
+		dragTarget = DragTarget::None;
+		dragOffsetPixels = 0;
+		if ((released == DragTarget::In || released == DragTarget::Out) && haveSelection && rangeHandler)
+			rangeHandler(selectionInNs, selectionOutNs);
+		event->accept();
+		update();
+	}
+
+	void mouseDoubleClickEvent(QMouseEvent *event) override
+	{
+		if (event->button() == Qt::LeftButton && haveRecording) {
+			fitView();
+			event->accept();
+			return;
+		}
+		QWidget::mouseDoubleClickEvent(event);
+	}
+
+	void wheelEvent(QWheelEvent *event) override
+	{
+		if (!haveRecording) {
+			QWidget::wheelEvent(event);
+			return;
+		}
+		int delta = event->angleDelta().y();
+		if (!delta)
+			delta = event->angleDelta().x();
+		if (!delta) {
+			event->ignore();
+			return;
+		}
+		const double steps = (double)delta / 120.0;
+		if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+			if (zoomLocked) {
+				const int direction = steps > 0.0 ? -1 : 1;
+				const uint64_t amount =
+					std::max<uint64_t>(minimumDurationNs, (uint64_t)((long double)viewSpan() *
+											 0.12L * std::abs(steps)));
+				panView(direction, amount);
+			}
+		} else {
+			zoomView(steps);
+		}
+		event->accept();
+	}
+
+	void keyPressEvent(QKeyEvent *event) override
+	{
+		if (!commandHandler) {
+			QWidget::keyPressEvent(event);
+			return;
+		}
+		Command command;
+		bool handled = true;
+		switch (event->key()) {
+		case Qt::Key_Space:
+			command = Command::TogglePlay;
+			break;
+		case Qt::Key_I:
+			command = Command::SetIn;
+			break;
+		case Qt::Key_O:
+			command = Command::SetOut;
+			break;
+		case Qt::Key_BracketLeft:
+			command = Command::GotoIn;
+			break;
+		case Qt::Key_BracketRight:
+			command = Command::GotoOut;
+			break;
+		case Qt::Key_Left:
+			command = event->modifiers().testFlag(Qt::ShiftModifier) ? Command::StepBackFast
+										 : Command::StepBack;
+			break;
+		case Qt::Key_Right:
+			command = event->modifiers().testFlag(Qt::ShiftModifier) ? Command::StepForwardFast
+										 : Command::StepForward;
+			break;
+		default:
+			handled = false;
+			break;
+		}
+		if (!handled) {
+			QWidget::keyPressEvent(event);
+			return;
+		}
+		commandHandler(command);
+		event->accept();
+	}
+
+private:
+	QRect timelineRect() const { return rect().adjusted(8, 18, -8, -6); }
+
+	uint64_t viewSpan() const { return viewEndNs > viewStartNs ? viewEndNs - viewStartNs : 0; }
+
+	uint64_t clampToRecording(uint64_t timestampNs) const
+	{
+		if (!haveRecording)
+			return timestampNs;
+		if (timestampNs < recordStartNs)
+			return recordStartNs;
+		if (timestampNs > recordEndNs)
+			return recordEndNs;
+		return timestampNs;
+	}
+
+	int xFromTimestamp(uint64_t timestampNs) const
+	{
+		const QRect timeline = timelineRect();
+		if (viewEndNs <= viewStartNs)
+			return timeline.left();
+		const long double normalized =
+			((long double)timestampNs - (long double)viewStartNs) / (long double)(viewEndNs - viewStartNs);
+		return timeline.left() + (int)std::llround(normalized * (long double)timeline.width());
+	}
+
+	uint64_t timestampFromX(int x) const
+	{
+		const QRect timeline = timelineRect();
+		if (viewEndNs <= viewStartNs || timeline.width() <= 0)
+			return viewStartNs;
+		const int clamped = qBound(timeline.left(), x, timeline.right());
+		const long double normalized =
+			(long double)(clamped - timeline.left()) / (long double)std::max(1, timeline.width());
+		const uint64_t offset = (uint64_t)((long double)(viewEndNs - viewStartNs) * normalized);
+		return clampToRecording(viewStartNs + offset);
+	}
+
+	void applyDrag(uint64_t timestampNs)
+	{
+		timestampNs = clampToRecording(timestampNs);
+		if (dragTarget == DragTarget::In && haveSelection) {
+			const uint64_t maximum = selectionOutNs > minimumDurationNs ? selectionOutNs - minimumDurationNs
+										    : selectionInNs;
+			selectionInNs = std::min(timestampNs, maximum);
+			playheadNs = selectionInNs;
+		} else if (dragTarget == DragTarget::Out && haveSelection) {
+			const uint64_t minimum = selectionInNs <= UINT64_MAX - minimumDurationNs
+							 ? selectionInNs + minimumDurationNs
+							 : selectionOutNs;
+			selectionOutNs = std::max(timestampNs, minimum);
+			selectionOutNs = clampToRecording(selectionOutNs);
+			playheadNs = selectionOutNs;
+		} else {
+			playheadNs = timestampNs;
+		}
+		if (scrubHandler)
+			scrubHandler(playheadNs, dragTarget);
+		update();
+	}
+
+	void centerView(uint64_t centerNs)
+	{
+		if (!haveRecording || !zoomLocked)
+			return;
+		const uint64_t span = viewSpan();
+		if (!span || span >= recordEndNs - recordStartNs) {
+			fitView();
+			return;
+		}
+		const uint64_t half = span / 2;
+		viewStartNs = centerNs > half ? centerNs - half : recordStartNs;
+		viewEndNs = viewStartNs <= UINT64_MAX - span ? viewStartNs + span : recordEndNs;
+		clampView();
+	}
+
+	void clampView()
+	{
+		if (!haveRecording)
+			return;
+		const uint64_t recordSpan = recordEndNs - recordStartNs;
+		uint64_t span = viewSpan();
+		if (!span || span >= recordSpan) {
+			fitView();
+			return;
+		}
+		if (viewStartNs < recordStartNs) {
+			viewStartNs = recordStartNs;
+			viewEndNs = recordStartNs + span;
+		}
+		if (viewEndNs > recordEndNs) {
+			viewEndNs = recordEndNs;
+			viewStartNs = recordEndNs - span;
+		}
+	}
+
+	void panView(int direction, uint64_t amount)
+	{
+		if (!zoomLocked || !amount)
+			return;
+		const uint64_t span = viewSpan();
+		if (direction < 0) {
+			const uint64_t available = viewStartNs - recordStartNs;
+			const uint64_t shift = std::min(amount, available);
+			viewStartNs -= shift;
+			viewEndNs -= shift;
+		} else {
+			const uint64_t available = recordEndNs - viewEndNs;
+			const uint64_t shift = std::min(amount, available);
+			viewStartNs += shift;
+			viewEndNs += shift;
+		}
+		if (viewSpan() != span)
+			clampView();
+		update();
+	}
+
+	void zoomView(double steps)
+	{
+		if (!haveRecording || steps == 0.0)
+			return;
+		const uint64_t recordSpan = recordEndNs - recordStartNs;
+		const uint64_t currentSpan = zoomLocked ? viewSpan() : recordSpan;
+		const long double factor = std::pow(1.25L, (long double)steps);
+		uint64_t nextSpan = (uint64_t)((long double)currentSpan / factor);
+		const uint64_t minimumSpan = std::max<uint64_t>(minimumDurationNs * 6ULL, 250000000ULL);
+		const uint64_t boundedMinimumSpan = std::min(minimumSpan, recordSpan);
+		nextSpan = qBound(boundedMinimumSpan, nextSpan, recordSpan);
+		if (nextSpan >= recordSpan - std::min<uint64_t>(recordSpan / 100, 1000000ULL)) {
+			fitView();
+			return;
+		}
+		uint64_t center = zoomLocked ? viewStartNs + currentSpan / 2 : recordStartNs + recordSpan / 2;
+		zoomLocked = true;
+		viewStartNs = center > nextSpan / 2 ? center - nextSpan / 2 : recordStartNs;
+		viewEndNs = viewStartNs + nextSpan;
+		clampView();
+		update();
+	}
+
+	uint64_t majorTickStep(int width) const
+	{
+		const uint64_t span = viewSpan();
+		if (!span)
+			return NS_PER_SECOND;
+		const unsigned targetTicks = std::max(2, width / 105);
+		const uint64_t raw = std::max<uint64_t>(1, span / targetTicks);
+		if (minimumDurationNs && span <= 5ULL * NS_PER_SECOND) {
+			uint64_t frames = std::max<uint64_t>(1, raw / minimumDurationNs);
+			const uint64_t bases[] = {1, 2, 5, 10, 20, 50, 100};
+			for (uint64_t base : bases) {
+				if (base >= frames)
+					return base * minimumDurationNs;
+			}
+		}
+		const uint64_t steps[] = {10000000ULL,
+					  20000000ULL,
+					  50000000ULL,
+					  100000000ULL,
+					  200000000ULL,
+					  500000000ULL,
+					  NS_PER_SECOND,
+					  2ULL * NS_PER_SECOND,
+					  5ULL * NS_PER_SECOND,
+					  10ULL * NS_PER_SECOND,
+					  15ULL * NS_PER_SECOND,
+					  30ULL * NS_PER_SECOND,
+					  60ULL * NS_PER_SECOND,
+					  120ULL * NS_PER_SECOND,
+					  300ULL * NS_PER_SECOND,
+					  600ULL * NS_PER_SECOND,
+					  1800ULL * NS_PER_SECOND,
+					  3600ULL * NS_PER_SECOND};
+		for (uint64_t step : steps) {
+			if (step >= raw)
+				return step;
+		}
+		return 3600ULL * NS_PER_SECOND;
+	}
+
+	void paintRuler(QPainter &painter, const QRect &timeline)
+	{
+		const uint64_t major = majorTickStep(timeline.width());
+		const uint64_t minor = std::max<uint64_t>(1, major / 5);
+		const uint64_t relativeStart = viewStartNs > recordStartNs ? viewStartNs - recordStartNs : 0;
+		uint64_t first = (relativeStart / minor) * minor;
+		if (first < relativeStart)
+			first += minor;
+		for (uint64_t relative = first; relative <= recordEndNs - recordStartNs;) {
+			const uint64_t timestamp = recordStartNs + relative;
+			if (timestamp > viewEndNs)
+				break;
+			const int x = xFromTimestamp(timestamp);
+			const bool majorTick = relative % major < minor;
+			painter.setPen(palette().color(majorTick ? QPalette::Text : QPalette::Mid));
+			const int top = timeline.top() + (majorTick ? 17 : 22);
+			painter.drawLine(x, top, x, timeline.bottom());
+			if (majorTick) {
+				const QString label = replayClockText(relative);
+				painter.drawText(QRect(x - 48, timeline.top(), 96, 15), Qt::AlignHCenter | Qt::AlignTop,
+						 label);
+			}
+			if (relative > UINT64_MAX - minor)
+				break;
+			relative += minor;
+		}
+	}
+
+	QRect markerTagRect(uint64_t timestampNs, bool right, const QRect &timeline) const
+	{
+		const int x = xFromTimestamp(timestampNs);
+		return QRect(right ? x - 38 : x, timeline.top() + 15, 38, 17);
+	}
+
+	QRect markerHitRect(uint64_t timestampNs, bool right, const QRect &timeline) const
+	{
+		return markerTagRect(timestampNs, right, timeline).adjusted(-3, -3, 3, 3);
+	}
+
+	void paintMarker(QPainter &painter, uint64_t timestampNs, const QString &label, bool right,
+			 const QRect &timeline)
+	{
+		if (timestampNs < viewStartNs || timestampNs > viewEndNs)
+			return;
+		const int x = xFromTimestamp(timestampNs);
+		QColor marker = palette().color(QPalette::Highlight);
+		painter.setPen(QPen(marker, 2));
+		painter.drawLine(x, timeline.top() + 14, x, timeline.bottom());
+		const QRect tag = markerTagRect(timestampNs, right, timeline);
+		painter.fillRect(tag, marker);
+		painter.setPen(palette().color(QPalette::HighlightedText));
+		painter.drawText(tag, Qt::AlignCenter, label);
+	}
+
+	ScrubHandler scrubHandler;
+	RangeHandler rangeHandler;
+	CommandHandler commandHandler;
+	DragTarget dragTarget = DragTarget::None;
+	int dragOffsetPixels = 0;
+	uint64_t recordStartNs = 0;
+	uint64_t recordEndNs = 0;
+	uint64_t viewStartNs = 0;
+	uint64_t viewEndNs = 0;
+	uint64_t playheadNs = 0;
+	uint64_t selectionInNs = 0;
+	uint64_t selectionOutNs = 0;
+	uint64_t minimumDurationNs = 33333333ULL;
+	bool haveRecording = false;
+	bool haveSelection = false;
+	bool zoomLocked = false;
+};
+
+class SrEventTable : public QTableWidget {
+public:
+	explicit SrEventTable(QWidget *parent = nullptr)
+		: QTableWidget(parent),
+		  rubberBand(new QRubberBand(QRubberBand::Rectangle, viewport()))
+	{
+	}
+
+	bool selectionGestureActive() const { return rubberCandidate; }
+
+protected:
+	void mousePressEvent(QMouseEvent *event) override
+	{
+		if (event->button() == Qt::LeftButton && !(event->modifiers() & Qt::AltModifier)) {
+			rubberCandidate = true;
+			rubberSelecting = false;
+			rubberOrigin = event->position().toPoint();
+			rubberAdditive = event->modifiers().testFlag(Qt::ControlModifier);
+			baseRows.clear();
+			if (rubberAdditive && selectionModel()) {
+				const QModelIndexList selected = selectionModel()->selectedRows();
+				baseRows.reserve(selected.size());
+				for (const QModelIndex &index : selected)
+					baseRows.push_back(index.row());
+			}
+			rubberBand->hide();
+		} else {
+			rubberCandidate = false;
+			rubberSelecting = false;
+			rubberBand->hide();
+		}
+		QTableWidget::mousePressEvent(event);
+	}
+
+	void mouseMoveEvent(QMouseEvent *event) override
+	{
+		if (!rubberCandidate || !(event->buttons() & Qt::LeftButton)) {
+			QTableWidget::mouseMoveEvent(event);
+			return;
+		}
+
+		const QPoint position = boundedViewportPoint(event->position().toPoint());
+		if (!rubberSelecting && (position - rubberOrigin).manhattanLength() < 4) {
+			event->accept();
+			return;
+		}
+
+		rubberSelecting = true;
+		const QRect rectangle = QRect(rubberOrigin, position).normalized().intersected(viewport()->rect());
+		rubberBand->setGeometry(rectangle);
+		rubberBand->show();
+		applyRubberSelection(rectangle);
+		event->accept();
+	}
+
+	void mouseReleaseEvent(QMouseEvent *event) override
+	{
+		if (!rubberCandidate || event->button() != Qt::LeftButton) {
+			QTableWidget::mouseReleaseEvent(event);
+			return;
+		}
+
+		if (rubberSelecting) {
+			const QPoint position = boundedViewportPoint(event->position().toPoint());
+			const QRect rectangle =
+				QRect(rubberOrigin, position).normalized().intersected(viewport()->rect());
+			applyRubberSelection(rectangle);
+			rubberBand->hide();
+			rubberCandidate = false;
+			rubberSelecting = false;
+			event->accept();
+			return;
+		}
+
+		rubberCandidate = false;
+		QTableWidget::mouseReleaseEvent(event);
+	}
+
+private:
+	QPoint boundedViewportPoint(const QPoint &position) const
+	{
+		const QRect bounds = viewport()->rect();
+		return QPoint(qBound(bounds.left(), position.x(), bounds.right()),
+			      qBound(bounds.top(), position.y(), bounds.bottom()));
+	}
+
+	void applyRubberSelection(const QRect &rectangle)
+	{
+		if (!selectionModel() || !model())
+			return;
+
+		selectionModel()->clearSelection();
+		if (rubberAdditive) {
+			for (int row : baseRows) {
+				if (row >= 0 && row < rowCount())
+					selectionModel()->select(model()->index(row, 0),
+								 QItemSelectionModel::Select |
+									 QItemSelectionModel::Rows);
+			}
+		}
+
+		for (int row = 0; row < rowCount(); row++) {
+			const QModelIndex index = model()->index(row, 0);
+			QRect rowRectangle = visualRect(index);
+			if (!rowRectangle.isValid())
+				continue;
+			rowRectangle.setLeft(0);
+			rowRectangle.setRight(viewport()->width() - 1);
+			if (rowRectangle.intersects(rectangle))
+				selectionModel()->select(index,
+							 QItemSelectionModel::Select | QItemSelectionModel::Rows);
+		}
+
+		const QModelIndexList selected = selectionModel()->selectedRows();
+		if (!selected.isEmpty() && !selectionModel()->isSelected(currentIndex()))
+			setCurrentIndex(selected.constFirst());
+	}
+
+	QRubberBand *rubberBand = nullptr;
+	QPoint rubberOrigin;
+	QVector<int> baseRows;
+	bool rubberCandidate = false;
+	bool rubberSelecting = false;
+	bool rubberAdditive = false;
+};
+
 class SrEventDock : public QWidget {
 public:
 	explicit SrEventDock(sr_event_controller *eventController, QWidget *parent = nullptr)
@@ -281,46 +1503,119 @@ public:
 		  controller(eventController)
 	{
 		auto *root = new QVBoxLayout(this);
-		root->setContentsMargins(4, 4, 4, 4);
-		root->setSpacing(4);
+		root->setContentsMargins(2, 2, 2, 2);
+		root->setSpacing(2);
+		setStyleSheet(QStringLiteral("QPushButton { padding: 0px 4px; min-height: 18px; }"
+					     "QToolButton { padding: 0px 4px; min-height: 18px; }"
+					     "QComboBox { padding: 0px 3px; min-height: 18px; }"
+					     "QTableWidget::item { padding: 0px 2px; }"
+					     "QHeaderView::section { padding: 1px 4px; }"
+					     "QTabBar::tab { padding: 2px 9px; min-width: 24px; min-height: 18px; }"));
 
 		auto *operatorHint = new QLabel(T("EventDock.OperatorHint"), this);
 		operatorHint->setWordWrap(true);
 		operatorHint->setStyleSheet(
-			QStringLiteral("QLabel { color: palette(text); background: palette(alternate-base); "
-				       "border: 1px solid palette(mid); border-radius: 3px; padding: 5px; }"));
+			QStringLiteral("QLabel { color: palette(text); background: transparent; "
+				       "border: 1px solid palette(mid); border-radius: 3px; padding: 2px; }"));
 		root->addWidget(operatorHint);
 
 		auto *recordBar = new QHBoxLayout();
-		auto *startRecord = new QPushButton(T("EventDock.RecordStart"), this);
-		auto *stopRecord = new QPushButton(T("EventDock.RecordStop"), this);
-		startRecord->setStyleSheet(QStringLiteral("font-weight: bold;"));
-		stopRecord->setStyleSheet(QStringLiteral("font-weight: bold;"));
+		recordBar->setSpacing(3);
+		recordToggle = new QToolButton(this);
+		recordToggle->setText(QStringLiteral("● REC"));
+		recordToggle->setToolButtonStyle(Qt::ToolButtonTextOnly);
+		recordToggle->setMinimumSize(116, 36);
+		auto recordFont = recordToggle->font();
+		recordFont.setPointSizeF(recordFont.pointSizeF() * 1.35);
+		recordFont.setBold(true);
+		recordToggle->setFont(recordFont);
+		recordToggle->setAutoRaise(false);
+		auto *settingsGear = new QToolButton(this);
+		settingsGear->setText(QString::fromUtf8("\xE2\x9A\x99"));
+		settingsGear->setToolTip(T("Dock.Settings"));
+		settingsGear->setAutoRaise(true);
+		settingsGear->setFixedWidth(28);
 		recordStatus = new QLabel(this);
 		recordStatus->setWordWrap(true);
-		recordBar->addWidget(startRecord);
-		recordBar->addWidget(stopRecord);
+		setupSourceStatus = new QLabel(this);
+		setupSourceStatus->setAlignment(Qt::AlignCenter);
+		setupSourceStatus->setMinimumWidth(76);
+		setupSourceStatus->setStyleSheet(QStringLiteral("color: gray;"));
+		setupButton = new QToolButton(this);
+		setupButton->setText(T("EventDock.Setup.Button"));
+		setupButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+		setupButton->setAutoRaise(true);
+		setupButton->setMinimumWidth(82);
+		auto *repairABButton = new QToolButton(this);
+		repairABButton->setText(T("EventDock.Setup.CreateAB"));
+		repairABButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+		repairABButton->setAutoRaise(true);
+		repairABButton->setToolTip(T("EventDock.Setup.CreateAB"));
+		recordBar->addWidget(recordToggle);
+		recordBar->addWidget(repairABButton);
+		recordBar->addWidget(settingsGear);
+		recordBar->addWidget(setupSourceStatus);
+		recordBar->addWidget(setupButton);
 		recordBar->addWidget(recordStatus, 1);
 		root->addLayout(recordBar);
 
+		performancePanel = new QWidget(this);
+		auto *performanceLayout = new QVBoxLayout(performancePanel);
+		performanceLayout->setContentsMargins(0, 0, 0, 0);
+		performanceLayout->setSpacing(1);
+		performanceSummary = new QLabel(performancePanel);
+		performanceSummary->setWordWrap(true);
+		performanceSummary->setStyleSheet(QStringLiteral("color: gray;"));
+		performanceLayout->addWidget(performanceSummary);
+		performanceTable = new QTableWidget(performancePanel);
+		performanceTable->setColumnCount(8);
+		performanceTable->setHorizontalHeaderLabels(
+			{T("EventDock.Performance.Camera"), T("EventDock.Performance.Path"),
+			 T("EventDock.Performance.Video"), T("EventDock.Performance.Gop"),
+			 T("EventDock.Performance.Queue"), T("EventDock.Performance.Packets"),
+			 T("EventDock.Performance.Drops"), T("EventDock.Performance.Disk")});
+		performanceTable->setSelectionMode(QAbstractItemView::NoSelection);
+		performanceTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+		performanceTable->setFocusPolicy(Qt::NoFocus);
+		performanceTable->setAlternatingRowColors(true);
+		performanceTable->verticalHeader()->setVisible(false);
+		performanceTable->verticalHeader()->setMinimumSectionSize(16);
+		performanceTable->horizontalHeader()->setStretchLastSection(false);
+		performanceTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+		for (int column = 1; column < performanceTable->columnCount(); column++)
+			performanceTable->horizontalHeader()->setSectionResizeMode(column,
+										   QHeaderView::ResizeToContents);
+		performanceTable->verticalHeader()->setDefaultSectionSize(18);
+		performanceTable->setMinimumHeight(58);
+		performanceTable->setMaximumHeight(108);
+		performanceLayout->addWidget(performanceTable);
+		performancePanel->setVisible(false);
+
 		auto *programBar = new QHBoxLayout();
+		programBar->setSpacing(3);
 		programStatus = new QLabel(this);
 		cueAStatus = new QLabel(this);
 		cueBStatus = new QLabel(this);
 		for (QLabel *label : {programStatus, cueAStatus, cueBStatus}) {
 			label->setAlignment(Qt::AlignCenter);
-			label->setMinimumHeight(28);
+			label->setMinimumHeight(20);
 			programBar->addWidget(label, 1);
 		}
 		root->addLayout(programBar);
 
+		listTabs = new QTabBar(this);
+		listTabs->setExpanding(false);
+		listTabs->setUsesScrollButtons(true);
+		listTabs->setElideMode(Qt::ElideNone);
+		for (unsigned i = 1; i <= SR_EVENT_LIST_COUNT; i++) {
+			const int index = listTabs->addTab(QString::number(i));
+			listTabs->setTabData(index, i);
+		}
+		listTabs->setCurrentIndex(0);
+		root->addWidget(listTabs);
+
 		auto *markBar = new QHBoxLayout();
-		markBar->addWidget(new QLabel(T("EventDock.List"), this));
-		listCombo = new QComboBox(this);
-		for (unsigned i = 1; i <= SR_EVENT_LIST_COUNT; i++)
-			listCombo->addItem(QString::number(i), i);
-		listCombo->setCurrentIndex(0);
-		markBar->addWidget(listCombo);
+		markBar->setSpacing(3);
 
 		auto *markIn = new QPushButton(QStringLiteral("IN"), this);
 		auto *markOut = new QPushButton(QStringLiteral("OUT"), this);
@@ -340,28 +1635,69 @@ public:
 		markBar->addStretch(1);
 		root->addLayout(markBar);
 
-		table = new QTableWidget(this);
-		table->setColumnCount(6);
+		auto *eventViewBar = new QHBoxLayout();
+		eventViewBar->setSpacing(3);
+		eventViewBar->addStretch(1);
+		auto *viewListButton = new QToolButton(this);
+		viewListButton->setText(QStringLiteral("☷ ") + T("EventDock.ViewList"));
+		viewListButton->setCheckable(true);
+		viewListButton->setChecked(true);
+		auto *viewThumbButton = new QToolButton(this);
+		viewThumbButton->setText(QStringLiteral("▦ ") + T("EventDock.ViewThumbnails"));
+		viewThumbButton->setCheckable(true);
+		eventViewBar->addWidget(viewListButton);
+		eventViewBar->addWidget(viewThumbButton);
+		root->addLayout(eventViewBar);
+
+		eventViewStack = new QStackedWidget(this);
+		table = new SrEventTable(eventViewStack);
+		table->setColumnCount(7);
 		table->setHorizontalHeaderLabels({T("EventDock.Column.Id"), T("EventDock.Column.Duration"),
 						  T("EventDock.Column.Speed"), T("EventDock.Column.State"),
-						  T("EventDock.Column.Name"), T("EventDock.Column.Tag")});
+						  T("EventDock.Column.Angle"), T("EventDock.Column.Name"),
+						  T("EventDock.Column.Tag")});
 		table->setSelectionBehavior(QAbstractItemView::SelectRows);
-		table->setSelectionMode(QAbstractItemView::SingleSelection);
+		table->setSelectionMode(QAbstractItemView::ExtendedSelection);
 		table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
 		table->verticalHeader()->setVisible(false);
-		table->horizontalHeader()->setStretchLastSection(true);
+		table->verticalHeader()->setMinimumSectionSize(16);
+		table->verticalHeader()->setDefaultSectionSize(18);
+		table->horizontalHeader()->setFixedHeight(21);
+		table->horizontalHeader()->setStretchLastSection(false);
 		table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 		table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
 		table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
 		table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-		table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
-		root->addWidget(table, 1);
+		table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+		table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+		table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
+		eventViewStack->addWidget(table);
+
+		thumbnailList = new QListWidget(eventViewStack);
+		thumbnailList->setViewMode(QListView::IconMode);
+		thumbnailList->setResizeMode(QListView::Adjust);
+		thumbnailList->setMovement(QListView::Static);
+		thumbnailList->setWrapping(true);
+		thumbnailList->setWordWrap(true);
+		thumbnailList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+		thumbnailList->setSelectionRectVisible(true);
+		thumbnailList->setIconSize(QSize(EVENT_THUMB_DISPLAY_WIDTH, EVENT_THUMB_DISPLAY_HEIGHT));
+		thumbnailList->setGridSize(QSize(EVENT_THUMB_CELL_WIDTH, EVENT_THUMB_CELL_HEIGHT));
+		thumbnailList->setSpacing(1);
+		thumbnailList->setUniformItemSizes(true);
+		thumbnailList->setItemDelegate(new SrEventThumbnailDelegate(thumbnailList));
+		thumbnailList->setToolTip(T("EventDock.ViewThumbnails.Tooltip"));
+		eventViewStack->addWidget(thumbnailList);
+		eventViewStack->setCurrentWidget(table);
+		root->addWidget(eventViewStack, 1);
 
 		auto *actionBar = new QHBoxLayout();
+		actionBar->setSpacing(3);
 		auto *up = new QPushButton(QStringLiteral("↑"), this);
 		auto *down = new QPushButton(QStringLiteral("↓"), this);
 		auto *played = new QPushButton(T("EventDock.Played"), this);
 		auto *protect = new QPushButton(T("EventDock.Protect"), this);
+		protect->setToolTip(T("EventDock.Protect.Tooltip"));
 		auto *remove = new QPushButton(T("EventDock.Delete"), this);
 		auto *removeMedia = new QPushButton(T("EventDock.DeleteMedia"), this);
 		actionBar->addWidget(up);
@@ -385,38 +1721,18 @@ public:
 		actionBar->addWidget(duplicate);
 		root->addLayout(actionBar);
 
-		auto *exportBar = new QHBoxLayout();
-		exportBar->addWidget(new QLabel(T("EventDock.Export"), this));
-		exportModeCombo = new QComboBox(this);
-		exportModeCombo->addItem(T("EventDock.ExportPreferred"), 0);
-		exportModeCombo->addItem(T("EventDock.ExportAll"), 1);
-		exportBar->addWidget(exportModeCombo);
-		auto *exportFast = new QPushButton(T("EventDock.ExportFast"), this);
-		exportCancelButton = new QPushButton(T("EventDock.ExportCancel"), this);
-		exportCancelButton->setEnabled(false);
-		exportProgressBar = new QProgressBar(this);
-		exportProgressBar->setRange(0, 100);
-		exportProgressBar->setValue(0);
-		exportProgressBar->setMinimumWidth(120);
-		exportBar->addWidget(exportFast);
-		exportBar->addWidget(exportCancelButton);
-		exportBar->addWidget(exportProgressBar, 1);
-		root->addLayout(exportBar);
-
 		auto *cueBar = new QHBoxLayout();
-		cueBar->addWidget(new QLabel(T("EventDock.Camera"), this));
+		cueBar->setSpacing(3);
+		cueBar->addWidget(new QLabel(T("EventDock.AngleSelector"), this));
 		cameraCombo = new QComboBox(this);
 		cameraCombo->setMinimumContentsLength(18);
+		cameraCombo->setToolTip(T("EventDock.AngleSelector.Tooltip"));
 		cueBar->addWidget(cameraCombo, 1);
-		auto *setPreferred = new QPushButton(T("EventDock.SetPreferred"), this);
-		auto *clearPreferred = new QPushButton(T("EventDock.ClearPreferred"), this);
 		auto *cueA = new QPushButton(T("EventDock.CueA"), this);
 		auto *cueB = new QPushButton(T("EventDock.CueB"), this);
-		cueBar->addWidget(setPreferred);
-		cueBar->addWidget(clearPreferred);
 		cueBar->addWidget(cueA);
 		cueBar->addWidget(cueB);
-		cueBar->addSpacing(12);
+		cueBar->addSpacing(6);
 		cueBar->addWidget(new QLabel(T("EventDock.TransportBus"), this));
 		busCombo = new QComboBox(this);
 		busCombo->addItem(QStringLiteral("A"), SR_REPLAY_BUS_A);
@@ -445,6 +1761,7 @@ public:
 		for (int speed : speeds)
 			speedCombo->addItem(QStringLiteral("%1%").arg(speed), speed);
 		speedCombo->setCurrentIndex(speedCombo->findData(100));
+		speedCombo->setToolTip(T("EventDock.Speed.Tooltip"));
 		cueBar->addWidget(speedCombo);
 		cueBar->addWidget(new QLabel(T("EventDock.Audio"), this));
 		audioCombo = new QComboBox(this);
@@ -455,32 +1772,78 @@ public:
 		root->addLayout(cueBar);
 
 		auto *angleHeader = new QHBoxLayout();
+		angleHeader->setSpacing(3);
 		angleHeader->addWidget(new QLabel(T("EventDock.Angles"), this));
 		angleHeader->addStretch(1);
+		auto *multiviewButton = new QToolButton(this);
+		multiviewButton->setText(T("Multiview.Open"));
+		multiviewButton->setAutoRaise(true);
+		multiviewButton->setToolTip(T("Multiview.OpenTooltip"));
+		angleHeader->addWidget(multiviewButton);
 		auto *angleLegend = new QLabel(T("EventDock.AnglesLegend"), this);
 		angleLegend->setStyleSheet(QStringLiteral("color: gray;"));
 		angleHeader->addWidget(angleLegend);
 		root->addLayout(angleHeader);
 		angleGrid = new QGridLayout();
 		angleGrid->setHorizontalSpacing(4);
-		angleGrid->setVerticalSpacing(3);
+		angleGrid->setVerticalSpacing(4);
 		root->addLayout(angleGrid);
 
 		auto *timelineBar = new QHBoxLayout();
+		timelineBar->setSpacing(3);
 		timelineBar->addWidget(new QLabel(T("EventDock.Timeline"), this));
-		timelineSlider = new QSlider(Qt::Horizontal, this);
-		timelineSlider->setRange(0, 10000);
+		timelineModeLabel = new QLabel(T("EventDock.Timeline.EditMode"), this);
+		timelineModeLabel->setAlignment(Qt::AlignCenter);
+		timelineModeLabel->setMinimumWidth(58);
+		timelineBar->addWidget(timelineModeLabel);
+		timelineStack = new QStackedWidget(this);
+		editTimeline = new SrReplayTimeline(timelineStack);
+		editTimeline->setEnabled(false);
+		timelineSlider = new SrRangeSlider(timelineStack);
+		timelineSlider->setRange(0, TIMELINE_SCALE);
 		timelineSlider->setSingleStep(1);
-		timelineSlider->setPageStep(100);
+		timelineSlider->setPageStep(TIMELINE_SCALE / 100);
+		timelineSlider->setMinimumHeight(30);
 		timelineSlider->setEnabled(false);
-		timelineSlider->setToolTip(T("EventDock.Timeline.Tooltip"));
-		timelineBar->addWidget(timelineSlider, 1);
+		timelineStack->addWidget(editTimeline);
+		timelineStack->addWidget(timelineSlider);
+		timelineStack->setCurrentWidget(editTimeline);
+		timelineBar->addWidget(timelineStack, 1);
 		timelineTime = new QLabel(QStringLiteral("--:--.--- / --:--.---"), this);
-		timelineTime->setMinimumWidth(150);
+		timelineTime->setMinimumWidth(315);
+		timelineTime->setWordWrap(true);
 		timelineBar->addWidget(timelineTime);
 		root->addLayout(timelineBar);
 
+		editTimelineControls = new QWidget(this);
+		auto *editTimelineBar = new QHBoxLayout(editTimelineControls);
+		editTimelineBar->setContentsMargins(0, 0, 0, 0);
+		editTimelineBar->setSpacing(3);
+		editSetInButton = new QPushButton(QStringLiteral("SET IN"), editTimelineControls);
+		editGotoInButton = new QPushButton(QStringLiteral("|< IN"), editTimelineControls);
+		editPreviewButton = new QPushButton(QStringLiteral("▶ IN→OUT"), editTimelineControls);
+		editGotoOutButton = new QPushButton(QStringLiteral("OUT >|"), editTimelineControls);
+		editSetOutButton = new QPushButton(QStringLiteral("SET OUT"), editTimelineControls);
+		editFitButton = new QPushButton(QStringLiteral("FIT"), editTimelineControls);
+		editLiveButton = new QPushButton(QStringLiteral("LIVE"), editTimelineControls);
+		editTimelineBar->addStretch(1);
+		editTimelineBar->addWidget(editSetInButton);
+		editTimelineBar->addWidget(editGotoInButton);
+		editTimelineBar->addWidget(editPreviewButton);
+		editTimelineBar->addWidget(editGotoOutButton);
+		editTimelineBar->addWidget(editSetOutButton);
+		editTimelineBar->addSpacing(8);
+		editTimelineBar->addWidget(editFitButton);
+		editTimelineBar->addWidget(editLiveButton);
+		auto *editHelp = new QLabel(
+			QStringLiteral("Wheel: zoom · Shift+Wheel: pan · Space: play/pause · I/O: marks · [ ]: goto"),
+			editTimelineControls);
+		editHelp->setStyleSheet(QStringLiteral("color: gray;"));
+		editTimelineBar->addWidget(editHelp);
+		root->addWidget(editTimelineControls);
+
 		auto *jogShuttleBar = new QHBoxLayout();
+		jogShuttleBar->setSpacing(3);
 		jogShuttleBar->addWidget(new QLabel(T("EventDock.Jog"), this));
 		jogSlider = new QSlider(Qt::Horizontal, this);
 		jogSlider->setRange(-24, 24);
@@ -489,7 +1852,7 @@ public:
 		jogSlider->setPageStep(1);
 		jogSlider->setToolTip(T("EventDock.Jog.Tooltip"));
 		jogShuttleBar->addWidget(jogSlider, 1);
-		jogShuttleBar->addSpacing(8);
+		jogShuttleBar->addSpacing(4);
 		jogShuttleBar->addWidget(new QLabel(T("EventDock.Shuttle"), this));
 		shuttleSlider = new QSlider(Qt::Horizontal, this);
 		shuttleSlider->setRange(-5, 5);
@@ -499,33 +1862,65 @@ public:
 		shuttleSlider->setToolTip(T("EventDock.Shuttle.Tooltip"));
 		jogShuttleBar->addWidget(shuttleSlider, 1);
 		shuttleValue = new QLabel(QStringLiteral("0"), this);
-		shuttleValue->setMinimumWidth(48);
+		shuttleValue->setMinimumWidth(42);
 		jogShuttleBar->addWidget(shuttleValue);
 		root->addLayout(jogShuttleBar);
 
 		auto *takeBar = new QHBoxLayout();
-		takeBar->addStretch(1);
-		auto *takeA = new QPushButton(T("EventDock.TakeA"), this);
-		auto *takeB = new QPushButton(T("EventDock.TakeB"), this);
-		auto *takeToggle = new QPushButton(T("EventDock.TakeToggle"), this);
-		auto *returnLive = new QPushButton(T("EventDock.ReturnLive"), this);
+		takeBar->setSpacing(3);
+		auto *playSelected = new QPushButton(T("EventDock.PlaySelected"), this);
+		auto *playAll = new QPushButton(T("EventDock.PlayAll"), this);
+		auto *playEachAngleButton = new QPushButton(T("EventDock.PlayEachAngle"), this);
+		auto *playLast = new QPushButton(T("EventDock.PlayLast"), this);
+		auto *playByIdButton = new QPushButton(T("EventDock.PlayById"), this);
 		auto *playlistA = new QPushButton(T("EventDock.PlaylistA"), this);
 		auto *playlistB = new QPushButton(T("EventDock.PlaylistB"), this);
 		auto *playlistNext = new QPushButton(T("EventDock.PlaylistNext"), this);
 		auto *playlistStop = new QPushButton(T("EventDock.PlaylistStop"), this);
-		auto *playSelected = new QPushButton(T("EventDock.PlaySelected"), this);
+		auto *takeA = new QPushButton(T("EventDock.TakeA"), this);
+		auto *takeB = new QPushButton(T("EventDock.TakeB"), this);
+		auto *takeToggle = new QPushButton(T("EventDock.TakeToggle"), this);
+		auto *returnLive = new QPushButton(T("EventDock.ReturnLive"), this);
 		playSelected->setStyleSheet(QStringLiteral("font-weight: bold;"));
+		for (QPushButton *button :
+		     {playSelected, playAll, playEachAngleButton, playLast, playByIdButton, playlistA, playlistB,
+		      playlistNext, playlistStop, takeA, takeB, takeToggle, returnLive})
+			button->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+		takeBar->addWidget(playSelected);
+		takeBar->addWidget(playAll);
+		takeBar->addWidget(playEachAngleButton);
+		takeBar->addWidget(playLast);
+		takeBar->addWidget(playByIdButton);
+		takeBar->addSpacing(4);
 		takeBar->addWidget(playlistA);
 		takeBar->addWidget(playlistB);
 		takeBar->addWidget(playlistNext);
 		takeBar->addWidget(playlistStop);
-		takeBar->addSpacing(10);
-		takeBar->addWidget(playSelected);
+		takeBar->addSpacing(4);
 		takeBar->addWidget(takeA);
 		takeBar->addWidget(takeB);
 		takeBar->addWidget(takeToggle);
 		takeBar->addWidget(returnLive);
 		root->addLayout(takeBar);
+
+		auto *exportBar = new QHBoxLayout();
+		exportBar->setSpacing(3);
+		exportBar->addWidget(new QLabel(T("EventDock.Export"), this));
+		exportModeCombo = new QComboBox(this);
+		exportModeCombo->addItem(T("EventDock.ExportPreferred"), 0);
+		exportModeCombo->addItem(T("EventDock.ExportAll"), 1);
+		exportBar->addWidget(exportModeCombo);
+		auto *exportFast = new QPushButton(T("EventDock.ExportFast"), this);
+		exportCancelButton = new QPushButton(T("EventDock.ExportCancel"), this);
+		exportCancelButton->setEnabled(false);
+		exportProgressBar = new QProgressBar(this);
+		exportProgressBar->setRange(0, 100);
+		exportProgressBar->setValue(0);
+		exportProgressBar->setMinimumWidth(120);
+		exportBar->addWidget(exportFast);
+		exportBar->addWidget(exportCancelButton);
+		exportBar->addWidget(exportProgressBar, 1);
+		root->addLayout(exportBar);
 
 		transportStatus = new QLabel(this);
 		transportStatus->setStyleSheet(QStringLiteral("color: gray;"));
@@ -536,7 +1931,17 @@ public:
 		status->setStyleSheet(QStringLiteral("color: gray;"));
 		root->addWidget(status);
 
-		connect(listCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+		performanceToggle = new QToolButton(this);
+		performanceToggle->setText(T("EventDock.Performance.Title"));
+		performanceToggle->setCheckable(true);
+		performanceToggle->setChecked(false);
+		performanceToggle->setArrowType(Qt::RightArrow);
+		performanceToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+		performanceToggle->setAutoRaise(true);
+		root->addWidget(performanceToggle);
+		root->addWidget(performancePanel);
+
+		connect(listTabs, &QTabBar::currentChanged, this, [this](int index) {
 			if (!controller || index < 0)
 				return;
 			sr_event_controller_set_current_list(controller, currentList());
@@ -547,8 +1952,21 @@ public:
 		connect(mark5, &QPushButton::clicked, this, [this]() { quickMark(5); });
 		connect(mark10, &QPushButton::clicked, this, [this]() { quickMark(10); });
 		connect(mark20, &QPushButton::clicked, this, [this]() { quickMark(20); });
-		connect(startRecord, &QPushButton::clicked, this, [this]() { setAllRecording(true); });
-		connect(stopRecord, &QPushButton::clicked, this, [this]() { setAllRecording(false); });
+		connect(recordToggle, &QToolButton::clicked, this, [this]() { toggleAllRecording(); });
+		connect(repairABButton, &QToolButton::clicked, this, [this]() {
+			sr_replay_setup_result result = {};
+			if (!sr_replay_setup_ensure_event_scenes(&result)) {
+				QMessageBox::warning(this, T("EventDock.Setup.Title"), T("EventDock.Setup.ABFailed"));
+			} else {
+				status->setText(T("EventDock.Setup.ABReady")
+							.arg(QString::fromUtf8(result.scene_a))
+							.arg(QString::fromUtf8(result.scene_b)));
+			}
+			refreshSetupStatus();
+		});
+		connect(settingsGear, &QToolButton::clicked, this, []() { sr_dock_open_settings(); });
+		connect(setupButton, &QToolButton::clicked, this, [this]() { openReplaySetup(); });
+		connect(multiviewButton, &QToolButton::clicked, this, []() { sr_multiview_dock_show(); });
 		connect(up, &QPushButton::clicked, this, [this]() { moveRow(-1); });
 		connect(down, &QPushButton::clicked, this, [this]() { moveRow(1); });
 		connect(played, &QPushButton::clicked, this, [this]() { togglePlayed(); });
@@ -560,11 +1978,20 @@ public:
 		connect(duplicate, &QPushButton::clicked, this, [this]() { duplicateSelected(); });
 		connect(exportFast, &QPushButton::clicked, this, [this]() { startExport(); });
 		connect(exportCancelButton, &QPushButton::clicked, this, [this]() { cancelExport(); });
-		connect(setPreferred, &QPushButton::clicked, this, [this]() { setPreferredCamera(false); });
-		connect(clearPreferred, &QPushButton::clicked, this, [this]() { setPreferredCamera(true); });
 		connect(cueA, &QPushButton::clicked, this, [this]() { cueSelected(SR_REPLAY_BUS_A); });
 		connect(cueB, &QPushButton::clicked, this, [this]() { cueSelected(SR_REPLAY_BUS_B); });
-		connect(busCombo, &QComboBox::currentIndexChanged, this, [this](int) { syncTransportControls(); });
+		connect(busCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+			syncTransportControls();
+			if (!replayPlayoutActive()) {
+				editPreviewEventId = 0;
+				previewSelectedEvent(true);
+			}
+		});
+		connect(cameraCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+			if (index < 0)
+				return;
+			selectAngle(selectedCamera());
+		});
 		connect(playPause, &QPushButton::clicked, this, [this]() { togglePlayPause(); });
 		connect(stop, &QPushButton::clicked, this, [this]() { stopTransport(); });
 		connect(restart, &QPushButton::clicked, this, [this]() { restartTransport(); });
@@ -576,7 +2003,7 @@ public:
 			[this](bool checked) { sr_replay_channel_set_loop(transportBus(), checked); });
 		connect(speedCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
 			if (index >= 0)
-				sr_replay_channel_set_speed(transportBus(), speedCombo->itemData(index).toDouble());
+				setOperatorSpeed(speedCombo->itemData(index).toDouble());
 		});
 		connect(audioCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
 			if (index >= 0)
@@ -587,13 +2014,61 @@ public:
 		});
 		connect(timelineSlider, &QSlider::sliderPressed, this, [this]() {
 			timelineDragging = true;
-			sr_replay_channel_pause(transportBus(), true);
+			sr_replay_channel_pause(timelineTransportBus(), true);
 		});
 		connect(timelineSlider, &QSlider::sliderMoved, this, [this](int value) { seekTimeline(value); });
 		connect(timelineSlider, &QSlider::sliderReleased, this, [this]() {
 			seekTimeline(timelineSlider->value());
 			timelineDragging = false;
 			syncTimeline();
+		});
+		editTimeline->setScrubHandler(
+			[this](uint64_t timestampNs, SrReplayTimeline::DragTarget) { previewSeekTo(timestampNs); });
+		editTimeline->setRangeHandler(
+			[this](uint64_t inNs, uint64_t outNs) { editSelectedEventRange(inNs, outNs); });
+		editTimeline->setCommandHandler([this](SrReplayTimeline::Command command) {
+			switch (command) {
+			case SrReplayTimeline::Command::TogglePlay:
+				toggleEditPreview();
+				break;
+			case SrReplayTimeline::Command::GotoIn:
+				gotoEditMarker(false);
+				break;
+			case SrReplayTimeline::Command::GotoOut:
+				gotoEditMarker(true);
+				break;
+			case SrReplayTimeline::Command::SetIn:
+				setEditMarkerAtPlayhead(false);
+				break;
+			case SrReplayTimeline::Command::SetOut:
+				setEditMarkerAtPlayhead(true);
+				break;
+			case SrReplayTimeline::Command::StepBack:
+				stepEditFrames(-1);
+				break;
+			case SrReplayTimeline::Command::StepForward:
+				stepEditFrames(1);
+				break;
+			case SrReplayTimeline::Command::StepBackFast:
+				stepEditFrames(-10);
+				break;
+			case SrReplayTimeline::Command::StepForwardFast:
+				stepEditFrames(10);
+				break;
+			}
+		});
+		connect(editPreviewButton, &QPushButton::clicked, this, [this]() { previewPlayFromIn(); });
+		connect(editGotoInButton, &QPushButton::clicked, this, [this]() { gotoEditMarker(false); });
+		connect(editGotoOutButton, &QPushButton::clicked, this, [this]() { gotoEditMarker(true); });
+		connect(editSetInButton, &QPushButton::clicked, this, [this]() { setEditMarkerAtPlayhead(false); });
+		connect(editSetOutButton, &QPushButton::clicked, this, [this]() { setEditMarkerAtPlayhead(true); });
+		connect(editFitButton, &QPushButton::clicked, this, [this]() {
+			editTimeline->fitView();
+			syncEditTimeline();
+		});
+		connect(editLiveButton, &QPushButton::clicked, this, [this]() {
+			editTimeline->centerOnLive();
+			previewSeekTo(editTimelineEndNs);
 		});
 		connect(jogSlider, &QSlider::sliderPressed, this, [this]() { jogLastValue = jogSlider->value(); });
 		connect(jogSlider, &QSlider::sliderMoved, this, [this](int value) { jogMoved(value); });
@@ -603,21 +2078,70 @@ public:
 			jogLastValue = 0;
 		});
 		connect(shuttleSlider, &QSlider::valueChanged, this, [this](int value) { applyShuttle(value); });
+		connect(playSelected, &QPushButton::clicked, this, [this]() { playSelectedEvent(); });
+		connect(playAll, &QPushButton::clicked, this, [this]() { startPlaylist(transportBus()); });
+		connect(playEachAngleButton, &QPushButton::clicked, this, [this]() { playEachAngle(); });
+		connect(playLast, &QPushButton::clicked, this, [this]() { playLastEvent(); });
+		connect(playByIdButton, &QPushButton::clicked, this, [this]() { playById(); });
 		connect(playlistA, &QPushButton::clicked, this, [this]() { startPlaylist(SR_REPLAY_BUS_A); });
 		connect(playlistB, &QPushButton::clicked, this, [this]() { startPlaylist(SR_REPLAY_BUS_B); });
 		connect(playlistNext, &QPushButton::clicked, this, [this]() { nextPlaylist(); });
 		connect(playlistStop, &QPushButton::clicked, this, [this]() { stopPlaylist(); });
-		connect(playSelected, &QPushButton::clicked, this, [this]() { playSelectedEvent(); });
+		connect(performanceToggle, &QToolButton::toggled, this, [this](bool expanded) {
+			performanceToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+			performancePanel->setVisible(expanded);
+			if (expanded)
+				refreshHardwareStatus();
+		});
 		connect(takeA, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_A); });
 		connect(takeB, &QPushButton::clicked, this, [this]() { takeBus(SR_REPLAY_BUS_B); });
 		connect(takeToggle, &QPushButton::clicked, this, [this]() { takeToggleBus(); });
 		connect(returnLive, &QPushButton::clicked, this, [this]() { returnLiveBus(); });
-		connect(table, &QTableWidget::itemSelectionChanged, this, [this]() { refreshAngleCoverage(); });
+		connect(viewListButton, &QToolButton::clicked, this, [this, viewListButton, viewThumbButton]() {
+			viewListButton->setChecked(true);
+			viewThumbButton->setChecked(false);
+			eventViewStack->setCurrentWidget(table);
+			syncGallerySelectionFromTable();
+		});
+		connect(viewThumbButton, &QToolButton::clicked, this, [this, viewListButton, viewThumbButton]() {
+			viewListButton->setChecked(false);
+			viewThumbButton->setChecked(true);
+			eventViewStack->setCurrentWidget(thumbnailList);
+			refreshEventGallery();
+			syncGallerySelectionFromTable();
+			requestEventThumbnails();
+		});
+		connect(table, &QTableWidget::itemSelectionChanged, this, [this]() {
+			if (!syncingEventViews)
+				syncGallerySelectionFromTable();
+			refreshAngleCoverage();
+			if (!replayPlayoutActive()) {
+				editPreviewEventId = 0;
+				QTimer::singleShot(0, this, [this]() {
+					previewSelectedEvent(false);
+					syncTimeline();
+				});
+			}
+		});
+		connect(thumbnailList, &QListWidget::itemSelectionChanged, this, [this]() {
+			if (!syncingEventViews)
+				syncTableSelectionFromGallery();
+			refreshAngleCoverage();
+			if (!replayPlayoutActive()) {
+				editPreviewEventId = 0;
+				QTimer::singleShot(0, this, [this]() {
+					previewSelectedEvent(false);
+					syncTimeline();
+				});
+			}
+		});
+		connect(thumbnailList, &QListWidget::itemDoubleClicked, this,
+			[this](QListWidgetItem *) { playSelectedEvent(); });
 		connect(table, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) { editEvent(item); });
 		connect(table->itemDelegate(), &QAbstractItemDelegate::closeEditor, this,
 			[this]() { tableEditing = false; });
 		connect(table, &QTableWidget::itemDoubleClicked, this, [this](QTableWidgetItem *item) {
-			if (item && (item->column() == 2 || item->column() == 4 || item->column() == 5))
+			if (item && (item->column() == 2 || item->column() == 5 || item->column() == 6))
 				tableEditing = true;
 			else if (item)
 				playSelectedEvent();
@@ -629,9 +2153,11 @@ public:
 			refresh();
 			refreshTransportStatus();
 			refreshRecordingStatus();
+			refreshHardwareStatus();
 			if (++cameraRefreshTicks >= 4) {
 				cameraRefreshTicks = 0;
 				refreshCameras();
+				refreshSetupStatus();
 			}
 		});
 		refreshTimer->start();
@@ -645,6 +2171,7 @@ public:
 			syncAngleButtonState();
 			pollExport();
 			pollAnglePreviews();
+			pollEventThumbnails();
 		});
 		transportTimer->start();
 
@@ -655,6 +2182,8 @@ public:
 		refreshTransportStatus();
 		refreshProgramState();
 		refreshRecordingStatus();
+		refreshSetupStatus();
+		refreshHardwareStatus();
 		syncTransportControls();
 	}
 
@@ -667,10 +2196,153 @@ public:
 		}
 		if (anglePreviewJob && anglePreviewJob->worker.joinable())
 			anglePreviewJob->worker.join();
+		if (eventThumbnailJob && eventThumbnailJob->worker.joinable())
+			eventThumbnailJob->worker.join();
+	}
+
+	bool editorSnapshot(sr_event_editor_snapshot *snapshot)
+	{
+		if (!snapshot)
+			return false;
+		std::memset(snapshot, 0, sizeof(*snapshot));
+		if (!controller)
+			return false;
+		updateEditTimelineBounds();
+		snapshot->edit_mode = !replayPlayoutActive();
+		if (editTimelineHaveBounds) {
+			snapshot->record_start_ns = editTimelineStartNs;
+			snapshot->record_end_ns = editTimelineEndNs;
+		}
+		const uint64_t eventId = selectedEventId();
+		sr_event_record event = {};
+		if (!eventId || !sr_event_controller_get_event(controller, eventId, &event))
+			return true;
+		snapshot->event_id = event.id;
+		snapshot->in_ns = event.in_ns;
+		snapshot->out_ns = event.out_ns;
+		snapshot->available = editTimelineHaveBounds && event.out_ns > event.in_ns;
+		const QString storedCamera = eventPreferredCamera(event);
+		const QByteArray storedUtf8 = storedCamera.toUtf8();
+		if (!storedUtf8.isEmpty()) {
+			std::strncpy(snapshot->selected_camera, storedUtf8.constData(),
+				     sizeof(snapshot->selected_camera) - 1);
+			snapshot->selected_camera[sizeof(snapshot->selected_camera) - 1] = '\0';
+		}
+		uint64_t playhead = editTimeline ? editTimeline->playheadTimestamp() : event.in_ns;
+		sr_replay_channel_state state = {};
+		if (sr_replay_channel_get_state(transportBus(), &state) && state.cued && state.preview_mode &&
+		    state.event_id == event.id) {
+			playhead = state.playhead_ns;
+			snapshot->playing = state.playing && !state.paused;
+			snapshot->paused = state.paused;
+			snapshot->loop = state.loop;
+			std::strncpy(snapshot->preview_camera, state.camera_name, sizeof(snapshot->preview_camera) - 1);
+			snapshot->preview_camera[sizeof(snapshot->preview_camera) - 1] = '\0';
+		} else {
+			snapshot->loop = loopButton && loopButton->isChecked();
+			const QByteArray previewUtf8 = editPreviewCamera.toUtf8();
+			if (!previewUtf8.isEmpty()) {
+				std::strncpy(snapshot->preview_camera, previewUtf8.constData(),
+					     sizeof(snapshot->preview_camera) - 1);
+				snapshot->preview_camera[sizeof(snapshot->preview_camera) - 1] = '\0';
+			}
+		}
+		if (snapshot->available)
+			playhead = qBound(editTimelineStartNs, playhead, editTimelineEndNs);
+		snapshot->playhead_ns = playhead;
+		sr_event_controller_free_event(&event);
+		return true;
+	}
+
+	bool editorSeek(uint64_t timestampNs) { return !replayPlayoutActive() && previewSeekTo(timestampNs); }
+
+	bool editorSetRange(uint64_t inNs, uint64_t outNs)
+	{
+		if (replayPlayoutActive() || !selectedEventId() || outNs <= inNs)
+			return false;
+		const uint64_t eventId = selectedEventId();
+		editSelectedEventRange(inNs, outNs);
+		sr_event_record event = {};
+		if (!sr_event_controller_get_event(controller, eventId, &event))
+			return false;
+		const bool matched = event.in_ns == inNs && event.out_ns == outNs;
+		sr_event_controller_free_event(&event);
+		return matched;
+	}
+
+	bool editorSetMarker(bool outMarker)
+	{
+		if (replayPlayoutActive() || !editTimeline || !editTimeline->hasSelection())
+			return false;
+		setEditMarkerAtPlayhead(outMarker);
+		return true;
+	}
+
+	bool editorGotoMarker(bool outMarker)
+	{
+		if (replayPlayoutActive() || !editTimeline || !editTimeline->hasSelection())
+			return false;
+		return previewSeekTo(outMarker ? editTimeline->selectionOut() : editTimeline->selectionIn());
+	}
+
+	bool editorStepFrames(int frames)
+	{
+		if (replayPlayoutActive() || !editTimelineHaveBounds || !editTimeline || !frames)
+			return false;
+		stepEditFrames(frames);
+		return true;
+	}
+
+	bool editorSelectCamera(const QString &camera)
+	{
+		if (replayPlayoutActive() || !controller || !selectedEventId())
+			return false;
+		const uint64_t eventId = selectedEventId();
+		selectAngle(camera);
+		sr_event_record event = {};
+		if (!sr_event_controller_get_event(controller, eventId, &event))
+			return false;
+		const QString stored = eventPreferredCamera(event);
+		sr_event_controller_free_event(&event);
+		return stored == camera;
+	}
+
+	bool editorTogglePlay()
+	{
+		if (replayPlayoutActive() || !selectedEventId())
+			return false;
+		toggleEditPreview();
+		return true;
+	}
+
+	bool editorPlayFromIn()
+	{
+		if (replayPlayoutActive() || !selectedEventId())
+			return false;
+		previewPlayFromIn();
+		return true;
+	}
+
+	bool editorSetLoop(bool enabled)
+	{
+		if (replayPlayoutActive() || !selectedEventId())
+			return false;
+		if (loopButton) {
+			const QSignalBlocker blocker(loopButton);
+			loopButton->setChecked(enabled);
+		}
+		sr_replay_channel_state state = {};
+		if (sr_replay_channel_get_state(transportBus(), &state) && state.cued && state.preview_mode)
+			sr_replay_channel_set_loop(transportBus(), enabled);
+		return true;
 	}
 
 private:
-	unsigned currentList() const { return listCombo ? listCombo->currentData().toUInt() : 1; }
+	unsigned currentList() const
+	{
+		return listTabs && listTabs->currentIndex() >= 0 ? listTabs->tabData(listTabs->currentIndex()).toUInt()
+								 : 1;
+	}
 
 	unsigned targetList() const { return targetCombo ? targetCombo->currentData().toUInt() : 1; }
 
@@ -682,6 +2354,352 @@ private:
 
 	QString selectedCamera() const { return cameraCombo ? cameraCombo->currentData().toString() : QString(); }
 
+	QString eventPreferredCamera(const sr_event_record &event) const
+	{
+		if (!controller || !event.preferred_camera_id)
+			return QString();
+		char *name = nullptr;
+		QString camera;
+		if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &name) && name)
+			camera = QString::fromUtf8(name);
+		bfree(name);
+		return camera;
+	}
+
+	QString eventAngleText(const sr_event_record &event) const
+	{
+		const QString camera = eventPreferredCamera(event);
+		return camera.isEmpty() ? T("EventDock.AngleAuto") : camera;
+	}
+
+	bool cameraHasEventCoverage(const QString &camera, const sr_event_record &event,
+				    enum sr_replay_coverage wanted) const
+	{
+		if (camera.isEmpty())
+			return false;
+		sr_replay_coverage_info coverage = {};
+		const QByteArray cameraUtf8 = camera.toUtf8();
+		return sr_replay_coverage_query(cameraUtf8.constData(), event.in_ns, event.out_ns, &coverage) &&
+		       coverage.coverage == wanted;
+	}
+
+	QString automaticCameraForEvent(const sr_event_record &event, enum sr_replay_bus bus) const
+	{
+		QStringList candidates;
+		auto add = [&candidates](const QString &camera) {
+			if (!camera.isEmpty() && !candidates.contains(camera))
+				candidates.append(camera);
+		};
+		sr_replay_channel_state current = {};
+		if (sr_replay_channel_get_state(bus, &current) && current.cued && current.camera_name[0])
+			add(QString::fromUtf8(current.camera_name));
+		for (const QString &camera : captureCameraNames())
+			add(camera);
+
+		for (enum sr_replay_coverage wanted : {SR_REPLAY_COVERAGE_FULL, SR_REPLAY_COVERAGE_PARTIAL}) {
+			for (const QString &camera : candidates) {
+				if (cameraHasEventCoverage(camera, event, wanted))
+					return camera;
+			}
+		}
+		return QString();
+	}
+
+	void syncEventAngleSelection()
+	{
+		if (!cameraCombo)
+			return;
+		QString desired;
+		const uint64_t eventId = selectedEventId();
+		if (replayPlayoutActive()) {
+			sr_replay_channel_state state = {};
+			if (sr_replay_channel_get_state(transportBus(), &state) && state.cued &&
+			    (!eventId || state.event_id == eventId))
+				desired = QString::fromUtf8(state.camera_name);
+		} else if (controller && eventId) {
+			sr_event_record event = {};
+			if (sr_event_controller_get_event(controller, eventId, &event)) {
+				desired = eventPreferredCamera(event);
+				sr_event_controller_free_event(&event);
+			}
+		}
+
+		const QSignalBlocker blocker(cameraCombo);
+		int index = desired.isEmpty() ? cameraCombo->findData(QString()) : cameraCombo->findData(desired);
+		if (index < 0)
+			index = cameraCombo->findData(QString());
+		if (index >= 0)
+			cameraCombo->setCurrentIndex(index);
+	}
+
+	bool thumbnailViewActive() const
+
+	{
+		return eventViewStack && thumbnailList && eventViewStack->currentWidget() == thumbnailList;
+	}
+
+	QListWidgetItem *galleryItemById(uint64_t eventId) const
+
+	{
+		if (!thumbnailList || !eventId)
+			return nullptr;
+		for (int i = 0; i < thumbnailList->count(); i++) {
+			QListWidgetItem *item = thumbnailList->item(i);
+			if (item && item->data(Qt::UserRole).toULongLong() == eventId)
+				return item;
+		}
+		return nullptr;
+	}
+
+	void syncGallerySelectionFromTable()
+
+	{
+		if (!table || !thumbnailList || syncingEventViews)
+			return;
+		syncingEventViews = true;
+		const QSignalBlocker blocker(thumbnailList);
+		thumbnailList->clearSelection();
+		const std::vector<uint64_t> ids = selectedEventIds();
+		const uint64_t currentId = selectedEventId();
+		for (uint64_t id : ids) {
+			if (QListWidgetItem *item = galleryItemById(id))
+				item->setSelected(true);
+		}
+		if (QListWidgetItem *current = galleryItemById(currentId))
+			thumbnailList->setCurrentItem(current, QItemSelectionModel::NoUpdate);
+		syncingEventViews = false;
+	}
+
+	void syncTableSelectionFromGallery()
+
+	{
+		if (!table || !thumbnailList || syncingEventViews)
+			return;
+		syncingEventViews = true;
+		const QSignalBlocker blocker(table);
+		table->clearSelection();
+		uint64_t currentId = 0;
+		if (QListWidgetItem *current = thumbnailList->currentItem())
+			currentId = current->data(Qt::UserRole).toULongLong();
+		int currentRow = -1;
+		for (int row = 0; row < table->rowCount(); row++) {
+			QTableWidgetItem *idItem = table->item(row, 0);
+			const uint64_t id = idItem ? idItem->data(Qt::UserRole).toULongLong() : 0;
+			QListWidgetItem *galleryItem = galleryItemById(id);
+			if (galleryItem && galleryItem->isSelected())
+				table->selectionModel()->select(table->model()->index(row, 0),
+								QItemSelectionModel::Select |
+									QItemSelectionModel::Rows);
+			if (id && id == currentId)
+				currentRow = row;
+		}
+		if (currentRow >= 0)
+			table->setCurrentCell(currentRow, 0, QItemSelectionModel::NoUpdate);
+		syncingEventViews = false;
+		refreshAngleCoverage();
+	}
+
+	QString eventGalleryText(const sr_event_record &event) const
+
+	{
+		const QString name = QString::fromUtf8(event.name ? event.name : "").trimmed();
+		const QString tag = QString::fromUtf8(event.tag ? event.tag : "").trimmed();
+		QString first = QStringLiteral("#%1").arg(event.id);
+		if (!name.isEmpty())
+			first += QStringLiteral("  ") + name;
+		const bool inherited = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL &&
+				       !event.speed_override;
+		const QString speed = inherited ? QStringLiteral("--")
+						: QStringLiteral("%1%").arg(event.speed_percent, 0, 'f', 0);
+		QString second = QStringLiteral("%1  ·  %2  ·  %3")
+					 .arg(durationText(event))
+					 .arg(speed)
+					 .arg(eventAngleText(event));
+		if (!tag.isEmpty())
+			second += QStringLiteral("  ·  ") + tag;
+		return first + QStringLiteral("\n") + second;
+	}
+
+	bool makeEventThumbnailTask(const sr_event_record &event, const QStringList &cameras, EventThumbnailTask *task)
+
+	{
+		if (!task || cameras.isEmpty() || event.out_ns <= event.in_ns)
+			return false;
+
+		QString preferred;
+		if (event.preferred_camera_id) {
+			char *name = nullptr;
+			if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &name) && name)
+				preferred = QString::fromUtf8(name);
+			bfree(name);
+		}
+
+		auto prepare = [&](const QString &camera, bool fullOnly) -> bool {
+			if (camera.isEmpty())
+				return false;
+			sr_replay_coverage_info coverage = {};
+			const QByteArray cameraUtf8 = camera.toUtf8();
+			if (!sr_replay_coverage_query(cameraUtf8.constData(), event.in_ns, event.out_ns, &coverage) ||
+			    coverage.coverage == SR_REPLAY_COVERAGE_NONE ||
+			    (fullOnly && coverage.coverage != SR_REPLAY_COVERAGE_FULL))
+				return false;
+			uint64_t timestamp = event.in_ns + (event.out_ns - event.in_ns) / 2;
+			if (coverage.coverage == SR_REPLAY_COVERAGE_PARTIAL &&
+			    coverage.playable_out_ns > coverage.playable_in_ns)
+				timestamp = coverage.playable_in_ns +
+					    (coverage.playable_out_ns - coverage.playable_in_ns) / 2;
+			const int64_t offset = coverage.sync_offset_ns;
+			if (offset >= 0 && (uint64_t)offset <= UINT64_MAX - timestamp)
+				timestamp += (uint64_t)offset;
+			else if (offset < 0 && (uint64_t)(-offset) < timestamp)
+				timestamp -= (uint64_t)(-offset);
+			task->eventId = event.id;
+			task->inNs = event.in_ns;
+			task->outNs = event.out_ns;
+			task->camera = cameraUtf8.constData();
+			task->timestampNs = timestamp;
+			return true;
+		};
+
+		if (!preferred.isEmpty() && prepare(preferred, false))
+			return true;
+		for (const QString &camera : cameras) {
+			if (camera != preferred && prepare(camera, true))
+				return true;
+		}
+		for (const QString &camera : cameras) {
+			if (camera != preferred && prepare(camera, false))
+				return true;
+		}
+		return false;
+	}
+
+	void refreshEventGallery()
+
+	{
+		if (!thumbnailList || !table || !controller)
+			return;
+
+		std::vector<uint64_t> ids;
+		ids.reserve((size_t)table->rowCount());
+		for (int row = 0; row < table->rowCount(); row++) {
+			QTableWidgetItem *item = table->item(row, 0);
+			const uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+			if (id)
+				ids.push_back(id);
+		}
+
+		const bool structureChanged = galleryListId != currentList() || ids != galleryEventIds;
+		if (structureChanged) {
+			galleryListId = currentList();
+			galleryEventIds = ids;
+			galleryGeneration++;
+			const QSignalBlocker blocker(thumbnailList);
+			thumbnailList->clear();
+			for (uint64_t id : galleryEventIds) {
+				auto *item = new QListWidgetItem(thumbnailList);
+				item->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(id));
+				item->setTextAlignment(Qt::AlignHCenter | Qt::AlignTop);
+			}
+		}
+
+		for (int i = 0; i < thumbnailList->count(); i++) {
+			QListWidgetItem *item = thumbnailList->item(i);
+			const uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+			sr_event_record event = {};
+			if (!id || !sr_event_controller_get_event(controller, id, &event))
+				continue;
+			item->setText(eventGalleryText(event));
+			item->setToolTip(QStringLiteral("#%1 · %2 · %3")
+						 .arg(event.id)
+						 .arg(stateText(event))
+						 .arg(QString::fromUtf8(event.tag ? event.tag : "")));
+			item->setData(Qt::UserRole + 1, QVariant::fromValue<qulonglong>(event.in_ns));
+			item->setData(Qt::UserRole + 2, QVariant::fromValue<qulonglong>(event.out_ns));
+			auto cached = eventThumbnailCache.find(id);
+			if (cached != eventThumbnailCache.end() && cached->second.inNs == event.in_ns &&
+			    cached->second.outNs == event.out_ns)
+				item->setIcon(cached->second.icon);
+			else
+				item->setIcon(QIcon());
+			sr_event_controller_free_event(&event);
+		}
+
+		if (structureChanged)
+			syncGallerySelectionFromTable();
+		if (thumbnailViewActive())
+			requestEventThumbnails();
+	}
+
+	void requestEventThumbnails()
+
+	{
+		if (!thumbnailViewActive() || eventThumbnailJob || !controller || !thumbnailList)
+			return;
+		const QStringList cameras = captureCameraNames();
+		if (cameras.isEmpty())
+			return;
+
+		auto job = std::make_unique<EventThumbnailJob>();
+		job->generation = galleryGeneration;
+		for (int i = 0; i < thumbnailList->count() && job->tasks.size() < EVENT_THUMB_BATCH; i++) {
+			QListWidgetItem *item = thumbnailList->item(i);
+			const uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+			const uint64_t inNs = item ? item->data(Qt::UserRole + 1).toULongLong() : 0;
+			const uint64_t outNs = item ? item->data(Qt::UserRole + 2).toULongLong() : 0;
+			auto cached = eventThumbnailCache.find(id);
+			if (cached != eventThumbnailCache.end() && cached->second.inNs == inNs &&
+			    cached->second.outNs == outNs && !cached->second.icon.isNull())
+				continue;
+			sr_event_record event = {};
+			if (!id || !sr_event_controller_get_event(controller, id, &event))
+				continue;
+			EventThumbnailTask task;
+			if (makeEventThumbnailTask(event, cameras, &task))
+				job->tasks.emplace_back(std::move(task));
+			sr_event_controller_free_event(&event);
+		}
+		if (job->tasks.empty())
+			return;
+		char *sessionPath = sr_session_get_or_create_path();
+		if (!sessionPath)
+			return;
+		job->sessionDir = sessionPath;
+		bfree(sessionPath);
+		eventThumbnailJob = std::move(job);
+		EventThumbnailJob *workerJob = eventThumbnailJob.get();
+		workerJob->worker = std::thread([workerJob]() { runEventThumbnailJob(workerJob); });
+	}
+
+	void pollEventThumbnails()
+
+	{
+		if (!eventThumbnailJob || !eventThumbnailJob->done.load(std::memory_order_acquire))
+			return;
+		if (eventThumbnailJob->worker.joinable())
+			eventThumbnailJob->worker.join();
+		if (eventThumbnailJob->generation == galleryGeneration) {
+			for (const EventThumbnailResult &result : eventThumbnailJob->results) {
+				if (result.rgba.empty())
+					continue;
+				QListWidgetItem *item = galleryItemById(result.eventId);
+				if (!item || item->data(Qt::UserRole + 1).toULongLong() != result.inNs ||
+				    item->data(Qt::UserRole + 2).toULongLong() != result.outNs)
+					continue;
+				const QImage image(result.rgba.data(), EVENT_THUMB_WIDTH, EVENT_THUMB_HEIGHT,
+						   EVENT_THUMB_WIDTH * 4, QImage::Format_RGBA8888);
+				CachedEventThumbnail cached;
+				cached.inNs = result.inNs;
+				cached.outNs = result.outNs;
+				cached.icon = QIcon(QPixmap::fromImage(image.copy()));
+				eventThumbnailCache[result.eventId] = cached;
+				item->setIcon(cached.icon);
+			}
+		}
+		eventThumbnailJob.reset();
+		requestEventThumbnails();
+	}
+
 	uint64_t selectedEventId() const
 	{
 		const int row = table ? table->currentRow() : -1;
@@ -691,9 +2709,424 @@ private:
 		return item ? item->data(Qt::UserRole).toULongLong() : 0;
 	}
 
+	std::vector<uint64_t> selectedEventIds() const
+	{
+		std::vector<uint64_t> ids;
+		if (!table || !table->selectionModel())
+			return ids;
+		for (int row = 0; row < table->rowCount(); row++) {
+			if (!table->selectionModel()->isRowSelected(row, QModelIndex()))
+				continue;
+			QTableWidgetItem *item = table->item(row, 0);
+			const uint64_t id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+			if (id)
+				ids.push_back(id);
+		}
+		return ids;
+	}
+
 	void setStatus(const char *key) { status->setText(T(key)); }
 
 	void setCreatedStatus(uint64_t eventId) { status->setText(T("EventDock.Created").arg(eventId)); }
+
+	bool eventTransitionConfigured() const
+	{
+		char *raw = sr_config_get_event_transition();
+		const bool configured = raw && *raw;
+		bfree(raw);
+		return configured;
+	}
+
+	void refreshSetupStatus()
+	{
+		if (!setupButton || !setupSourceStatus)
+			return;
+		setupButton->setText(T("EventDock.Setup.Button"));
+		setupButton->setStyleSheet(QString());
+
+		sr_replay_setup_snapshot snapshot = {};
+		if (!sr_replay_setup_get_snapshot(&snapshot)) {
+			setupSourceStatus->setText(T("EventDock.Setup.SourceCount").arg(QStringLiteral("—")));
+			setupSourceStatus->setStyleSheet(QStringLiteral("color: gray;"));
+			setupButton->setToolTip(T("EventDock.Setup.Unavailable"));
+			return;
+		}
+
+		const size_t selectedSources =
+			snapshot.enabled_capture_source_count + (snapshot.program_output_enabled ? 1 : 0);
+		setupSourceStatus->setText(T("EventDock.Setup.SourceCount").arg(selectedSources));
+		setupSourceStatus->setStyleSheet(selectedSources
+							 ? QStringLiteral("color: #30c85a; font-weight: bold;")
+							 : QStringLiteral("color: #d8a000; font-weight: bold;"));
+
+		const QString sceneA = snapshot.bus_a_ready ? QString::fromUtf8(snapshot.scene_a)
+							    : T("EventDock.Setup.Missing");
+		const QString sceneB = snapshot.bus_b_ready ? QString::fromUtf8(snapshot.scene_b)
+							    : T("EventDock.Setup.Missing");
+		setupButton->setToolTip(T("EventDock.Setup.Tooltip")
+						.arg(snapshot.enabled_capture_source_count)
+						.arg(snapshot.compatible_source_count)
+						.arg(sceneA)
+						.arg(sceneB));
+		sr_replay_setup_free_snapshot(&snapshot);
+	}
+
+	bool openReplaySetup()
+	{
+		class ToggleSwitch final : public QCheckBox {
+		public:
+			explicit ToggleSwitch(QWidget *parent = nullptr) : QCheckBox(parent)
+			{
+				setCursor(Qt::PointingHandCursor);
+				setFixedSize(44, 24);
+				setFocusPolicy(Qt::StrongFocus);
+			}
+
+		protected:
+			bool hitButton(const QPoint &position) const override { return rect().contains(position); }
+
+			void paintEvent(QPaintEvent *event) override
+			{
+				Q_UNUSED(event);
+				QPainter painter(this);
+				painter.setRenderHint(QPainter::Antialiasing, true);
+				const QColor off = isEnabled() ? QColor(92, 92, 92) : QColor(68, 68, 68);
+				const QColor on = isEnabled() ? QColor(39, 174, 96) : QColor(76, 110, 88);
+				const QRectF track(1.0, 3.0, width() - 2.0, height() - 6.0);
+				painter.setPen(Qt::NoPen);
+				painter.setBrush(isChecked() ? on : off);
+				painter.drawRoundedRect(track, track.height() / 2.0, track.height() / 2.0);
+
+				const qreal diameter = track.height() - 4.0;
+				const qreal x = isChecked() ? track.right() - diameter - 2.0 : track.left() + 2.0;
+				painter.setBrush(isEnabled() ? QColor(250, 250, 250) : QColor(170, 170, 170));
+				painter.drawEllipse(QRectF(x, track.top() + 2.0, diameter, diameter));
+
+				if (hasFocus()) {
+					QPen focusPen(palette().highlight().color());
+					focusPen.setWidth(1);
+					painter.setPen(focusPen);
+					painter.setBrush(Qt::NoBrush);
+					painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 5, 5);
+				}
+			}
+		};
+
+		QDialog dialog(this);
+		dialog.setWindowTitle(T("EventDock.Setup.Title"));
+		dialog.resize(820, 500);
+		auto *layout = new QVBoxLayout(&dialog);
+		layout->setContentsMargins(8, 8, 8, 8);
+		layout->setSpacing(5);
+
+		auto *summary = new QLabel(&dialog);
+		summary->setWordWrap(true);
+		layout->addWidget(summary);
+		auto *topologyBar = new QHBoxLayout();
+		auto *ensureAB = new QPushButton(T("EventDock.Setup.CreateAB"), &dialog);
+		topologyBar->addWidget(ensureAB);
+		topologyBar->addStretch(1);
+		layout->addLayout(topologyBar);
+
+		auto *hint = new QLabel(T("EventDock.Setup.CameraHint"), &dialog);
+		hint->setWordWrap(true);
+		hint->setStyleSheet(QStringLiteral("color: gray;"));
+		layout->addWidget(hint);
+
+		auto *sources = new QTableWidget(&dialog);
+		sources->setColumnCount(4);
+		sources->setHorizontalHeaderLabels({T("EventDock.Setup.Use"), T("EventDock.Setup.Source"),
+						    T("EventDock.Setup.Compatible"), T("EventDock.Setup.Type")});
+		sources->setEditTriggers(QAbstractItemView::NoEditTriggers);
+		sources->setSelectionBehavior(QAbstractItemView::SelectRows);
+		sources->setSelectionMode(QAbstractItemView::NoSelection);
+		sources->setAlternatingRowColors(true);
+		sources->verticalHeader()->setVisible(false);
+		sources->verticalHeader()->setDefaultSectionSize(30);
+		sources->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+		sources->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+		for (int column = 2; column < 4; column++)
+			sources->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
+		layout->addWidget(sources, 1);
+
+		auto refreshSummary = [&]() {
+			sr_replay_setup_snapshot snapshot = {};
+			if (!sr_replay_setup_get_snapshot(&snapshot)) {
+				summary->setText(T("EventDock.Setup.Unavailable"));
+				return;
+			}
+			const QString sceneA = snapshot.bus_a_ready ? QString::fromUtf8(snapshot.scene_a)
+								    : T("EventDock.Setup.Missing");
+			const QString sceneB = snapshot.bus_b_ready ? QString::fromUtf8(snapshot.scene_b)
+								    : T("EventDock.Setup.Missing");
+			const QString programState =
+				!snapshot.program_output_supported ? T("EventDock.Setup.ProgramUnsupportedShort")
+				: snapshot.program_output_enabled  ? T("EventDock.Setup.ProgramOn")
+								   : T("EventDock.Setup.ProgramOff");
+			summary->setText(T("EventDock.Setup.Summary")
+						 .arg(snapshot.enabled_capture_source_count)
+						 .arg(snapshot.compatible_source_count)
+						 .arg(sceneA)
+						 .arg(sceneB)
+						 .arg(snapshot.event_transition_ready ? T("EventDock.Setup.ReadyAB")
+										      : T("EventDock.Setup.CutOnly")) +
+					 QStringLiteral(" · PROGRAM: ") + programState);
+			sr_replay_setup_free_snapshot(&snapshot);
+		};
+
+		auto makeSwitchCell = [sources](ToggleSwitch *toggle) {
+			auto *container = new QWidget(sources);
+			auto *cellLayout = new QHBoxLayout(container);
+			cellLayout->setContentsMargins(5, 0, 5, 0);
+			cellLayout->setSpacing(0);
+			cellLayout->addWidget(toggle);
+			cellLayout->addStretch(1);
+			return container;
+		};
+
+		auto applyToggle = [&, this](ToggleSwitch *toggle, bool program, const QString &sourceName,
+					     bool enabled) {
+			sr_capture_recording_summary recording = {};
+			if (sr_capture_get_recording_summary(&recording) && recording.requested_count) {
+				if (QMessageBox::question(&dialog, T("EventDock.Setup.Title"),
+							  T("EventDock.Setup.StopRecordingFirst")) !=
+				    QMessageBox::Yes) {
+					QSignalBlocker blocker(toggle);
+					toggle->setChecked(!enabled);
+					return;
+				}
+				setAllRecording(false);
+			}
+
+			const QByteArray sourceUtf8 = sourceName.toUtf8();
+			const bool ok = program ? sr_replay_setup_set_program_output(enabled)
+						: sr_replay_setup_set_capture(sourceUtf8.constData(), enabled);
+			if (!ok) {
+				QSignalBlocker blocker(toggle);
+				toggle->setChecked(!enabled);
+				QMessageBox::warning(&dialog, T("EventDock.Setup.Title"),
+						     T("EventDock.Setup.ToggleFailed"));
+				return;
+			}
+
+			refreshSummary();
+			refreshSetupStatus();
+			refreshRecordingStatus();
+			refreshCameras();
+			status->setText(T("EventDock.Setup.ToggleApplied")
+						.arg(sourceName)
+						.arg(enabled ? T("EventDock.Setup.ProgramOn")
+							     : T("EventDock.Setup.ProgramOff")));
+		};
+
+		auto populateSources = [&]() {
+			sr_replay_setup_snapshot snapshot = {};
+			if (!sr_replay_setup_get_snapshot(&snapshot)) {
+				sources->setRowCount(0);
+				return;
+			}
+
+			sources->setRowCount((int)snapshot.source_count + 1);
+
+			// PROGRAM is a permanent pseudo-camera row. It is always visible even
+			// when the current platform cannot record it.
+			auto *programToggle = new ToggleSwitch(sources);
+			programToggle->setChecked(snapshot.program_output_enabled);
+			programToggle->setEnabled(snapshot.program_output_supported);
+			programToggle->setToolTip(snapshot.program_output_supported
+							  ? T("EventDock.Setup.ProgramOutput.Tooltip")
+							  : T("EventDock.Setup.ProgramOutput.Unsupported"));
+			sources->setCellWidget(0, 0, makeSwitchCell(programToggle));
+			sources->setItem(0, 1, new QTableWidgetItem(T("EventDock.Setup.ProgramOutputName")));
+			sources->setItem(0, 2,
+					 new QTableWidgetItem(snapshot.program_output_supported
+								      ? T("EventDock.Setup.Yes")
+								      : T("EventDock.Setup.No")));
+			sources->setItem(0, 3, new QTableWidgetItem(T("EventDock.Setup.ProgramOutputType")));
+			connect(programToggle, &QCheckBox::toggled, &dialog, [&, programToggle](bool enabled) {
+				applyToggle(programToggle, true, T("EventDock.Setup.ProgramOutputName"), enabled);
+			});
+
+			for (size_t i = 0; i < snapshot.source_count; i++) {
+				const sr_replay_setup_source &entry = snapshot.sources[i];
+				const int row = (int)i + 1;
+				auto *toggle = new ToggleSwitch(sources);
+				const bool configured = entry.has_capture && entry.capture_enabled;
+				toggle->setChecked(configured);
+				toggle->setEnabled(entry.compatible || entry.has_capture);
+				const QString sourceName = QString::fromUtf8(entry.name);
+				toggle->setToolTip(entry.compatible
+							   ? T("EventDock.Setup.ToggleCameraTooltip").arg(sourceName)
+							   : T("EventDock.Setup.IncompatibleTooltip").arg(sourceName));
+				sources->setCellWidget(row, 0, makeSwitchCell(toggle));
+				sources->setItem(row, 1, new QTableWidgetItem(sourceName));
+				sources->setItem(row, 2,
+						 new QTableWidgetItem(entry.compatible ? T("EventDock.Setup.Yes")
+										       : T("EventDock.Setup.No")));
+				sources->setItem(row, 3, new QTableWidgetItem(QString::fromUtf8(entry.type_id)));
+				connect(toggle, &QCheckBox::toggled, &dialog, [&, toggle, sourceName](bool enabled) {
+					applyToggle(toggle, false, sourceName, enabled);
+				});
+			}
+			sr_replay_setup_free_snapshot(&snapshot);
+		};
+
+		refreshSummary();
+		populateSources();
+
+		auto *cameraBar = new QHBoxLayout();
+		auto *selectAll = new QPushButton(T("EventDock.Setup.SelectAll"), &dialog);
+		auto *selectNone = new QPushButton(T("EventDock.Setup.SelectNone"), &dialog);
+		cameraBar->addWidget(selectAll);
+		cameraBar->addWidget(selectNone);
+		cameraBar->addStretch(1);
+		layout->addLayout(cameraBar);
+
+		connect(selectAll, &QPushButton::clicked, &dialog, [sources]() {
+			for (int row = 0; row < sources->rowCount(); row++) {
+				QWidget *cell = sources->cellWidget(row, 0);
+				auto *toggle = cell ? cell->findChild<QCheckBox *>() : nullptr;
+				if (toggle && toggle->isEnabled())
+					toggle->setChecked(true);
+			}
+		});
+		connect(selectNone, &QPushButton::clicked, &dialog, [sources]() {
+			for (int row = 0; row < sources->rowCount(); row++) {
+				QWidget *cell = sources->cellWidget(row, 0);
+				auto *toggle = cell ? cell->findChild<QCheckBox *>() : nullptr;
+				if (toggle && toggle->isEnabled())
+					toggle->setChecked(false);
+			}
+		});
+		connect(ensureAB, &QPushButton::clicked, &dialog, [&, this]() {
+			sr_replay_setup_result result = {};
+			if (!sr_replay_setup_ensure_event_scenes(&result)) {
+				QMessageBox::warning(&dialog, T("EventDock.Setup.Title"),
+						     T("EventDock.Setup.ABFailed"));
+			} else {
+				status->setText(T("EventDock.Setup.ABReady")
+							.arg(QString::fromUtf8(result.scene_a))
+							.arg(QString::fromUtf8(result.scene_b)));
+			}
+			refreshSummary();
+			refreshSetupStatus();
+		});
+
+		auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+		connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+		connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+		layout->addWidget(buttons);
+		dialog.exec();
+
+		refreshSetupStatus();
+		refreshRecordingStatus();
+		sr_replay_setup_snapshot finalSnapshot = {};
+		const bool ready =
+			sr_replay_setup_get_snapshot(&finalSnapshot) &&
+			(finalSnapshot.enabled_capture_source_count > 0 || finalSnapshot.program_output_enabled);
+		sr_replay_setup_free_snapshot(&finalSnapshot);
+		return ready;
+	}
+
+	bool recordingPreflight()
+	{
+		sr_replay_setup_snapshot snapshot = {};
+		if (!sr_replay_setup_get_snapshot(&snapshot))
+			return false;
+		bool haveCapture = snapshot.enabled_capture_source_count > 0 || snapshot.program_output_enabled;
+		bool abReady = snapshot.event_transition_ready;
+		sr_replay_setup_free_snapshot(&snapshot);
+
+		if (!haveCapture) {
+			QMessageBox prompt(QMessageBox::Warning, T("EventDock.Setup.PreflightTitle"),
+					   T("EventDock.Setup.NoCapturePreflight"), QMessageBox::NoButton, this);
+			QPushButton *openSetup = prompt.addButton(T("EventDock.Setup.Open"), QMessageBox::AcceptRole);
+			prompt.addButton(QMessageBox::Cancel);
+			prompt.exec();
+			if (prompt.clickedButton() != openSetup || !openReplaySetup())
+				return false;
+			sr_replay_setup_snapshot configured = {};
+			haveCapture =
+				sr_replay_setup_get_snapshot(&configured) &&
+				(configured.enabled_capture_source_count > 0 || configured.program_output_enabled);
+			sr_replay_setup_free_snapshot(&configured);
+		}
+
+		if (!haveCapture)
+			return false;
+
+		/* Replay A/B is part of the normal recording topology, not only an
+		 * Event-Transition feature. Prepare it automatically before REC so a
+		 * fresh OBS scene collection is one-click ready for replay. */
+		sr_replay_setup_snapshot current = {};
+		if (sr_replay_setup_get_snapshot(&current))
+			abReady = current.event_transition_ready;
+		sr_replay_setup_free_snapshot(&current);
+
+		if (!abReady) {
+			sr_replay_setup_result result = {};
+			if (sr_replay_setup_ensure_event_scenes(&result)) {
+				abReady = result.event_transition_ready;
+				refreshSetupStatus();
+				status->setText(T("EventDock.Setup.ABReady")
+							.arg(QString::fromUtf8(result.scene_a))
+							.arg(QString::fromUtf8(result.scene_b)));
+			} else {
+				QMessageBox prompt(QMessageBox::Warning, T("EventDock.Setup.PreflightTitle"),
+						   T("EventDock.Setup.ABFailed"), QMessageBox::NoButton, this);
+				QPushButton *openSetup =
+					prompt.addButton(T("EventDock.Setup.Open"), QMessageBox::AcceptRole);
+				QPushButton *cuts =
+					prompt.addButton(T("EventDock.Setup.StartCuts"), QMessageBox::ActionRole);
+				prompt.addButton(QMessageBox::Cancel);
+				prompt.exec();
+				if (prompt.clickedButton() == openSetup) {
+					if (!openReplaySetup())
+						return false;
+					sr_replay_setup_snapshot repaired = {};
+					const bool repairedReady = sr_replay_setup_get_snapshot(&repaired) &&
+								   repaired.event_transition_ready;
+					sr_replay_setup_free_snapshot(&repaired);
+					if (!repairedReady)
+						return false;
+				} else if (prompt.clickedButton() != cuts) {
+					return false;
+				}
+			}
+		}
+		return haveCapture;
+	}
+
+	void updateRecordToggle(const sr_capture_recording_summary *summary)
+	{
+		if (!recordToggle)
+			return;
+		const bool requested = summary && summary->requested_count > 0;
+		const bool active = summary && summary->active_count > 0;
+		recordToggle->setToolTip(T(requested ? "EventDock.RecordStop" : "EventDock.RecordStart"));
+		if (active) {
+			recordToggle->setStyleSheet(QStringLiteral(
+				"QToolButton { color: #ff4040; font-weight: bold; border: 1px solid #7f3030; border-radius: 3px; }"));
+		} else if (requested) {
+			recordToggle->setStyleSheet(QStringLiteral(
+				"QToolButton { color: #d8a000; font-weight: bold; border: 1px solid #806b2a; border-radius: 3px; }"));
+		} else {
+			recordToggle->setStyleSheet(QStringLiteral(
+				"QToolButton { color: #8a8a8a; font-weight: bold; border: 1px solid #5a5a5a; border-radius: 3px; }"));
+		}
+	}
+
+	void toggleAllRecording()
+	{
+		sr_capture_recording_summary summary = {};
+		const bool requested = sr_capture_get_recording_summary(&summary) && summary.requested_count > 0;
+		if (requested) {
+			setAllRecording(false);
+			return;
+		}
+		if (recordingPreflight())
+			setAllRecording(true);
+	}
 
 	void setAllRecording(bool enabled)
 	{
@@ -713,10 +3146,13 @@ private:
 			return;
 		sr_capture_recording_summary summary = {};
 		if (!sr_capture_get_recording_summary(&summary) || !summary.camera_count) {
+			updateRecordToggle(nullptr);
 			recordStatus->setText(T("EventDock.RecordNoCameras"));
 			recordStatus->setStyleSheet(QStringLiteral("color: #d8a000;"));
 			return;
 		}
+
+		updateRecordToggle(&summary);
 
 		if (summary.reserve_blocked_count) {
 			recordStatus->setText(T("EventDock.RecordReserve")
@@ -732,7 +3168,8 @@ private:
 				T("EventDock.RecordActive")
 					.arg(summary.active_count)
 					.arg(summary.camera_count)
-					.arg(summary.packets_written)
+					.arg(recordingDurationText(summary.recording_duration_ns))
+					.arg(recordingFpsText())
 					.arg((double)summary.bytes_written / (1024.0 * 1024.0), 0, 'f', 1));
 			recordStatus->setStyleSheet(QStringLiteral("color: #30c85a; font-weight: bold;"));
 		} else if (summary.requested_count) {
@@ -743,6 +3180,97 @@ private:
 			recordStatus->setText(T("EventDock.RecordIdle").arg(summary.camera_count));
 			recordStatus->setStyleSheet(QStringLiteral("color: gray;"));
 		}
+	}
+
+	void refreshHardwareStatus()
+	{
+		if (!performanceSummary || !performanceTable || (performancePanel && !performancePanel->isVisible()))
+			return;
+
+		sr_capture_performance_snapshot snapshot = {};
+		if (!sr_capture_get_performance_snapshot(&snapshot)) {
+			performanceSummary->setText(T("EventDock.Performance.Unavailable"));
+			performanceTable->setRowCount(0);
+			return;
+		}
+
+		performanceTable->setUpdatesEnabled(false);
+		performanceTable->setRowCount((int)snapshot.count);
+		size_t gpuCount = 0;
+		size_t cpuCount = 0;
+		size_t waitingCount = 0;
+		size_t errorCount = 0;
+		size_t fallbackCount = 0;
+		uint64_t writtenPackets = 0;
+		uint64_t droppedPackets = 0;
+
+		for (size_t i = 0; i < snapshot.count; i++) {
+			const sr_capture_performance_entry &entry = snapshot.entries[i];
+			switch (entry.path) {
+			case SR_CAPTURE_PERF_GPU_D3D11:
+				gpuCount++;
+				break;
+			case SR_CAPTURE_PERF_CPU:
+				cpuCount++;
+				break;
+			case SR_CAPTURE_PERF_ERROR:
+				errorCount++;
+				break;
+			case SR_CAPTURE_PERF_WAITING:
+			default:
+				waitingCount++;
+				break;
+			}
+			if (entry.gpu_fallback_reason != SR_CAPTURE_GPU_FALLBACK_NONE)
+				fallbackCount++;
+			writtenPackets += entry.packets_written;
+			droppedPackets += entry.packets_dropped;
+
+			const int row = (int)i;
+			const QString path = capturePerformancePath(entry);
+			const QString video = captureVideoMode(entry);
+			const QString gop = captureGopMode(entry);
+			const QString queue =
+				QStringLiteral("%1 / peak %2").arg(entry.queue_depth).arg(entry.queue_high_watermark);
+			const QString packets = QString::number(entry.packets_written);
+			const QString drops = QString::number(entry.packets_dropped);
+			const QString disk = captureDiskState(entry);
+			const QString fallback = captureFallbackText(entry.gpu_fallback_reason);
+			const double averageSubmitMs = entry.encode_calls ? (double)entry.encode_time_ns_total /
+										    (double)entry.encode_calls / 1e6
+									  : 0.0;
+			const double lastSubmitMs = (double)entry.encode_time_ns_last / 1e6;
+			QString tooltip = T("EventDock.Performance.Tooltip")
+						  .arg(averageSubmitMs, 0, 'f', 3)
+						  .arg(lastSubmitMs, 0, 'f', 3)
+						  .arg((double)entry.ram_bytes / (1024.0 * 1024.0), 0, 'f', 1)
+						  .arg(entry.segments_finalized)
+						  .arg(entry.queue_high_watermark);
+			if (!fallback.isEmpty())
+				tooltip = fallback + QStringLiteral("\n") + tooltip;
+
+			const QString values[] = {
+				QString::fromUtf8(entry.camera_name), path, video, gop, queue, packets, drops, disk};
+			for (int column = 0; column < performanceTable->columnCount(); column++) {
+				auto *item = new QTableWidgetItem(values[column]);
+				item->setToolTip(tooltip);
+				performanceTable->setItem(row, column, item);
+			}
+		}
+
+		performanceTable->setUpdatesEnabled(true);
+		performanceSummary->setText(
+			T("EventDock.Performance.Summary")
+				.arg(gpuCount)
+				.arg(cpuCount)
+				.arg(waitingCount)
+				.arg(errorCount)
+				.arg(fallbackCount)
+				.arg(writtenPackets)
+				.arg(droppedPackets) +
+			QStringLiteral("\n") + replayPerformanceSummary(SR_REPLAY_BUS_A, QStringLiteral("A")) +
+			QStringLiteral("    ") + replayPerformanceSummary(SR_REPLAY_BUS_B, QStringLiteral("B")));
+		sr_capture_free_performance_snapshot(&snapshot);
 	}
 
 	bool recordingHasMedia()
@@ -766,15 +3294,20 @@ private:
 
 		for (int i = 0; i < names.size(); i++) {
 			const QString camera = names.at(i);
-			auto *button = new QPushButton(camera, this);
+			auto *button = new QToolButton(this);
+			button->setText(camera);
+			button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
 			button->setCheckable(true);
-			button->setMinimumSize(170, 86);
+			button->setAutoRaise(false);
+			button->setMinimumWidth(184);
+			button->setFixedHeight(132);
+			button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 			button->setIconSize(QSize(ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT));
 			button->setProperty("cameraName", camera);
 			button->setProperty("coverage", (int)SR_REPLAY_COVERAGE_NONE);
 			button->setProperty("playableInNs", QVariant::fromValue<qulonglong>(0));
 			button->setProperty("playableOutNs", QVariant::fromValue<qulonglong>(0));
-			connect(button, &QPushButton::clicked, this, [this, camera]() { selectAngle(camera); });
+			connect(button, &QToolButton::clicked, this, [this, camera]() { selectAngle(camera); });
 			angleGrid->addWidget(button, i / 4, i % 4);
 			angleButtons.append(button);
 		}
@@ -784,7 +3317,6 @@ private:
 	{
 		if (!cameraCombo)
 			return;
-		const QString previous = selectedCamera();
 		const QStringList names = captureCameraNames();
 		QStringList current;
 		for (int i = 0; i < cameraCombo->count(); i++) {
@@ -793,20 +3325,16 @@ private:
 				current.append(value);
 		}
 
-		if (current != names) {
+		if (cameraCombo->count() == 0 || current != names) {
+			const QSignalBlocker blocker(cameraCombo);
 			cameraCombo->clear();
-			if (names.isEmpty()) {
-				cameraCombo->addItem(T("EventDock.NoCamera"), QString());
-			} else {
-				for (const QString &name : names)
-					cameraCombo->addItem(name, name);
-				const int previousIndex = cameraCombo->findData(previous);
-				if (previousIndex >= 0)
-					cameraCombo->setCurrentIndex(previousIndex);
-			}
+			cameraCombo->addItem(T("EventDock.AngleAuto"), QString());
+			for (const QString &name : names)
+				cameraCombo->addItem(name, name);
 			rebuildAngleButtons(names);
 		}
 
+		syncEventAngleSelection();
 		refreshAngleCoverage();
 	}
 
@@ -826,18 +3354,16 @@ private:
 		sr_event_record event = {};
 		const bool haveEvent = controller && eventId &&
 				       sr_event_controller_get_event(controller, eventId, &event);
-
-		QString preferredCamera;
-		if (haveEvent && event.preferred_camera_id) {
-			char *preferredName = nullptr;
-			if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id,
-								&preferredName) &&
-			    preferredName)
-				preferredCamera = QString::fromUtf8(preferredName);
-			bfree(preferredName);
+		if (!haveEvent) {
+			previewTargetEventId = 0;
+			previewLoadedEventId = 0;
+			for (QToolButton *button : angleButtons)
+				button->setIcon(QIcon());
 		}
 
-		for (QPushButton *button : angleButtons) {
+		const QString preferredCamera = haveEvent ? eventPreferredCamera(event) : QString();
+
+		for (QToolButton *button : angleButtons) {
 			const QString camera = button->property("cameraName").toString();
 			sr_replay_coverage_info coverage = {};
 			if (haveEvent) {
@@ -871,10 +3397,13 @@ private:
 						  .arg(playableSeconds, 0, 'f', 2)
 						  .arg(eventSeconds, 0, 'f', 2);
 			}
-			const QString preferredMarker = camera == preferredCamera ? QStringLiteral("★ ") : QString();
-			button->setText(QStringLiteral("%1%2 %3").arg(preferredMarker, marker, camera));
-			if (camera == preferredCamera)
-				tooltip += QStringLiteral(" — ") + T("EventDock.Preferred");
+			const bool storedAngle = !preferredCamera.isEmpty() && camera == preferredCamera;
+			button->setProperty("storedAngle", storedAngle);
+			const QString selectedMarker = storedAngle ? QStringLiteral("✓ ") : QString();
+			button->setText(QStringLiteral("%1%2 %3").arg(selectedMarker, marker, camera));
+			if (storedAngle)
+				tooltip += QStringLiteral(" — ") + T("EventDock.AngleStored");
+			tooltip += QStringLiteral("\n") + T("EventDock.AnglePreviewHint");
 			button->setProperty("coverageTooltip", tooltip);
 			button->setToolTip(tooltip);
 		}
@@ -884,6 +3413,7 @@ private:
 
 		if (haveEvent)
 			sr_event_controller_free_event(&event);
+		syncEventAngleSelection();
 		syncAngleButtonState();
 	}
 
@@ -892,10 +3422,30 @@ private:
 		if (previewTargetEventId != eventId) {
 			previewTargetEventId = eventId;
 			previewLoadedEventId = 0;
-			for (QPushButton *button : angleButtons)
-				button->setIcon(QIcon());
 		}
-		if (!eventId || previewLoadedEventId == eventId || anglePreviewJob)
+		if (!eventId)
+			return;
+
+		auto cacheIt = anglePreviewCache.find(eventId);
+		bool allCached = true;
+		for (QToolButton *button : angleButtons) {
+			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_NONE)
+				continue;
+			const std::string camera = button->property("cameraName").toString().toUtf8().constData();
+			if (cacheIt != anglePreviewCache.end()) {
+				auto iconIt = cacheIt->second.find(camera);
+				if (iconIt != cacheIt->second.end() && !iconIt->second.isNull()) {
+					button->setIcon(iconIt->second);
+					continue;
+				}
+			}
+			allCached = false;
+		}
+		if (allCached) {
+			previewLoadedEventId = eventId;
+			return;
+		}
+		if (previewLoadedEventId == eventId || anglePreviewJob)
 			return;
 
 		char *sessionPath = sr_session_get_or_create_path();
@@ -905,9 +3455,16 @@ private:
 		job->eventId = eventId;
 		job->sessionDir = sessionPath;
 		bfree(sessionPath);
-		for (QPushButton *button : angleButtons) {
+		for (QToolButton *button : angleButtons) {
 			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_NONE)
 				continue;
+			const std::string camera = button->property("cameraName").toString().toUtf8().constData();
+			cacheIt = anglePreviewCache.find(eventId);
+			if (cacheIt != anglePreviewCache.end()) {
+				auto iconIt = cacheIt->second.find(camera);
+				if (iconIt != cacheIt->second.end() && !iconIt->second.isNull())
+					continue;
+			}
 			const qint64 offset = button->property("syncOffsetNs").toLongLong();
 			uint64_t cameraTimestamp = timestampNs;
 			if (offset >= 0 && (uint64_t)offset <= UINT64_MAX - cameraTimestamp)
@@ -915,12 +3472,14 @@ private:
 			else if (offset < 0 && (uint64_t)(-offset) < cameraTimestamp)
 				cameraTimestamp -= (uint64_t)(-offset);
 			AnglePreviewTask task;
-			task.camera = button->property("cameraName").toString().toUtf8().constData();
+			task.camera = camera;
 			task.timestampNs = cameraTimestamp;
 			job->tasks.emplace_back(std::move(task));
 		}
-		if (job->tasks.empty())
+		if (job->tasks.empty()) {
+			previewLoadedEventId = eventId;
 			return;
+		}
 		anglePreviewJob = std::move(job);
 		AnglePreviewJob *workerJob = anglePreviewJob.get();
 		workerJob->worker = std::thread([workerJob]() { runAnglePreviewJob(workerJob); });
@@ -932,20 +3491,38 @@ private:
 			return;
 		if (anglePreviewJob->worker.joinable())
 			anglePreviewJob->worker.join();
-		if (anglePreviewJob->eventId == previewTargetEventId && angleEventId() == previewTargetEventId) {
+
+		const uint64_t completedEventId = anglePreviewJob->eventId;
+		sr_event_record completedEvent = {};
+		const bool completedEventExists =
+			controller && completedEventId &&
+			sr_event_controller_get_event(controller, completedEventId, &completedEvent);
+		if (completedEventExists) {
+			sr_event_controller_free_event(&completedEvent);
+			auto &cache = anglePreviewCache[completedEventId];
 			for (const AnglePreviewResult &result : anglePreviewJob->results) {
 				if (result.rgba.empty())
 					continue;
-				QPushButton *button = angleButton(QString::fromUtf8(result.camera.c_str()));
-				if (!button)
-					continue;
 				const QImage image(result.rgba.data(), ANGLE_PREVIEW_WIDTH, ANGLE_PREVIEW_HEIGHT,
 						   ANGLE_PREVIEW_WIDTH * 4, QImage::Format_RGBA8888);
-				button->setIcon(QIcon(QPixmap::fromImage(image.copy())));
+				QIcon icon(QPixmap::fromImage(image.copy()));
+				cache[result.camera] = icon;
+				if (completedEventId == previewTargetEventId &&
+				    angleEventId() == previewTargetEventId) {
+					if (QToolButton *button = angleButton(QString::fromUtf8(result.camera.c_str())))
+						button->setIcon(icon);
+				}
 			}
-			previewLoadedEventId = anglePreviewJob->eventId;
 		}
+		while (anglePreviewCache.size() > ANGLE_PREVIEW_CACHE_EVENTS)
+			anglePreviewCache.erase(anglePreviewCache.begin());
+
+		if (completedEventId == previewTargetEventId && angleEventId() == previewTargetEventId)
+			previewLoadedEventId = completedEventId;
 		anglePreviewJob.reset();
+
+		if (previewTargetEventId && previewLoadedEventId != previewTargetEventId)
+			refreshAngleCoverage();
 	}
 
 	void syncAngleButtonState()
@@ -955,8 +3532,9 @@ private:
 		const bool haveState = sr_replay_channel_get_state(transportBus(), &state);
 		const bool sameEvent = haveState && state.cued && eventId && state.event_id == eventId;
 		const QString activeCamera = sameEvent ? QString::fromUtf8(state.camera_name) : QString();
+		const bool playout = replayPlayoutActive();
 
-		for (QPushButton *button : angleButtons) {
+		for (QToolButton *button : angleButtons) {
 			const auto coverage = static_cast<sr_replay_coverage>(button->property("coverage").toInt());
 			const uint64_t playableIn = button->property("playableInNs").toULongLong();
 			const uint64_t playableOut = button->property("playableOutNs").toULongLong();
@@ -964,15 +3542,64 @@ private:
 			const bool atPlayhead = !sameEvent ||
 						(state.playhead_ns >= playableIn && state.playhead_ns <= playableOut);
 			button->setEnabled(eventId && coverage != SR_REPLAY_COVERAGE_NONE && atPlayhead);
-			button->setChecked(sameEvent && activeCamera == camera);
+			button->setChecked(playout ? (sameEvent && activeCamera == camera)
+						   : button->property("storedAngle").toBool());
 			button->setToolTip(button->property("coverageTooltip").toString());
 			if (sameEvent && coverage != SR_REPLAY_COVERAGE_NONE && !atPlayhead)
 				button->setToolTip(T("EventDock.AngleUnavailable").arg(camera));
 		}
 	}
 
+	bool storeEventAngle(uint64_t eventId, const QString &camera)
+	{
+		if (!controller || !eventId)
+			return false;
+		const QByteArray cameraUtf8 = camera.toUtf8();
+		const char *name = camera.isEmpty() ? nullptr : cameraUtf8.constData();
+		if (!sr_event_controller_set_preferred_camera(controller, eventId, name)) {
+			setStatus("EventDock.AngleSaveFailed");
+			return false;
+		}
+		eventThumbnailCache.erase(eventId);
+		return true;
+	}
+
+	void selectAutoAngle()
+	{
+		const uint64_t eventId = selectedEventId();
+		if (!controller || !eventId) {
+			setStatus("EventDock.NoEventSelected");
+			return;
+		}
+		if (replayPlayoutActive()) {
+			setStatus("EventDock.AngleAutoEditOnly");
+			syncEventAngleSelection();
+			return;
+		}
+
+		const uint64_t target = editTimeline ? editTimeline->playheadTimestamp() : 0;
+		if (!storeEventAngle(eventId, QString())) {
+			syncEventAngleSelection();
+			return;
+		}
+		editPreviewEventId = 0;
+		editPreviewCamera.clear();
+		refresh(eventId);
+		refreshAngleCoverage();
+		previewSelectedEvent(true);
+		if (target)
+			previewSeekTo(target);
+		status->setText(T("EventDock.AngleAutoSaved").arg(eventId));
+		syncTimeline();
+	}
+
 	void selectAngle(const QString &camera)
 	{
+		if (camera.isEmpty()) {
+			selectAutoAngle();
+			return;
+		}
+
 		const enum sr_replay_bus bus = transportBus();
 		uint64_t eventId = selectedEventId();
 		sr_replay_channel_state state = {};
@@ -985,46 +3612,83 @@ private:
 		}
 
 		const QByteArray cameraUtf8 = camera.toUtf8();
+		bool ok = false;
+		if (!replayPlayoutActive()) {
+			updateEditTimelineBounds();
+			sr_event_record event = {};
+			if (!controller || !sr_event_controller_get_event(controller, eventId, &event)) {
+				setStatus("EventDock.Failed");
+				return;
+			}
+			sr_replay_coverage_info coverage = {};
+			if (!sr_replay_coverage_query(cameraUtf8.constData(), event.in_ns, event.out_ns, &coverage) ||
+			    coverage.coverage == SR_REPLAY_COVERAGE_NONE) {
+				sr_event_controller_free_event(&event);
+				status->setText(T("EventDock.CueNoCoverage").arg(camera));
+				syncEventAngleSelection();
+				return;
+			}
+
+			uint64_t target = editTimeline ? editTimeline->playheadTimestamp() : event.in_ns;
+			if (!target)
+				target = event.in_ns;
+			const uint64_t rangeIn = editTimelineHaveBounds ? editTimelineStartNs : event.in_ns;
+			const uint64_t rangeOut = editTimelineHaveBounds ? editTimelineEndNs : event.out_ns;
+			target = qBound(rangeIn, target, rangeOut);
+			if (!storeEventAngle(eventId, camera)) {
+				sr_event_controller_free_event(&event);
+				syncEventAngleSelection();
+				return;
+			}
+
+			if (haveState && state.cued && state.preview_mode && state.event_id == eventId)
+				ok = sr_replay_channel_switch_camera(bus, cameraUtf8.constData());
+			if (ok) {
+				editPreviewEventId = eventId;
+				editPreviewBus = bus;
+				editPreviewCamera = camera;
+				sr_replay_channel_pause(bus, true);
+				sr_replay_channel_seek(bus, target);
+			} else {
+				ok = cueEditPreviewAt(camera, eventId, target, rangeIn, rangeOut);
+			}
+			sr_event_controller_free_event(&event);
+
+			{
+				const QSignalBlocker blocker(cameraCombo);
+				const int comboIndex = cameraCombo ? cameraCombo->findData(camera) : -1;
+				if (comboIndex >= 0)
+					cameraCombo->setCurrentIndex(comboIndex);
+			}
+			refresh(eventId);
+			refreshAngleCoverage();
+			status->setText(T("EventDock.AngleSaved").arg(eventId).arg(camera));
+			if (!ok)
+				status->setText(T("EventDock.AngleSavedPreviewFailed").arg(eventId).arg(camera));
+			syncTransportControls();
+			syncTimeline();
+			return;
+		}
+
 		const bool switching = haveState && state.cued && state.event_id == eventId;
-		const bool ok = switching ? sr_replay_channel_switch_camera(bus, cameraUtf8.constData())
-					  : sr_replay_channel_cue(bus, eventId, cameraUtf8.constData());
+		ok = switching ? sr_replay_channel_switch_camera(bus, cameraUtf8.constData())
+			       : sr_replay_channel_cue(bus, eventId, cameraUtf8.constData());
 		if (!ok) {
 			setStatus("EventDock.AngleSwitchFailed");
 			refreshAngleCoverage();
 			return;
 		}
 
-		const int comboIndex = cameraCombo ? cameraCombo->findData(camera) : -1;
-		if (comboIndex >= 0)
-			cameraCombo->setCurrentIndex(comboIndex);
-		status->setText(T("EventDock.AngleSelected")
+		{
+			const QSignalBlocker blocker(cameraCombo);
+			const int comboIndex = cameraCombo ? cameraCombo->findData(camera) : -1;
+			if (comboIndex >= 0)
+				cameraCombo->setCurrentIndex(comboIndex);
+		}
+		status->setText(T("EventDock.AngleLiveSwitched")
 					.arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"))
 					.arg(camera));
 		syncTransportControls();
-		refreshAngleCoverage();
-	}
-
-	void setPreferredCamera(bool clear)
-	{
-		const uint64_t eventId = selectedEventId();
-		if (!controller || !eventId) {
-			setStatus("EventDock.NoEventSelected");
-			return;
-		}
-
-		const QString camera = selectedCamera();
-		if (!clear && camera.isEmpty()) {
-			setStatus("EventDock.NoCameraSelected");
-			return;
-		}
-		const QByteArray cameraUtf8 = camera.toUtf8();
-		const char *name = clear ? nullptr : cameraUtf8.constData();
-		if (!sr_event_controller_set_preferred_camera(controller, eventId, name)) {
-			setStatus("EventDock.PreferredFailed");
-			return;
-		}
-
-		setStatus(clear ? "EventDock.PreferredCleared" : "EventDock.PreferredSet");
 		refreshAngleCoverage();
 	}
 
@@ -1033,7 +3697,36 @@ private:
 		sr_replay_playlist_state state = {};
 		if (!sr_replay_playlist_get_state(bus, &state) || !state.active)
 			return QString();
+		if (state.angle_sequence)
+			return T("EventDock.AngleSequenceState")
+				.arg(state.event_id)
+				.arg(state.position + 1)
+				.arg(state.count);
 		return T("EventDock.PlaylistState").arg(state.list_id).arg(state.position + 1).arg(state.count);
+	}
+
+	enum sr_replay_bus activePlaylistBus() const
+	{
+		enum sr_replay_bus program;
+		sr_replay_playlist_state state = {};
+		if (sr_replay_take_program_bus(&program) && sr_replay_playlist_get_state(program, &state) &&
+		    state.active)
+			return program;
+		if (sr_replay_playlist_get_state(SR_REPLAY_BUS_A, &state) && state.active)
+			return SR_REPLAY_BUS_A;
+		if (sr_replay_playlist_get_state(SR_REPLAY_BUS_B, &state) && state.active)
+			return SR_REPLAY_BUS_B;
+		return transportBus();
+	}
+
+	bool eventTransitionCrossBus(bool *requested = nullptr) const
+	{
+		char *configured = sr_config_get_event_transition();
+		const bool wanted = configured && *configured;
+		bfree(configured);
+		if (requested)
+			*requested = wanted;
+		return wanted && sr_replay_take_event_transition_ready();
 	}
 
 	void refreshTransportStatus()
@@ -1072,18 +3765,27 @@ private:
 						       .arg(programBus == SR_REPLAY_BUS_A ? QStringLiteral("A")
 											  : QStringLiteral("B")));
 			programStatus->setStyleSheet(QStringLiteral(
-				"font-weight: bold; color: white; background: #b52b2b; border-radius: 3px; padding: 4px;"));
+				"font-weight: bold; color: white; background: #b52b2b; border-radius: 3px; padding: 2px;"));
 		} else {
 			programStatus->setText(T("EventDock.ProgramLive"));
 			programStatus->setStyleSheet(QStringLiteral(
-				"font-weight: bold; color: white; background: #247a3b; border-radius: 3px; padding: 4px;"));
+				"font-weight: bold; color: white; background: #247a3b; border-radius: 3px; padding: 2px;"));
 		}
 		cueAStatus->setText(cueStatus(SR_REPLAY_BUS_A, QStringLiteral("A")));
 		cueBStatus->setText(cueStatus(SR_REPLAY_BUS_B, QStringLiteral("B")));
 		cueAStatus->setStyleSheet(QStringLiteral(
-			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #3f78c5; border-radius: 3px; padding: 4px;"));
+			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #3f78c5; border-radius: 3px; padding: 2px;"));
 		cueBStatus->setStyleSheet(QStringLiteral(
-			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #d49a2a; border-radius: 3px; padding: 4px;"));
+			"font-weight: bold; color: palette(text); background: palette(alternate-base); border: 1px solid #d49a2a; border-radius: 3px; padding: 2px;"));
+	}
+
+	void setOperatorSpeed(double speed)
+	{
+		if (!sr_replay_channel_set_controller_speed(speed))
+			return;
+		if (sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_EVENT)
+			sr_replay_channel_set_speed(transportBus(), speed);
+		syncTimeline();
 	}
 
 	void syncTransportControls()
@@ -1093,9 +3795,14 @@ private:
 			return;
 		reverseButton->setChecked(state.backward);
 		loopButton->setChecked(state.loop);
-		const int speedIndex = speedCombo->findData((int)state.speed_percent);
-		if (speedIndex >= 0)
+		const double displayedSpeed = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL
+						      ? sr_replay_channel_get_controller_speed()
+						      : state.speed_percent;
+		const int speedIndex = speedCombo->findData((int)displayedSpeed);
+		if (speedIndex >= 0) {
+			const QSignalBlocker blocker(speedCombo);
 			speedCombo->setCurrentIndex(speedIndex);
+		}
 		const int audioIndex = audioCombo->findData((int)state.audio_mode);
 		if (audioIndex >= 0)
 			audioCombo->setCurrentIndex(audioIndex);
@@ -1130,14 +3837,468 @@ private:
 		refreshTransportStatus();
 	}
 
+	uint64_t playbackRuntimeNs(uint64_t mediaNs, double speedPercent) const
+	{
+		const double speed = speedPercent > 0.0 ? speedPercent : 100.0;
+		const long double runtime = (long double)mediaNs * 100.0L / (long double)speed;
+		return runtime >= (long double)UINT64_MAX ? UINT64_MAX : (uint64_t)runtime;
+	}
+
+	bool playlistTimelineProgress(uint64_t *elapsedNs, uint64_t *totalNs, uint64_t *remainingNs) const
+	{
+		if (!elapsedNs || !totalNs || !remainingNs || !controller)
+			return false;
+		*elapsedNs = 0;
+		*totalNs = 0;
+		*remainingNs = 0;
+
+		const enum sr_replay_bus bus = activePlaylistBus();
+		sr_replay_playlist_state playlist = {};
+		if (!sr_replay_playlist_get_state(bus, &playlist) || !playlist.active)
+			return false;
+
+		uint64_t *eventIds = nullptr;
+		size_t count = 0;
+		size_t position = 0;
+		bool angleSequence = false;
+		if (!sr_replay_playlist_snapshot_items(bus, &eventIds, &count, &position, &angleSequence) ||
+		    !eventIds || !count) {
+			bfree(eventIds);
+			return false;
+		}
+
+		sr_replay_channel_state current = {};
+		const bool haveCurrent = sr_replay_channel_get_state(bus, &current) && current.cued;
+		uint64_t total = 0;
+		uint64_t elapsed = 0;
+		for (size_t i = 0; i < count; i++) {
+			uint64_t runtime = 0;
+			sr_event_record event = {};
+			if (sr_event_controller_get_event(controller, eventIds[i], &event)) {
+				if (!event.pending && event.out_ns > event.in_ns) {
+					const double plannedSpeed = sr_config_get_replay_speed_policy() ==
+											    SR_REPLAY_SPEED_GLOBAL &&
+										    !event.speed_override
+									    ? sr_replay_channel_get_controller_speed()
+									    : event.speed_percent;
+					runtime = playbackRuntimeNs(event.out_ns - event.in_ns, plannedSpeed);
+				}
+				sr_event_controller_free_event(&event);
+			}
+
+			uint64_t currentElapsed = 0;
+			if (i == position && haveCurrent && current.event_id == eventIds[i] &&
+			    current.out_ns > current.in_ns) {
+				runtime = playbackRuntimeNs(current.out_ns - current.in_ns, current.speed_percent);
+				const uint64_t mediaPosition = current.playhead_ns <= current.in_ns ? 0
+							       : current.playhead_ns >= current.out_ns
+								       ? current.out_ns - current.in_ns
+								       : current.playhead_ns - current.in_ns;
+				currentElapsed = playbackRuntimeNs(mediaPosition, current.speed_percent);
+				if (currentElapsed > runtime)
+					currentElapsed = runtime;
+			}
+
+			if (UINT64_MAX - total < runtime)
+				total = UINT64_MAX;
+			else
+				total += runtime;
+			if (i < position) {
+				if (UINT64_MAX - elapsed < runtime)
+					elapsed = UINT64_MAX;
+				else
+					elapsed += runtime;
+			} else if (i == position) {
+				if (UINT64_MAX - elapsed < currentElapsed)
+					elapsed = UINT64_MAX;
+				else
+					elapsed += currentElapsed;
+			}
+		}
+		bfree(eventIds);
+		if (!total)
+			return false;
+		if (elapsed > total)
+			elapsed = total;
+		*elapsedNs = elapsed;
+		*totalNs = total;
+		*remainingNs = total - elapsed;
+		return true;
+	}
+
+	bool replayPlayoutActive() const
+	{
+		enum sr_replay_bus programBus;
+		if (sr_replay_take_program_bus(&programBus))
+			return true;
+
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			const auto bus = static_cast<sr_replay_bus>(i);
+			sr_replay_playlist_state playlist = {};
+			if (sr_replay_playlist_get_state(bus, &playlist) && playlist.active)
+				return true;
+			sr_replay_channel_state state = {};
+			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.playing &&
+			    !state.preview_mode)
+				return true;
+		}
+		return false;
+	}
+
+	enum sr_replay_bus timelineTransportBus() const
+	{
+		enum sr_replay_bus programBus;
+		if (sr_replay_take_program_bus(&programBus))
+			return programBus;
+
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			const auto bus = static_cast<sr_replay_bus>(i);
+			sr_replay_playlist_state playlist = {};
+			if (sr_replay_playlist_get_state(bus, &playlist) && playlist.active)
+				return bus;
+		}
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			const auto bus = static_cast<sr_replay_bus>(i);
+			sr_replay_channel_state state = {};
+			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.playing &&
+			    !state.preview_mode)
+				return bus;
+		}
+		return transportBus();
+	}
+
+	uint64_t editFrameDurationNs() const
+	{
+		struct obs_video_info video = {};
+		if (obs_get_video_info(&video) && video.fps_num && video.fps_den)
+			return std::max<uint64_t>(
+				1, (uint64_t)((long double)NS_PER_SECOND * video.fps_den / (long double)video.fps_num));
+		return 33333333ULL;
+	}
+
+	void updateEditTimelineBounds()
+	{
+		sr_capture_recording_summary recording = {};
+		if (sr_capture_get_recording_summary(&recording) && recording.recording_start_ns) {
+			const uint64_t recordingStart = recording.recording_start_ns;
+			uint64_t recordingEnd = recordingStart;
+			if (recording.recording_duration_ns <= UINT64_MAX - recordingStart)
+				recordingEnd = recordingStart + recording.recording_duration_ns;
+			if (recording.requested_count) {
+				const uint64_t now = obs_get_video_frame_time();
+				if (now > recordingEnd)
+					recordingEnd = now;
+			}
+			if (!editTimelineHaveBounds || recordingStart < editTimelineStartNs)
+				editTimelineStartNs = recordingStart;
+			if (!editTimelineHaveBounds || recordingEnd > editTimelineEndNs)
+				editTimelineEndNs = recordingEnd;
+			editTimelineHaveBounds = editTimelineEndNs > editTimelineStartNs;
+		}
+
+		const uint64_t eventId = selectedEventId();
+		sr_event_record event = {};
+		if (controller && eventId && sr_event_controller_get_event(controller, eventId, &event)) {
+			if (!editTimelineHaveBounds) {
+				editTimelineStartNs = event.in_ns;
+				editTimelineEndNs = event.out_ns;
+				editTimelineHaveBounds = event.out_ns > event.in_ns;
+			} else {
+				if (event.in_ns < editTimelineStartNs)
+					editTimelineStartNs = event.in_ns;
+				if (event.out_ns > editTimelineEndNs)
+					editTimelineEndNs = event.out_ns;
+			}
+			sr_event_controller_free_event(&event);
+		}
+	}
+
+	void setTimelineModeBadge(bool editMode)
+	{
+		if (!timelineModeLabel)
+			return;
+		if (editMode) {
+			timelineModeLabel->setText(T("EventDock.Timeline.EditMode"));
+			timelineModeLabel->setStyleSheet(QStringLiteral(
+				"font-weight: bold; color: white; background: #2b7a4b; border-radius: 3px; padding: 1px 4px;"));
+		} else {
+			timelineModeLabel->setText(T("EventDock.Timeline.PlayoutMode"));
+			timelineModeLabel->setStyleSheet(QStringLiteral(
+				"font-weight: bold; color: white; background: #9b3434; border-radius: 3px; padding: 1px 4px;"));
+		}
+	}
+
+	QString editTimelineStatusText(uint64_t cursorNs, uint64_t inNs, uint64_t outNs) const
+	{
+		const uint64_t total = editTimelineHaveBounds && editTimelineEndNs > editTimelineStartNs
+					       ? editTimelineEndNs - editTimelineStartNs
+					       : 0;
+		auto relative = [this](uint64_t timestamp) {
+			return editTimelineHaveBounds && timestamp > editTimelineStartNs
+				       ? timestamp - editTimelineStartNs
+				       : 0;
+		};
+		return QStringLiteral("CUR %1  ·  IN %2  ·  OUT %3  ·  DUR %4  ·  REC %5")
+			.arg(replayClockText(relative(cursorNs)))
+			.arg(replayClockText(relative(inNs)))
+			.arg(replayClockText(relative(outNs)))
+			.arg(replayClockText(outNs > inNs ? outNs - inNs : 0))
+			.arg(replayClockText(total));
+	}
+
+	QStringList editPreviewCandidates(const sr_event_record &event) const
+	{
+		QStringList candidates;
+		auto addCandidate = [&candidates](const QString &candidate) {
+			if (!candidate.isEmpty() && !candidates.contains(candidate))
+				candidates.append(candidate);
+		};
+		if (editPreviewEventId == event.id)
+			addCandidate(editPreviewCamera);
+		if (event.preferred_camera_id) {
+			char *preferred = nullptr;
+			if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &preferred) &&
+			    preferred)
+				addCandidate(QString::fromUtf8(preferred));
+			bfree(preferred);
+		}
+		addCandidate(selectedCamera());
+		for (QToolButton *button : angleButtons) {
+			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_FULL)
+				addCandidate(button->property("cameraName").toString());
+		}
+		for (QToolButton *button : angleButtons) {
+			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_PARTIAL)
+				addCandidate(button->property("cameraName").toString());
+		}
+		for (const QString &camera : captureCameraNames())
+			addCandidate(camera);
+		return candidates;
+	}
+
+	bool cueEditPreviewAt(const QString &camera, uint64_t eventId, uint64_t timestampNs, uint64_t rangeInNs,
+			      uint64_t rangeOutNs)
+	{
+		if (camera.isEmpty() || !eventId || rangeOutNs <= rangeInNs)
+			return false;
+		const enum sr_replay_bus bus = transportBus();
+		const QByteArray cameraUtf8 = camera.toUtf8();
+		if (!sr_replay_channel_cue_preview(bus, eventId, cameraUtf8.constData(), rangeInNs, rangeOutNs,
+						   timestampNs))
+			return false;
+		editPreviewEventId = eventId;
+		editPreviewBus = bus;
+		editPreviewCamera = camera;
+		if (cameraCombo) {
+			const int index = cameraCombo->findData(camera);
+			if (index >= 0) {
+				const QSignalBlocker blocker(cameraCombo);
+				cameraCombo->setCurrentIndex(index);
+			}
+		}
+		refreshTransportStatus();
+		syncAngleButtonState();
+		return true;
+	}
+
+	bool previewSelectedEvent(bool force)
+	{
+		if (!controller || replayPlayoutActive())
+			return false;
+		updateEditTimelineBounds();
+		const uint64_t eventId = selectedEventId();
+		if (!eventId)
+			return false;
+
+		sr_event_record event = {};
+		if (!sr_event_controller_get_event(controller, eventId, &event))
+			return false;
+		const QStringList candidates = editPreviewCandidates(event);
+		uint64_t target = event.in_ns;
+		if (editPreviewEventId == eventId && editTimeline && editTimeline->playheadTimestamp())
+			target = editTimeline->playheadTimestamp();
+		if (target < editTimelineStartNs || target > editTimelineEndNs)
+			target = event.in_ns;
+		const uint64_t rangeIn = editTimelineHaveBounds ? editTimelineStartNs : event.in_ns;
+		const uint64_t rangeOut = editTimelineHaveBounds ? editTimelineEndNs : event.out_ns;
+		sr_event_controller_free_event(&event);
+
+		const enum sr_replay_bus bus = transportBus();
+		for (const QString &camera : candidates) {
+			sr_replay_channel_state current = {};
+			if (!force && sr_replay_channel_get_state(bus, &current) && current.cued &&
+			    current.preview_mode && current.event_id == eventId &&
+			    QString::fromUtf8(current.camera_name) == camera && target >= current.in_ns &&
+			    target <= current.out_ns) {
+				editPreviewEventId = eventId;
+				editPreviewBus = bus;
+				editPreviewCamera = camera;
+				sr_replay_channel_pause(bus, true);
+				sr_replay_channel_seek(bus, target);
+				return true;
+			}
+			if (cueEditPreviewAt(camera, eventId, target, rangeIn, rangeOut))
+				return true;
+		}
+
+		editPreviewEventId = 0;
+		editPreviewCamera.clear();
+		return false;
+	}
+
+	bool previewSeekTo(uint64_t timestampNs)
+	{
+		if (!controller || replayPlayoutActive() || !editTimelineHaveBounds)
+			return false;
+		const uint64_t eventId = selectedEventId();
+		if (!eventId)
+			return false;
+		timestampNs = qBound(editTimelineStartNs, timestampNs, editTimelineEndNs);
+
+		if (editPreviewEventId != eventId || editPreviewBus != transportBus() || editPreviewCamera.isEmpty()) {
+			if (!previewSelectedEvent(false))
+				return false;
+		}
+
+		const enum sr_replay_bus bus = transportBus();
+		sr_replay_channel_state state = {};
+		bool ok = sr_replay_channel_get_state(bus, &state) && state.cued && state.preview_mode &&
+			  state.event_id == eventId && QString::fromUtf8(state.camera_name) == editPreviewCamera &&
+			  timestampNs >= state.in_ns && timestampNs <= state.out_ns;
+		if (ok) {
+			sr_replay_channel_pause(bus, true);
+			ok = sr_replay_channel_seek(bus, timestampNs);
+		} else {
+			ok = cueEditPreviewAt(editPreviewCamera, eventId, timestampNs, editTimelineStartNs,
+					      editTimelineEndNs);
+			if (!ok && timestampNs > editTimelineStartNs) {
+				const uint64_t retryBack =
+					std::max<uint64_t>(editFrameDurationNs() * 3ULL, 100000000ULL);
+				const uint64_t retry = retryBack >= timestampNs - editTimelineStartNs
+							       ? editTimelineStartNs
+							       : timestampNs - retryBack;
+				ok = cueEditPreviewAt(editPreviewCamera, eventId, retry, editTimelineStartNs,
+						      editTimelineEndNs);
+			}
+		}
+		if (!ok)
+			return false;
+
+		sr_replay_channel_get_state(bus, &state);
+		const uint64_t actual = state.cued ? state.playhead_ns : timestampNs;
+		if (editTimeline)
+			editTimeline->setPlayhead(actual);
+		uint64_t inNs = editTimeline && editTimeline->hasSelection() ? editTimeline->selectionIn() : actual;
+		uint64_t outNs = editTimeline && editTimeline->hasSelection() ? editTimeline->selectionOut() : actual;
+		timelineTime->setText(editTimelineStatusText(actual, inNs, outNs));
+		return true;
+	}
+
+	void syncEditTimeline()
+	{
+		updateEditTimelineBounds();
+		setTimelineModeBadge(true);
+		if (timelineStack)
+			timelineStack->setCurrentWidget(editTimeline);
+		if (editTimelineControls)
+			editTimelineControls->setVisible(true);
+		if (!editTimeline)
+			return;
+		editTimeline->setMinimumDuration(editFrameDurationNs());
+		if (!editTimelineHaveBounds || editTimelineEndNs <= editTimelineStartNs) {
+			timelineEventId = 0;
+			editTimeline->setEnabled(false);
+			editTimeline->setRecordingBounds(0, 0);
+			timelineTime->setText(T("EventDock.Timeline.NoRecording"));
+			return;
+		}
+		editTimeline->setRecordingBounds(editTimelineStartNs, editTimelineEndNs);
+		if (editTimeline->isDragging())
+			return;
+
+		const uint64_t eventId = selectedEventId();
+		sr_event_record event = {};
+		if (!eventId || !controller || !sr_event_controller_get_event(controller, eventId, &event) ||
+		    event.out_ns <= event.in_ns) {
+			if (event.id)
+				sr_event_controller_free_event(&event);
+			timelineEventId = 0;
+			editTimeline->clearSelection();
+			editTimeline->setEnabled(false);
+			editTimeline->setPlayhead(editTimelineEndNs);
+			timelineTime->setText(T("EventDock.Timeline.RecordLength")
+						      .arg(replayClockText(editTimelineEndNs - editTimelineStartNs)));
+			return;
+		}
+
+		timelineEventId = event.id;
+		editTimeline->setEnabled(true);
+		editTimeline->setSelection(event.in_ns, event.out_ns);
+		uint64_t playhead = event.in_ns;
+		sr_replay_channel_state preview = {};
+		if (sr_replay_channel_get_state(transportBus(), &preview) && preview.cued && preview.preview_mode &&
+		    preview.event_id == event.id)
+			playhead = preview.playhead_ns;
+		editTimeline->setPlayhead(playhead);
+		timelineTime->setText(editTimelineStatusText(playhead, event.in_ns, event.out_ns));
+		sr_event_controller_free_event(&event);
+	}
+
 	void syncTimeline()
 	{
 		if (!timelineSlider || !timelineTime)
 			return;
 
+		uint64_t sequenceElapsed = 0;
+		uint64_t sequenceTotal = 0;
+		uint64_t sequenceRemaining = 0;
+		if (playlistTimelineProgress(&sequenceElapsed, &sequenceTotal, &sequenceRemaining)) {
+			timelineEventId = 0;
+			setTimelineModeBadge(false);
+			if (timelineStack)
+				timelineStack->setCurrentWidget(timelineSlider);
+			if (editTimelineControls)
+				editTimelineControls->setVisible(false);
+			timelineSlider->setMode(SrRangeSlider::Mode::Sequence);
+			timelineSlider->setEnabled(true);
+			timelineSlider->setToolTip(T("EventDock.Timeline.PlaylistTooltip"));
+			const int value =
+				(int)((long double)sequenceElapsed * TIMELINE_SCALE / (long double)sequenceTotal);
+			timelineSlider->setValue(qBound(0, value, TIMELINE_SCALE));
+			if (sequenceRemaining > 15ULL * NS_PER_SECOND)
+				timelineSlider->setProgressTint(QColor(QStringLiteral("#2fb34a")));
+			else if (sequenceRemaining > 10ULL * NS_PER_SECOND)
+				timelineSlider->setProgressTint(QColor(QStringLiteral("#d2a216")));
+			else
+				timelineSlider->setProgressTint(QColor(QStringLiteral("#d33b3b")));
+			timelineTime->setText(replayClockText(sequenceElapsed) + QStringLiteral(" / ") +
+					      replayClockText(sequenceTotal) + QStringLiteral("   −") +
+					      replayClockText(sequenceRemaining));
+			editPreviewEventId = 0;
+			editPreviewCamera.clear();
+			return;
+		}
+
+		if (!replayPlayoutActive()) {
+			syncEditTimeline();
+			return;
+		}
+
+		editPreviewEventId = 0;
+		editPreviewCamera.clear();
+		setTimelineModeBadge(false);
+		if (timelineStack)
+			timelineStack->setCurrentWidget(timelineSlider);
+		if (editTimelineControls)
+			editTimelineControls->setVisible(false);
+		timelineSlider->setMode(SrRangeSlider::Mode::Transport);
+		timelineSlider->clearProgressTint();
+		timelineSlider->setToolTip(T("EventDock.Timeline.Tooltip"));
+		const enum sr_replay_bus bus = timelineTransportBus();
 		sr_replay_channel_state state = {};
-		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued ||
-		    state.out_ns <= state.in_ns) {
+		if (!sr_replay_channel_get_state(bus, &state) || !state.cued || state.out_ns <= state.in_ns) {
+			timelineEventId = 0;
+			timelineSlider->clearSelection();
 			timelineSlider->setEnabled(false);
 			if (!timelineDragging)
 				timelineSlider->setValue(0);
@@ -1145,13 +4306,17 @@ private:
 			return;
 		}
 
+		if (timelineEventId != state.event_id) {
+			timelineEventId = state.event_id;
+			timelineSlider->clearSelection();
+		}
 		timelineSlider->setEnabled(true);
 		const uint64_t duration = state.out_ns - state.in_ns;
 		const uint64_t position = state.playhead_ns <= state.in_ns    ? 0
 					  : state.playhead_ns >= state.out_ns ? duration
 									      : state.playhead_ns - state.in_ns;
 		if (!timelineDragging) {
-			const int sliderValue = (int)((long double)position * 10000.0L / (long double)duration);
+			const int sliderValue = (int)((long double)position * TIMELINE_SCALE / (long double)duration);
 			timelineSlider->setValue(sliderValue);
 		}
 		timelineTime->setText(replayClockText(position) + QStringLiteral(" / ") + replayClockText(duration));
@@ -1159,21 +4324,206 @@ private:
 
 	void seekTimeline(int value)
 	{
-		sr_replay_channel_state state = {};
-		if (!sr_replay_channel_get_state(transportBus(), &state) || !state.cued || state.out_ns <= state.in_ns)
+		if (!replayPlayoutActive())
 			return;
 
-		if (value < 0)
-			value = 0;
-		if (value > 10000)
-			value = 10000;
+		const enum sr_replay_bus bus = timelineTransportBus();
+		sr_replay_channel_state state = {};
+		if (!sr_replay_channel_get_state(bus, &state) || !state.cued || state.out_ns <= state.in_ns)
+			return;
+
+		value = qBound(0, value, TIMELINE_SCALE);
 		const uint64_t duration = state.out_ns - state.in_ns;
-		const uint64_t offset = (uint64_t)((long double)duration * (long double)value / 10000.0L);
+		const uint64_t offset =
+			(uint64_t)((long double)duration * (long double)value / (long double)TIMELINE_SCALE);
 		const uint64_t target = offset >= duration ? state.out_ns : state.in_ns + offset;
-		sr_replay_channel_pause(transportBus(), true);
-		sr_replay_channel_seek(transportBus(), target);
+		sr_replay_channel_pause(bus, true);
+		sr_replay_channel_seek(bus, target);
 		timelineTime->setText(replayClockText(offset > duration ? duration : offset) + QStringLiteral(" / ") +
 				      replayClockText(duration));
+	}
+
+	void editSelectedEventRange(uint64_t inNs, uint64_t outNs)
+	{
+		if (!controller || replayPlayoutActive() || !editTimelineHaveBounds || outNs <= inNs) {
+			syncTimeline();
+			return;
+		}
+		inNs = qBound(editTimelineStartNs, inNs, editTimelineEndNs);
+		outNs = qBound(editTimelineStartNs, outNs, editTimelineEndNs);
+		const uint64_t minimumDuration = editFrameDurationNs();
+		if (outNs <= inNs || outNs - inNs < minimumDuration) {
+			setStatus("EventDock.Timeline.TooShort");
+			syncTimeline();
+			return;
+		}
+
+		const uint64_t eventId = selectedEventId();
+		sr_event_record event = {};
+		if (!eventId || !sr_event_controller_get_event(controller, eventId, &event)) {
+			setStatus("EventDock.Failed");
+			syncTimeline();
+			return;
+		}
+
+		const uint64_t preservedCursor = editTimeline ? editTimeline->playheadTimestamp() : inNs;
+		const enum sr_replay_bus preservedBus = transportBus();
+		sr_replay_channel_state preservedState = {};
+		const bool keepEditPreview = sr_replay_channel_get_state(preservedBus, &preservedState) &&
+					     preservedState.cued && preservedState.preview_mode &&
+					     preservedState.event_id == eventId;
+		const QString preservedCamera = keepEditPreview ? QString::fromUtf8(preservedState.camera_name)
+								: QString();
+
+		sr_event_write update = {};
+		update.in_ns = inNs;
+		update.out_ns = outNs;
+		update.preferred_camera_id = event.preferred_camera_id;
+		update.speed_percent = event.speed_percent;
+		update.speed_override = event.speed_override;
+		update.audio_mode = event.audio_mode;
+		update.protected_event = event.protected_event;
+		update.played = event.played;
+		update.pending = event.pending;
+		update.name = event.name;
+		update.tag = event.tag;
+		const bool ok = sr_event_controller_update_event(controller, eventId, &update);
+		sr_event_controller_free_event(&event);
+		if (!ok) {
+			setStatus("EventDock.Failed");
+			syncTimeline();
+			return;
+		}
+
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			const auto bus = static_cast<sr_replay_bus>(i);
+			sr_replay_channel_state state = {};
+			if (!sr_replay_channel_get_state(bus, &state) || !state.cued || state.event_id != eventId)
+				continue;
+			if (keepEditPreview && bus == preservedBus && state.preview_mode)
+				continue;
+			sr_replay_channel_clear(bus);
+		}
+		eventThumbnailCache.erase(eventId);
+		anglePreviewCache.erase(eventId);
+		previewTargetEventId = 0;
+		previewLoadedEventId = 0;
+		if (keepEditPreview) {
+			editPreviewEventId = eventId;
+			editPreviewBus = preservedBus;
+			editPreviewCamera = preservedCamera;
+			sr_replay_channel_pause(preservedBus, true);
+			sr_replay_channel_seek(preservedBus, preservedCursor);
+		} else {
+			editPreviewEventId = eventId;
+			editPreviewBus = preservedBus;
+			editPreviewCamera.clear();
+			if (editTimeline)
+				editTimeline->setPlayhead(preservedCursor);
+		}
+		status->setText(T("EventDock.Timeline.EditSaved").arg((double)(outNs - inNs) / 1e9, 0, 'f', 3));
+		refresh(eventId);
+		refreshAngleCoverage();
+		if (!keepEditPreview) {
+			previewSelectedEvent(true);
+			previewSeekTo(preservedCursor);
+		}
+		syncTimeline();
+	}
+
+	void gotoEditMarker(bool outMarker)
+	{
+		if (!editTimeline || !editTimeline->hasSelection())
+			return;
+		previewSeekTo(outMarker ? editTimeline->selectionOut() : editTimeline->selectionIn());
+	}
+
+	void setEditMarkerAtPlayhead(bool outMarker)
+	{
+		if (!editTimeline || !editTimeline->hasSelection())
+			return;
+		const uint64_t cursor = editTimeline->playheadTimestamp();
+		uint64_t inNs = editTimeline->selectionIn();
+		uint64_t outNs = editTimeline->selectionOut();
+		if (outMarker)
+			outNs = cursor;
+		else
+			inNs = cursor;
+		editSelectedEventRange(inNs, outNs);
+	}
+
+	void stepEditFrames(int frames)
+	{
+		if (!editTimelineHaveBounds || !editTimeline || !frames)
+			return;
+		const uint64_t frame = editFrameDurationNs();
+		uint64_t cursor = editTimeline->playheadTimestamp();
+		if (frames < 0) {
+			const uint64_t magnitude = (uint64_t)(-frames) * frame;
+			cursor = magnitude >= cursor - editTimelineStartNs ? editTimelineStartNs : cursor - magnitude;
+		} else {
+			const uint64_t magnitude = (uint64_t)frames * frame;
+			cursor = magnitude >= editTimelineEndNs - cursor ? editTimelineEndNs : cursor + magnitude;
+		}
+		previewSeekTo(cursor);
+	}
+
+	void previewPlayFromIn()
+	{
+		if (!controller || replayPlayoutActive())
+			return;
+		const uint64_t eventId = selectedEventId();
+		sr_event_record event = {};
+		if (!eventId || !sr_event_controller_get_event(controller, eventId, &event))
+			return;
+		const QStringList candidates = editPreviewCandidates(event);
+		const uint64_t inNs = event.in_ns;
+		const uint64_t outNs = event.out_ns;
+		sr_event_controller_free_event(&event);
+		for (const QString &camera : candidates) {
+			if (!cueEditPreviewAt(camera, eventId, inNs, inNs, outNs))
+				continue;
+			sr_replay_channel_set_loop(transportBus(), loopButton && loopButton->isChecked());
+			sr_replay_channel_play(transportBus());
+			if (editTimeline)
+				editTimeline->setPlayhead(inNs);
+			status->setText(QStringLiteral("EDIT preview · Event %1 · %2").arg(eventId).arg(camera));
+			return;
+		}
+		setStatus("EventDock.CueFailed");
+	}
+
+	void toggleEditPreview()
+	{
+		if (!controller || replayPlayoutActive())
+			return;
+		const uint64_t eventId = selectedEventId();
+		if (!eventId)
+			return;
+		sr_replay_channel_state state = {};
+		const enum sr_replay_bus bus = transportBus();
+		if (sr_replay_channel_get_state(bus, &state) && state.cued && state.preview_mode &&
+		    state.event_id == eventId && state.playing && !state.paused) {
+			sr_replay_channel_pause(bus, true);
+			return;
+		}
+
+		sr_event_record event = {};
+		if (!sr_event_controller_get_event(controller, eventId, &event))
+			return;
+		const QStringList candidates = editPreviewCandidates(event);
+		uint64_t target = editTimeline ? editTimeline->playheadTimestamp() : event.in_ns;
+		target = qBound(event.in_ns, target, event.out_ns);
+		const uint64_t inNs = event.in_ns;
+		const uint64_t outNs = event.out_ns;
+		sr_event_controller_free_event(&event);
+		for (const QString &camera : candidates) {
+			if (!cueEditPreviewAt(camera, eventId, target, inNs, outNs))
+				continue;
+			sr_replay_channel_set_loop(bus, loopButton && loopButton->isChecked());
+			sr_replay_channel_play(bus);
+			return;
+		}
 	}
 
 	void jogMoved(int value)
@@ -1235,7 +4585,7 @@ private:
 		if (!speed)
 			return;
 		sr_replay_channel_set_backward(transportBus(), position < 0);
-		sr_replay_channel_set_speed(transportBus(), speed);
+		setOperatorSpeed(speed);
 		if (state.paused)
 			sr_replay_channel_pause(transportBus(), false);
 		else if (!state.playing)
@@ -1247,16 +4597,26 @@ private:
 	bool cueSelected(enum sr_replay_bus bus)
 	{
 		const uint64_t eventId = selectedEventId();
-		const QString camera = selectedCamera();
 		if (!eventId) {
 			setStatus("EventDock.NoEventSelected");
 			return false;
 		}
-		if (camera.isEmpty()) {
-			setStatus("EventDock.NoCameraSelected");
+
+		sr_event_record event = {};
+		if (!controller || !sr_event_controller_get_event(controller, eventId, &event)) {
+			setStatus("EventDock.Failed");
 			return false;
 		}
-		QPushButton *angle = angleButton(camera);
+		QString camera = eventPreferredCamera(event);
+		if (camera.isEmpty())
+			camera = automaticCameraForEvent(event, bus);
+		sr_event_controller_free_event(&event);
+		if (camera.isEmpty()) {
+			setStatus("EventDock.CueFailed");
+			return false;
+		}
+
+		QToolButton *angle = angleButton(camera);
 		if (angle && angle->property("coverage").toInt() == SR_REPLAY_COVERAGE_NONE) {
 			status->setText(T("EventDock.CueNoCoverage").arg(camera));
 			return false;
@@ -1278,18 +4638,24 @@ private:
 
 	void playSelectedEvent()
 	{
-		const enum sr_replay_bus bus = transportBus();
-		if (!cueSelected(bus))
+		const std::vector<uint64_t> eventIds = selectedEventIds();
+		if (eventIds.empty()) {
+			setStatus("EventDock.NoEventSelected");
 			return;
-		takeBus(bus);
-	}
+		}
 
-	void startPlaylist(enum sr_replay_bus bus)
-	{
-		const QString camera = selectedCamera();
-		const QByteArray cameraUtf8 = camera.toUtf8();
-		const char *preferred = camera.isEmpty() ? nullptr : cameraUtf8.constData();
-		if (!controller || !sr_replay_playlist_start(bus, currentList(), preferred)) {
+		const enum sr_replay_bus bus = transportBus();
+		if (eventIds.size() == 1) {
+			if (!cueSelected(bus))
+				return;
+			takeBus(bus);
+			return;
+		}
+
+		bool transitionRequested = false;
+		const bool crossBus = eventTransitionCrossBus(&transitionRequested);
+		if (!controller || !sr_replay_playlist_start_events_with_transitions(
+					   bus, currentList(), eventIds.data(), eventIds.size(), nullptr, crossBus)) {
 			setStatus("EventDock.PlaylistFailed");
 			return;
 		}
@@ -1299,16 +4665,116 @@ private:
 			setStatus("EventDock.TakeFailed");
 			return;
 		}
-		status->setText(T("EventDock.PlaylistStarted")
-					.arg(currentList())
-					.arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B")));
+
+		QString message = T("EventDock.PlaySelected") +
+				  QStringLiteral(": %1 Events · %2")
+					  .arg(eventIds.size())
+					  .arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"));
+		if (transitionRequested && !crossBus)
+			message += QStringLiteral(" · ") + T("EventDock.EventTransitionFallback");
+		status->setText(message);
+		refreshTransportStatus();
+	}
+
+	void playEachAngle()
+	{
+		const uint64_t eventId = selectedEventId();
+		if (!controller || !eventId) {
+			setStatus("EventDock.NoEventSelected");
+			return;
+		}
+		bool transitionRequested = false;
+		const bool crossBus = eventTransitionCrossBus(&transitionRequested);
+		const enum sr_replay_bus bus = transportBus();
+		if (!sr_replay_playlist_start_event_angles(bus, eventId, crossBus)) {
+			setStatus("EventDock.AngleSequenceFailed");
+			return;
+		}
+		if (!sr_replay_take_bus(controller, bus)) {
+			sr_replay_playlist_stop(bus);
+			sr_replay_channel_stop(bus);
+			setStatus("EventDock.TakeFailed");
+			return;
+		}
+		sr_replay_playlist_state sequence = {};
+		sr_replay_playlist_get_state(bus, &sequence);
+		QString message = T("EventDock.AngleSequenceStarted").arg(eventId).arg(sequence.count);
+		if (transitionRequested && !crossBus)
+			message += QStringLiteral(" · ") + T("EventDock.EventTransitionFallback");
+		status->setText(message);
+		refreshTransportStatus();
+	}
+
+	bool selectEventRowById(uint64_t eventId)
+	{
+		if (!table || !eventId)
+			return false;
+		for (int row = 0; row < table->rowCount(); row++) {
+			QTableWidgetItem *item = table->item(row, 0);
+			if (item && item->data(Qt::UserRole).toULongLong() == eventId) {
+				table->setCurrentCell(row, 0);
+				table->selectRow(row);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void playLastEvent()
+	{
+		if (!table || table->rowCount() <= 0) {
+			setStatus("EventDock.NoEventSelected");
+			return;
+		}
+		table->setCurrentCell(table->rowCount() - 1, 0);
+		table->selectRow(table->rowCount() - 1);
+		playSelectedEvent();
+	}
+
+	void playById()
+	{
+		bool accepted = false;
+		const QString text = QInputDialog::getText(this, T("EventDock.PlayByIdTitle"),
+							   T("EventDock.PlayByIdPrompt"), QLineEdit::Normal, QString(),
+							   &accepted);
+		if (!accepted)
+			return;
+		bool valid = false;
+		const uint64_t eventId = text.trimmed().toULongLong(&valid);
+		if (!valid || !eventId || !selectEventRowById(eventId)) {
+			status->setText(T("EventDock.PlayByIdNotFound").arg(text.trimmed()).arg(currentList()));
+			return;
+		}
+		playSelectedEvent();
+	}
+
+	void startPlaylist(enum sr_replay_bus bus)
+	{
+		bool transitionRequested = false;
+		const bool crossBus = eventTransitionCrossBus(&transitionRequested);
+		if (!controller || !sr_replay_playlist_start_with_transitions(bus, currentList(), nullptr, crossBus)) {
+			setStatus("EventDock.PlaylistFailed");
+			return;
+		}
+		if (!sr_replay_take_bus(controller, bus)) {
+			sr_replay_playlist_stop(bus);
+			sr_replay_channel_stop(bus);
+			setStatus("EventDock.TakeFailed");
+			return;
+		}
+		QString message = T("EventDock.PlaylistStarted")
+					  .arg(currentList())
+					  .arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"));
+		if (transitionRequested && !crossBus)
+			message += QStringLiteral(" · ") + T("EventDock.EventTransitionFallback");
+		status->setText(message);
 		refresh();
 		refreshTransportStatus();
 	}
 
 	void nextPlaylist()
 	{
-		if (!sr_replay_playlist_next(transportBus())) {
+		if (!sr_replay_playlist_next(activePlaylistBus())) {
 			setStatus("EventDock.PlaylistFinished");
 			refreshTransportStatus();
 			return;
@@ -1320,13 +4786,18 @@ private:
 
 	void stopPlaylist()
 	{
-		sr_replay_playlist_stop(transportBus());
+		sr_replay_playlist_stop(activePlaylistBus());
 		setStatus("EventDock.PlaylistStopped");
 		refreshTransportStatus();
 	}
 
 	void takeBus(enum sr_replay_bus bus)
 	{
+		sr_replay_channel_state candidate = {};
+		if (sr_replay_channel_get_state(bus, &candidate) && candidate.cued && candidate.preview_mode) {
+			if (!cueSelected(bus))
+				return;
+		}
 		if (!controller || !sr_replay_take_bus(controller, bus)) {
 			setStatus("EventDock.TakeFailed");
 			return;
@@ -1339,6 +4810,12 @@ private:
 
 	void takeToggleBus()
 	{
+		const enum sr_replay_bus bus = transportBus();
+		sr_replay_channel_state candidate = {};
+		if (sr_replay_channel_get_state(bus, &candidate) && candidate.cued && candidate.preview_mode) {
+			if (!cueSelected(bus))
+				return;
+		}
 		if (!controller || !sr_replay_take_toggle(controller)) {
 			setStatus("EventDock.TakeFailed");
 			return;
@@ -1366,6 +4843,11 @@ private:
 			setStatus("EventDock.NoCue");
 			return;
 		}
+		if (!replayPlayoutActive() && state.preview_mode) {
+			toggleEditPreview();
+			refreshTransportStatus();
+			return;
+		}
 		const bool ok = state.playing && !state.paused ? sr_replay_channel_pause(bus, true)
 				: state.paused                 ? sr_replay_channel_pause(bus, false)
 							       : sr_replay_channel_play(bus);
@@ -1383,6 +4865,12 @@ private:
 
 	void restartTransport()
 	{
+		sr_replay_channel_state state = {};
+		if (!replayPlayoutActive() && sr_replay_channel_get_state(transportBus(), &state) && state.cued &&
+		    state.preview_mode) {
+			gotoEditMarker(false);
+			return;
+		}
 		sr_replay_channel_restart(transportBus());
 		refreshTransportStatus();
 	}
@@ -1396,9 +4884,9 @@ private:
 		refreshTransportStatus();
 	}
 
-	QPushButton *angleButton(const QString &camera) const
+	QToolButton *angleButton(const QString &camera) const
 	{
-		for (QPushButton *button : angleButtons) {
+		for (QToolButton *button : angleButtons) {
 			if (button->property("cameraName").toString() == camera)
 				return button;
 		}
@@ -1408,7 +4896,7 @@ private:
 	bool addExportTask(std::vector<ExportTask> &tasks, const std::string &sessionDir, const QString &camera,
 			   const QString &outputPath, const sr_event_record &event)
 	{
-		QPushButton *button = angleButton(camera);
+		QToolButton *button = angleButton(camera);
 		if (!button || button->property("coverage").toInt() != SR_REPLAY_COVERAGE_FULL)
 			return false;
 
@@ -1419,7 +4907,8 @@ private:
 		task.eventInNs = event.in_ns;
 		task.eventOutNs = event.out_ns;
 		task.syncOffsetNs = button->property("syncOffsetNs").toLongLong();
-		task.includeMasterAudio = event.audio_mode == SR_EVENT_AUDIO_MASTER;
+		task.includeMasterAudio = event.audio_mode == SR_EVENT_AUDIO_MASTER ||
+					  sr_camera_is_program_name(task.camera.c_str());
 		tasks.emplace_back(std::move(task));
 		return true;
 	}
@@ -1452,7 +4941,7 @@ private:
 		}
 
 		QStringList fullAngles;
-		for (QPushButton *button : angleButtons) {
+		for (QToolButton *button : angleButtons) {
 			if (button->property("coverage").toInt() == SR_REPLAY_COVERAGE_FULL)
 				fullAngles.append(button->property("cameraName").toString());
 		}
@@ -1486,8 +4975,6 @@ private:
 					      event);
 		} else {
 			QString camera = preferred;
-			if (!fullAngles.contains(camera))
-				camera = selectedCamera();
 			if (!fullAngles.contains(camera))
 				camera = fullAngles.first();
 
@@ -1607,10 +5094,15 @@ private:
 
 	void refresh(uint64_t selectEventId = 0)
 	{
-		if (!controller || !table || tableEditing)
+		if (!controller || !table || tableEditing || table->selectionGestureActive() ||
+		    (thumbnailViewActive() && (QApplication::mouseButtons() & Qt::LeftButton)))
 			return;
-		if (!selectEventId)
-			selectEventId = selectedEventId();
+		std::vector<uint64_t> preserveSelection;
+		if (selectEventId)
+			preserveSelection.push_back(selectEventId);
+		else
+			preserveSelection = selectedEventIds();
+		const uint64_t currentEventId = selectEventId ? selectEventId : selectedEventId();
 
 		uint64_t *eventIds = nullptr;
 		size_t count = 0;
@@ -1620,9 +5112,11 @@ private:
 		}
 
 		tableRefreshing = true;
+		const QSignalBlocker tableSignals(table);
 		table->setUpdatesEnabled(false);
 		table->setRowCount((int)count);
-		int selectedRow = -1;
+		std::vector<int> selectedRows;
+		int currentRow = -1;
 		for (size_t i = 0; i < count; i++) {
 			sr_event_record event = {};
 			if (!sr_event_controller_get_event(controller, eventIds[i], &event))
@@ -1635,30 +5129,51 @@ private:
 			auto *duration = new QTableWidgetItem(durationText(event));
 			duration->setFlags(duration->flags() & ~Qt::ItemIsEditable);
 			table->setItem((int)i, 1, duration);
-			table->setItem((int)i, 2,
-				       new QTableWidgetItem(QString::number(event.speed_percent, 'f', 0) +
-							    QStringLiteral("%")));
+			const bool inheritedSpeed = sr_config_get_replay_speed_policy() == SR_REPLAY_SPEED_GLOBAL &&
+						    !event.speed_override;
+			auto *speedItem = new QTableWidgetItem(
+				inheritedSpeed ? QStringLiteral("--")
+					       : QString::number(event.speed_percent, 'f', 0) + QStringLiteral("%"));
+			speedItem->setToolTip(T("EventDock.EventSpeed.Tooltip"));
+			table->setItem((int)i, 2, speedItem);
 			auto *state = new QTableWidgetItem(stateText(event));
 			state->setFlags(state->flags() & ~Qt::ItemIsEditable);
 			table->setItem((int)i, 3, state);
-			table->setItem((int)i, 4,
+
+			const QString preferredCamera = eventPreferredCamera(event);
+			auto *angle = new QTableWidgetItem(eventAngleText(event));
+			angle->setFlags(angle->flags() & ~Qt::ItemIsEditable);
+			angle->setToolTip(preferredCamera.isEmpty()
+						  ? T("EventDock.AngleAuto.Tooltip")
+						  : T("EventDock.AnglePreferred.Tooltip").arg(preferredCamera));
+			table->setItem((int)i, 4, angle);
+			table->setItem((int)i, 5,
 				       new QTableWidgetItem(QString::fromUtf8(event.name ? event.name : "")));
-			table->setItem((int)i, 5, new QTableWidgetItem(QString::fromUtf8(event.tag ? event.tag : "")));
-			if (event.id == selectEventId)
-				selectedRow = (int)i;
+			table->setItem((int)i, 6, new QTableWidgetItem(QString::fromUtf8(event.tag ? event.tag : "")));
+			if (std::find(preserveSelection.begin(), preserveSelection.end(), event.id) !=
+			    preserveSelection.end())
+				selectedRows.push_back((int)i);
+			if (event.id == currentEventId)
+				currentRow = (int)i;
 			sr_event_controller_free_event(&event);
 		}
 		bfree(eventIds);
+		table->clearSelection();
+		for (int row : selectedRows)
+			table->selectionModel()->select(table->model()->index(row, 0),
+							QItemSelectionModel::Select | QItemSelectionModel::Rows);
+		if (currentRow >= 0)
+			table->setCurrentCell(currentRow, 0, QItemSelectionModel::NoUpdate);
 		table->setUpdatesEnabled(true);
 		tableRefreshing = false;
-		if (selectedRow >= 0)
-			table->selectRow(selectedRow);
+		refreshEventGallery();
+		refreshAngleCoverage();
 	}
 
 	void editEvent(QTableWidgetItem *item)
 	{
 		if (tableRefreshing || !controller || !item ||
-		    (item->column() != 2 && item->column() != 4 && item->column() != 5))
+		    (item->column() != 2 && item->column() != 5 && item->column() != 6))
 			return;
 		tableEditing = false;
 		QTableWidgetItem *idItem = table->item(item->row(), 0);
@@ -1669,13 +5184,17 @@ private:
 			return;
 		}
 
-		QString speedText = table->item(item->row(), 2)->text();
-		speedText.remove(QChar('%'));
-		bool speedOk = false;
-		const double speed = speedText.trimmed().toDouble(&speedOk);
-		const QByteArray name = table->item(item->row(), 4)->text().trimmed().toUtf8();
-		const QByteArray tag = table->item(item->row(), 5)->text().trimmed().toUtf8();
-		if (!speedOk || speed < 10.0 || speed > 400.0) {
+		QString speedText = table->item(item->row(), 2)->text().trimmed();
+		const bool speedOverride = !speedText.isEmpty() && speedText != QStringLiteral("--");
+		double speed = event.speed_percent;
+		bool speedOk = true;
+		if (speedOverride) {
+			speedText.remove(QChar('%'));
+			speed = speedText.trimmed().toDouble(&speedOk);
+		}
+		const QByteArray name = table->item(item->row(), 5)->text().trimmed().toUtf8();
+		const QByteArray tag = table->item(item->row(), 6)->text().trimmed().toUtf8();
+		if (!speedOk || (speedOverride && (speed < 10.0 || speed > 400.0))) {
 			sr_event_controller_free_event(&event);
 			setStatus("EventDock.InvalidSpeed");
 			refresh(eventId);
@@ -1687,6 +5206,7 @@ private:
 		update.out_ns = event.out_ns;
 		update.preferred_camera_id = event.preferred_camera_id;
 		update.speed_percent = speed;
+		update.speed_override = speedOverride;
 		update.audio_mode = event.audio_mode;
 		update.protected_event = event.protected_event;
 		update.played = event.played;
@@ -1781,79 +5301,99 @@ private:
 
 	void toggleProtected()
 	{
-		const uint64_t eventId = selectedEventId();
-		if (!eventId)
+		const std::vector<uint64_t> ids = selectedEventIds();
+		if (ids.empty())
 			return;
-		sr_event_record event = {};
-		if (!sr_event_controller_get_event(controller, eventId, &event)) {
+		sr_event_record first = {};
+		if (!sr_event_controller_get_event(controller, ids.front(), &first)) {
 			setStatus("EventDock.Failed");
 			return;
 		}
-		const bool value = !event.protected_event;
-		sr_event_controller_free_event(&event);
-		if (!sr_event_controller_set_protected(controller, eventId, value)) {
+		const bool value = !first.protected_event;
+		sr_event_controller_free_event(&first);
+		bool ok = true;
+		for (uint64_t id : ids)
+			ok = sr_event_controller_set_protected(controller, id, value) && ok;
+		if (!ok)
 			setStatus("EventDock.Failed");
-			return;
+		refresh();
+	}
+
+	void clearDeletedEventUi(uint64_t eventId)
+	{
+		eventThumbnailCache.erase(eventId);
+		anglePreviewCache.erase(eventId);
+		if (previewTargetEventId == eventId) {
+			previewTargetEventId = 0;
+			previewLoadedEventId = 0;
 		}
-		refresh(eventId);
+		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
+			const auto bus = static_cast<sr_replay_bus>(i);
+			sr_replay_playlist_state playlist = {};
+			if (sr_replay_playlist_get_state(bus, &playlist) && playlist.active &&
+			    playlist.event_id == eventId)
+				sr_replay_playlist_stop(bus);
+			sr_replay_channel_state state = {};
+			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.event_id == eventId)
+				sr_replay_channel_clear(bus);
+		}
 	}
 
 	void deleteSelected(bool deleteMedia)
 	{
-		const uint64_t eventId = selectedEventId();
-		if (!eventId)
+		const std::vector<uint64_t> ids = selectedEventIds();
+		if (ids.empty())
 			return;
 
-		if (deleteMedia) {
+		size_t deleted = 0;
+		size_t protectedSkipped = 0;
+		size_t errors = 0;
+		sr_storage_cleanup_result cleanupTotal = {};
+		for (uint64_t eventId : ids) {
 			sr_event_record event = {};
 			if (!sr_event_controller_get_event(controller, eventId, &event)) {
-				setStatus("EventDock.Failed");
-				return;
+				errors++;
+				continue;
 			}
 			const bool protectedEvent = event.protected_event;
 			sr_event_controller_free_event(&event);
 			if (protectedEvent) {
-				setStatus("EventDock.ProtectedMedia");
-				return;
+				protectedSkipped++;
+				continue;
 			}
-		}
 
-		const char *confirmKey = deleteMedia ? "EventDock.DeleteMediaConfirm" : "EventDock.DeleteConfirm";
-		if (QMessageBox::question(this, T("EventDock.DeleteTitle"), T(confirmKey)) != QMessageBox::Yes)
-			return;
-
-		if (!deleteMedia) {
-			if (!sr_event_controller_delete_event(controller, eventId)) {
-				setStatus("EventDock.Failed");
-				return;
+			bool ok = false;
+			if (!deleteMedia) {
+				ok = sr_event_controller_delete_event(controller, eventId);
+			} else {
+				sr_storage_cleanup_result cleanup = {};
+				ok = sr_event_controller_delete_event_with_media(controller, eventId, &cleanup);
+				cleanupTotal.segments_examined += cleanup.segments_examined;
+				cleanupTotal.segments_deleted += cleanup.segments_deleted;
+				cleanupTotal.segments_pinned += cleanup.segments_pinned;
+				cleanupTotal.camera_dirs_scanned += cleanup.camera_dirs_scanned;
+				cleanupTotal.errors += cleanup.errors;
 			}
-			setStatus("EventDock.Deleted");
-			refresh();
-			return;
+			if (!ok) {
+				errors++;
+				continue;
+			}
+			deleted++;
+			clearDeletedEventUi(eventId);
 		}
 
-		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
-			sr_replay_channel_state state = {};
-			const auto bus = static_cast<sr_replay_bus>(i);
-			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.event_id == eventId)
-				sr_replay_channel_clear(bus);
-		}
-
-		sr_storage_cleanup_result cleanup = {};
-		if (!sr_event_controller_delete_event_with_media(controller, eventId, &cleanup)) {
-			setStatus("EventDock.MediaCleanupFailed");
-			return;
-		}
-
-		status->setText(T("EventDock.MediaDeleted")
-					.arg(cleanup.segments_deleted)
-					.arg(cleanup.segments_pinned)
-					.arg(cleanup.errors));
+		errors += cleanupTotal.errors;
+		status->setText(T(deleteMedia ? "EventDock.DeleteMediaSummary" : "EventDock.DeleteSummary")
+					.arg(deleted)
+					.arg(protectedSkipped)
+					.arg(errors)
+					.arg(cleanupTotal.segments_deleted)
+					.arg(cleanupTotal.segments_pinned));
 		refresh();
 	}
 
 	sr_event_controller *controller = nullptr;
-	QComboBox *listCombo = nullptr;
+	QTabBar *listTabs = nullptr;
 	QComboBox *targetCombo = nullptr;
 	QComboBox *cameraCombo = nullptr;
 	QComboBox *busCombo = nullptr;
@@ -1861,18 +5401,38 @@ private:
 	QComboBox *audioCombo = nullptr;
 	QComboBox *exportModeCombo = nullptr;
 	QGridLayout *angleGrid = nullptr;
-	QVector<QPushButton *> angleButtons;
-	QSlider *timelineSlider = nullptr;
+	QVector<QToolButton *> angleButtons;
+	QStackedWidget *eventViewStack = nullptr;
+	QListWidget *thumbnailList = nullptr;
+	QStackedWidget *timelineStack = nullptr;
+	SrReplayTimeline *editTimeline = nullptr;
+	SrRangeSlider *timelineSlider = nullptr;
+	QWidget *editTimelineControls = nullptr;
+	QPushButton *editSetInButton = nullptr;
+	QPushButton *editGotoInButton = nullptr;
+	QPushButton *editPreviewButton = nullptr;
+	QPushButton *editGotoOutButton = nullptr;
+	QPushButton *editSetOutButton = nullptr;
+	QPushButton *editFitButton = nullptr;
+	QPushButton *editLiveButton = nullptr;
 	QSlider *jogSlider = nullptr;
 	QSlider *shuttleSlider = nullptr;
 	QLabel *timelineTime = nullptr;
+	QLabel *timelineModeLabel = nullptr;
 	QLabel *shuttleValue = nullptr;
 	QPushButton *reverseButton = nullptr;
 	QPushButton *loopButton = nullptr;
 	QPushButton *exportCancelButton = nullptr;
 	QProgressBar *exportProgressBar = nullptr;
-	QTableWidget *table = nullptr;
+	SrEventTable *table = nullptr;
+	QTableWidget *performanceTable = nullptr;
+	QWidget *performancePanel = nullptr;
+	QToolButton *performanceToggle = nullptr;
+	QToolButton *recordToggle = nullptr;
+	QToolButton *setupButton = nullptr;
+	QLabel *setupSourceStatus = nullptr;
 	QLabel *recordStatus = nullptr;
+	QLabel *performanceSummary = nullptr;
 	QLabel *programStatus = nullptr;
 	QLabel *cueAStatus = nullptr;
 	QLabel *cueBStatus = nullptr;
@@ -1887,13 +5447,81 @@ private:
 	unsigned cameraRefreshTicks = 0;
 	std::unique_ptr<ExportJob> exportJob;
 	std::unique_ptr<AnglePreviewJob> anglePreviewJob;
+	std::unique_ptr<EventThumbnailJob> eventThumbnailJob;
+	std::map<uint64_t, std::map<std::string, QIcon>> anglePreviewCache;
+	std::map<uint64_t, CachedEventThumbnail> eventThumbnailCache;
+	std::vector<uint64_t> galleryEventIds;
+	unsigned galleryListId = 0;
+	uint64_t galleryGeneration = 1;
+	bool syncingEventViews = false;
+	uint64_t timelineEventId = 0;
+	uint64_t editTimelineStartNs = 0;
+	uint64_t editTimelineEndNs = 0;
+	bool editTimelineHaveBounds = false;
+	uint64_t editPreviewEventId = 0;
+	enum sr_replay_bus editPreviewBus = SR_REPLAY_BUS_A;
+	QString editPreviewCamera;
 	uint64_t previewTargetEventId = 0;
 	uint64_t previewLoadedEventId = 0;
 };
+
+QPointer<SrEventDock> g_event_dock;
 
 } // namespace
 
 QWidget *sr_event_dock_create(struct sr_event_controller *controller, QWidget *parent)
 {
-	return new SrEventDock(controller, parent);
+	auto *dock = new SrEventDock(controller, parent);
+	g_event_dock = dock;
+	return dock;
+}
+
+bool sr_event_dock_get_editor_snapshot(struct sr_event_editor_snapshot *snapshot)
+{
+	return g_event_dock && g_event_dock->editorSnapshot(snapshot);
+}
+
+bool sr_event_dock_editor_seek(uint64_t timestamp_ns)
+{
+	return g_event_dock && g_event_dock->editorSeek(timestamp_ns);
+}
+
+bool sr_event_dock_editor_set_range(uint64_t in_ns, uint64_t out_ns)
+{
+	return g_event_dock && g_event_dock->editorSetRange(in_ns, out_ns);
+}
+
+bool sr_event_dock_editor_set_marker(bool out_marker)
+{
+	return g_event_dock && g_event_dock->editorSetMarker(out_marker);
+}
+
+bool sr_event_dock_editor_goto_marker(bool out_marker)
+{
+	return g_event_dock && g_event_dock->editorGotoMarker(out_marker);
+}
+
+bool sr_event_dock_editor_step_frames(int frames)
+{
+	return g_event_dock && g_event_dock->editorStepFrames(frames);
+}
+
+bool sr_event_dock_editor_select_camera(const char *camera_name)
+{
+	return g_event_dock && g_event_dock->editorSelectCamera(QString::fromUtf8(camera_name ? camera_name : ""));
+}
+
+bool sr_event_dock_editor_toggle_play(void)
+{
+	return g_event_dock && g_event_dock->editorTogglePlay();
+}
+
+bool sr_event_dock_editor_play_from_in(void)
+{
+	return g_event_dock && g_event_dock->editorPlayFromIn();
+}
+
+bool sr_event_dock_editor_set_loop(bool enabled)
+{
+	return g_event_dock && g_event_dock->editorSetLoop(enabled);
 }

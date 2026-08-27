@@ -12,6 +12,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-camera-identity.h"
 #include "sr-capture.h"
+#include "sr-program-recorder.h"
 
 #include <obs-module.h>
 #include <util/bmem.h>
@@ -127,6 +128,28 @@ bool sr_camera_list_capture(struct sr_camera_list *list)
 	if (builder.failed) {
 		free_builder(&builder);
 		return false;
+	}
+
+	if (sr_program_recorder_selected() && !contains_key(&builder, SR_PROGRAM_CAMERA_KEY)) {
+		if (builder.count == builder.capacity) {
+			const size_t next_capacity = builder.capacity ? builder.capacity * 2 : 8;
+			struct camera_entry *next = brealloc(builder.items, next_capacity * sizeof(*next));
+			if (!next) {
+				free_builder(&builder);
+				return false;
+			}
+			builder.items = next;
+			builder.capacity = next_capacity;
+		}
+		struct camera_entry *entry = &builder.items[builder.count];
+		memset(entry, 0, sizeof(*entry));
+		entry->name = bstrdup(SR_PROGRAM_CAMERA_NAME);
+		if (!entry->name) {
+			free_builder(&builder);
+			return false;
+		}
+		memcpy(entry->key, SR_PROGRAM_CAMERA_KEY, sizeof(SR_PROGRAM_CAMERA_KEY));
+		builder.count++;
 	}
 
 	if (builder.count > 1)

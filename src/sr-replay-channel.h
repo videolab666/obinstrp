@@ -49,6 +49,12 @@ struct sr_replay_channel_state {
 	bool backward;
 	bool loop;
 	bool partial_coverage;
+	bool preview_mode;
+	bool decoder_open;
+	bool hardware_decode;
+	uint64_t decode_requests;
+	uint64_t decode_cache_hits;
+	uint64_t decoded_frames;
 	char camera_name[256];
 };
 
@@ -60,6 +66,13 @@ bool sr_replay_channels_init(struct sr_event_controller *events);
 void sr_replay_channels_shutdown(void);
 
 bool sr_replay_channel_cue(enum sr_replay_bus bus, uint64_t event_id, const char *camera_name);
+
+/* Cues a transient EDIT preview range. Unlike a normal Event cue, the visible
+ * transport bounds may span the recording around the requested playhead. The
+ * Event database is not modified and taking the bus should re-cue the Event
+ * normally first. */
+bool sr_replay_channel_cue_preview(enum sr_replay_bus bus, uint64_t event_id, const char *camera_name,
+				   uint64_t range_in_ns, uint64_t range_out_ns, uint64_t playhead_ns);
 
 /* Replaces only the camera backing an already-cued Event. The Event, playhead,
  * speed, direction, loop and play/pause state are preserved atomically. The
@@ -75,6 +88,11 @@ void sr_replay_channel_stop(enum sr_replay_bus bus);
 void sr_replay_channel_restart(enum sr_replay_bus bus);
 
 bool sr_replay_channel_set_speed(enum sr_replay_bus bus, double speed_percent);
+
+/* Process-wide operator speed controller. In Global policy it is applied to
+ * both buses immediately and is inherited by every newly cued Event/angle. */
+bool sr_replay_channel_set_controller_speed(double speed_percent);
+double sr_replay_channel_get_controller_speed(void);
 bool sr_replay_channel_set_audio_mode(enum sr_replay_bus bus, enum sr_replay_audio_mode audio_mode);
 bool sr_replay_channel_set_backward(enum sr_replay_bus bus, bool backward);
 bool sr_replay_channel_set_loop(enum sr_replay_bus bus, bool loop);

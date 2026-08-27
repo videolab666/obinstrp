@@ -1,13 +1,12 @@
 # OBS Pitel Instant Replay — vMix-style Instant Replay roadmap
 
 **Repository:** `videolab666/obinstrp`  
-**Upstream:** `Voodoo25/obs-sports-replay`  
 **Target:** Windows x64 first, OBS Studio 31/32+  
 **Primary use case:** 4×1080p50/60 sports replay with long-running ISO recording, fast multi-angle events, slow motion, A/B replay outputs, audio, stingers and safe disk retention.
 
 ## 1. Goal
 
-Evolve the existing plugin rather than rewrite it. The current code already provides useful building blocks: per-camera capture filters, H.264 encoding through NVENC/AMF/QSV/x264, OBS nanosecond timestamps, replay playback, slow/reverse controls, audio capture, MP4 remux/load, scene tracking, thumbnails and a native Qt dock.
+Evolve the Pitel Instant Replay codebase without destabilizing proven replay paths. The current code already provides useful building blocks: per-camera capture filters, H.264 encoding through NVENC/AMF/QSV/x264, OBS nanosecond timestamps, replay playback, slow/reverse controls, audio capture, MP4 remux/load, scene tracking, thumbnails and a native Qt dock.
 
 The target architecture is:
 
@@ -737,19 +736,11 @@ cam04/*.srseg
 
 Only after this is stable should the old replay acquisition path be replaced by EventDB + disk playback.
 
-## 28. Upstream maintenance
+## 28. Standalone project maintenance
 
-Keep the fork easy to rebase/merge with upstream. Avoid gratuitous renames and preserve GPL-2.0-or-later notices.
-
-Local developer setup:
-
-```bash
-git remote add upstream https://github.com/Voodoo25/obs-sports-replay.git
-git fetch upstream
-```
+Keep Pitel Instant Replay runtime and packaging identifiers self-contained. Historical third-party provenance is documented only in `THIRD_PARTY_NOTICES.md`.
 
 ## 29. References
 
-- Upstream: https://github.com/Voodoo25/obs-sports-replay
 - OBS native stinger: https://github.com/obsproject/obs-studio/blob/master/plugins/obs-transitions/transition-stinger.c
 - OBS platform file/disk API: https://github.com/obsproject/obs-studio/blob/master/libobs/util/platform.h
