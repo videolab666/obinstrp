@@ -1,0 +1,43 @@
+name: Apply Windows GPU multiview compile fix
+run-name: Apply Windows GPU multiview compile fix
+
+on:
+  push:
+    branches:
+      - feature/hardware-zero-copy
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-windows-gpu-multiview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-19
+      - name: Apply Windows fix
+        run: |
+          python3 .github/fix-multiview-gpu-windows.py
+          clang-format-19 -i src/sr-multiview-dock.cpp
+          git diff --check
+      - name: Commit product fix
+        run: |
+          git add src/sr-multiview-dock.cpp
+          if git diff --cached --quiet; then
+            echo "Already applied"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: make GPU multiview compile on Windows"
+          git push origin HEAD:feature/hardware-zero-copy
