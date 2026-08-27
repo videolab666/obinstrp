@@ -150,6 +150,7 @@ public:
 		setAttribute(Qt::WA_NativeWindow);
 		setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 		setMinimumSize(160, 90);
+		pthread_mutex_init(&frameMutex, nullptr);
 		renderer = sr_gpu_renderer_create();
 	}
 
@@ -201,6 +202,16 @@ protected:
 		if (display)
 			obs_display_set_enabled(display, false);
 		QWidget::hideEvent(event);
+	}
+
+	void resizeEvent(QResizeEvent *event) override
+	{
+		QWidget::resizeEvent(event);
+		createDisplay();
+		if (display) {
+			const QSize size = previewPixelSize(this);
+			obs_display_resize(display, (uint32_t)size.width(), (uint32_t)size.height());
+		}
 	}
 
 private:
@@ -259,7 +270,7 @@ private:
 
 	obs_display_t *display = nullptr;
 	struct sr_gpu_renderer *renderer = nullptr;
-	pthread_mutex_t frameMutex = PTHREAD_MUTEX_INITIALIZER;
+	pthread_mutex_t frameMutex;
 	AVFrame *frame = nullptr;
 };
 
@@ -295,9 +306,8 @@ public:
 		condition.notify_all();
 	}
 
-	void request(uint64_t timestampNs, int targetHeight)
+	void request(uint64_t timestampNs)
 	{
-		UNUSED_PARAMETER(targetHeight);
 		std::lock_guard<std::mutex> lock(mutex);
 		requestedTimestampNs = timestampNs;
 		requestSerial++;
@@ -469,10 +479,13 @@ public:
 		this->coverage = coverage;
 		this->atPlayhead = atPlayhead;
 		updateTitle();
-		if (coverage == SR_REPLAY_COVERAGE_NONE)
+		if (coverage == SR_REPLAY_COVERAGE_NONE) {
+			clearFrame();
 			setMessage(T("Multiview.NoCoverage"));
-		else if (!atPlayhead)
+		} else if (!atPlayhead) {
+			clearFrame();
 			setMessage(T("Multiview.NoMediaAtCursor"));
+		}
 	}
 
 	void setFrame(const AVFrame *frame, uint64_t relativeTimestampNs)
@@ -496,12 +509,6 @@ public:
 	void setMessage(const QString &message) { footer->setText(message); }
 
 protected:
-	void resizeEvent(QResizeEvent *event) override
-	{
-		QFrame::resizeEvent(event);
-		refreshPixmap();
-	}
-
 	void mousePressEvent(QMouseEvent *event) override
 	{
 		if (event->button() == Qt::LeftButton && clickHandler) {
@@ -933,14 +940,6 @@ public:
 		cameraMenu = new QMenu(cameraMenuButton);
 		cameraMenuButton->setMenu(cameraMenu);
 		toolbar->addWidget(cameraMenuButton);
-		toolbar->addWidget(new QLabel(T("Multiview.Quality"), this));
-		quality = new QComboBox(this);
-		quality->addItem(T("Multiview.QualityAuto"), 0);
-		quality->addItem(QStringLiteral("360p"), 360);
-		quality->addItem(QStringLiteral("540p"), 540);
-		quality->addItem(QStringLiteral("720p"), 720);
-		quality->addItem(T("Multiview.QualitySource"), -1);
-		toolbar->addWidget(quality);
 		toolbar->addWidget(new QLabel(T("Multiview.Fps"), this));
 		fps = new QComboBox(this);
 		fps->addItem(T("Multiview.FpsAuto"), 0);
@@ -1007,7 +1006,6 @@ public:
 			[](bool checked) { sr_event_dock_editor_set_loop(checked); });
 		connect(fit, &QPushButton::clicked, timeline, [this]() { timeline->fit(); });
 		connect(live, &QPushButton::clicked, timeline, [this]() { timeline->live(); });
-		connect(quality, &QComboBox::currentIndexChanged, this, [this](int) { forceDecode = true; });
 		connect(fps, &QComboBox::currentIndexChanged, this, [this](int) { forceDecode = true; });
 
 		clock.start();
@@ -1194,15 +1192,6 @@ private:
 		forceDecode = true;
 	}
 
-	int targetHeight() const
-	{
-		const int configured = quality->currentData().toInt();
-		if (configured)
-			return configured;
-		const int count = (int)visibleTiles().size();
-		return count <= 2 ? 720 : count <= 4 ? 540 : 360;
-	}
-
 	int previewFps() const
 	{
 		const int configured = fps->currentData().toInt();
@@ -1249,7 +1238,6 @@ private:
 			return;
 		const QString session = QString::fromUtf8(sessionRaw);
 		bfree(sessionRaw);
-		const int height = targetHeight();
 		const int fpsLimit = std::max(1, previewFps());
 		const qint64 nowMs = clock.elapsed();
 		const QString selected = QString::fromUtf8(snapshot.selected_camera);
@@ -1275,7 +1263,7 @@ private:
 				continue;
 			last = nowMs;
 			const uint64_t cameraTimestamp = addSignedOffset(snapshot.playhead_ns, coverage.sync_offset_ns);
-			tile->decoder().request(cameraTimestamp, height);
+			tile->decoder().request(cameraTimestamp);
 		}
 	}
 
@@ -1357,7 +1345,6 @@ private:
 
 	QToolButton *cameraMenuButton = nullptr;
 	QMenu *cameraMenu = nullptr;
-	QComboBox *quality = nullptr;
 	QComboBox *fps = nullptr;
 	QPushButton *autoAngle = nullptr;
 	QLabel *stateLabel = nullptr;
