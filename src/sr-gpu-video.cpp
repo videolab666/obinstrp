@@ -564,9 +564,12 @@ static bool draw_native_d3d11(sr_gpu_renderer *renderer, const AVFrame *frame, u
 /* The D3D11 video processor and swscale both leave SDR RGB in its normal
  * nonlinear (display-encoded) form. GS_BGRA_UNORM is required by the native
  * video-processor output path, but unlike GS_BGRA it has no alternate sRGB
- * shader-resource view in libobs. When OBS asks an sRGB-aware source to render
- * into a linear-sRGB pass, explicitly decode the texture in the shader instead
- * of sampling the UNORM values as if they were already linear. */
+ * shader-resource view in libobs. Always decode that display-encoded RGB to
+ * linear light in the shader and enable sRGB framebuffer encoding on output.
+ * This is the same contract OBS uses while rendering an OBS_SOURCE_SRGB scene
+ * item, and it also keeps direct obs_display Multiview previews identical to
+ * Replay A instead of depending on whichever linear-sRGB state the caller left
+ * active. */
 static void draw_sdr_texture(gs_texture_t *texture, uint32_t width, uint32_t height)
 {
 	if (!texture)
@@ -576,15 +579,13 @@ static void draw_sdr_texture(gs_texture_t *texture, uint32_t width, uint32_t hei
 	if (!effect)
 		return;
 
-	const bool linear_srgb = gs_get_linear_srgb();
 	const bool previous_framebuffer_srgb = gs_framebuffer_srgb_enabled();
-	gs_enable_framebuffer_srgb(linear_srgb);
+	gs_enable_framebuffer_srgb(true);
 
 	gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
 	gs_effect_set_texture(image, texture);
 
-	const char *technique = linear_srgb ? "DrawSrgbDecompress" : "Draw";
-	while (gs_effect_loop(effect, technique))
+	while (gs_effect_loop(effect, "DrawSrgbDecompress"))
 		gs_draw_sprite(texture, 0, width, height);
 
 	gs_enable_framebuffer_srgb(previous_framebuffer_srgb);
