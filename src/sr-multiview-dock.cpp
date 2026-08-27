@@ -73,6 +73,9 @@ extern "C" {
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <Windows.h>
 #endif
 
@@ -150,7 +153,6 @@ public:
 		setAttribute(Qt::WA_NativeWindow);
 		setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 		setMinimumSize(160, 90);
-		pthread_mutex_init(&frameMutex, nullptr);
 		renderer = sr_gpu_renderer_create();
 	}
 
@@ -161,22 +163,21 @@ public:
 			obs_display_destroy(display);
 			display = nullptr;
 		}
-		pthread_mutex_lock(&frameMutex);
+		frameMutex.lock();
 		AVFrame *old = frame;
 		frame = nullptr;
-		pthread_mutex_unlock(&frameMutex);
+		frameMutex.unlock();
 		av_frame_free(&old);
 		sr_gpu_renderer_destroy(renderer);
-		pthread_mutex_destroy(&frameMutex);
 	}
 
 	void setFrame(const AVFrame *next)
 	{
 		AVFrame *copy = next ? av_frame_clone(next) : nullptr;
-		pthread_mutex_lock(&frameMutex);
+		frameMutex.lock();
 		AVFrame *old = frame;
 		frame = copy;
-		pthread_mutex_unlock(&frameMutex);
+		frameMutex.unlock();
 		av_frame_free(&old);
 	}
 
@@ -241,9 +242,9 @@ private:
 	{
 		if (!renderer || !cx || !cy)
 			return;
-		pthread_mutex_lock(&frameMutex);
+		frameMutex.lock();
 		AVFrame *current = frame ? av_frame_clone(frame) : nullptr;
-		pthread_mutex_unlock(&frameMutex);
+		frameMutex.unlock();
 		if (!current)
 			return;
 
@@ -270,7 +271,7 @@ private:
 
 	obs_display_t *display = nullptr;
 	struct sr_gpu_renderer *renderer = nullptr;
-	pthread_mutex_t frameMutex;
+	std::mutex frameMutex;
 	AVFrame *frame = nullptr;
 };
 
