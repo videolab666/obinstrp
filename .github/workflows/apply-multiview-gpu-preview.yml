@@ -28,6 +28,7 @@ jobs:
       - name: Apply GPU preview refactor
         run: |
           python3 .github/apply-multiview-gpu-preview.py
+          python3 .github/fix-multiview-gpu-preview-followup.py
           clang-format-19 -i src/sr-multiview-dock.cpp
           git diff --check
       - name: Commit product change
@@ -39,5 +40,5 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "feat: render replay multiview through OBS GPU path"
+          git commit -m "fix: finish GPU-native replay multiview preview"
           git push origin HEAD:feature/hardware-zero-copy
