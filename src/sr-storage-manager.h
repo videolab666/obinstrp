@@ -23,6 +23,7 @@ extern "C" {
  * directory/index scanning outside capture, render and Qt threads. */
 bool sr_storage_manager_start(void);
 void sr_storage_manager_stop(void);
+bool sr_storage_manager_wait_initial_recovery(uint32_t timeout_ms);
 
 struct sr_storage_manager_status {
 	uint64_t cleanup_passes;

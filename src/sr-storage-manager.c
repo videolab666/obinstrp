@@ -28,6 +28,7 @@ static pthread_t g_manager_thread;
 static bool g_manager_mutex_initialized;
 static bool g_manager_thread_started;
 static bool g_manager_stopping;
+static bool g_initial_recovery_complete;
 static struct sr_storage_manager_status g_manager_status;
 
 static bool manager_should_stop(void)
@@ -105,6 +106,9 @@ static void *manager_thread(void *unused)
 	UNUSED_PARAMETER(unused);
 	os_set_thread_name("pitel-replay-storage");
 	run_recovery_once();
+	pthread_mutex_lock(&g_manager_mutex);
+	g_initial_recovery_complete = true;
+	pthread_mutex_unlock(&g_manager_mutex);
 
 	while (!manager_should_stop()) {
 		run_policy_once();
@@ -128,12 +132,31 @@ bool sr_storage_manager_start(void)
 
 	pthread_mutex_lock(&g_manager_mutex);
 	g_manager_stopping = false;
+	g_initial_recovery_complete = false;
 	memset(&g_manager_status, 0, sizeof(g_manager_status));
 	pthread_mutex_unlock(&g_manager_mutex);
 	if (pthread_create(&g_manager_thread, NULL, manager_thread, NULL) != 0)
 		return false;
 	g_manager_thread_started = true;
 	return true;
+}
+
+bool sr_storage_manager_wait_initial_recovery(uint32_t timeout_ms)
+{
+	if (!g_manager_mutex_initialized || !g_manager_thread_started)
+		return false;
+	const uint64_t deadline = os_gettime_ns() + (uint64_t)timeout_ms * 1000000ULL;
+	for (;;) {
+		pthread_mutex_lock(&g_manager_mutex);
+		const bool complete = g_initial_recovery_complete;
+		const bool stopping = g_manager_stopping;
+		pthread_mutex_unlock(&g_manager_mutex);
+		if (complete)
+			return true;
+		if (stopping || os_gettime_ns() >= deadline)
+			return false;
+		os_sleep_ms(5);
+	}
 }
 
 void sr_storage_manager_get_status(struct sr_storage_manager_status *status)

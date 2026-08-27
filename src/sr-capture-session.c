@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-capture.h"
 #include "sr-master-audio.h"
 #include "sr-session.h"
+#include "sr-storage-manager.h"
 
 #include <obs-module.h>
 #include <util/platform.h>
@@ -42,6 +43,11 @@ static bool wait_for_recording_producers(uint32_t timeout_ms)
 bool sr_capture_set_all_disk_recording(bool enabled, size_t *camera_count)
 {
 	if (enabled) {
+		if (!sr_storage_manager_wait_initial_recovery(10000)) {
+			blog(LOG_WARNING,
+			     "Pitel Instant Replay: START REC deferred because crash recovery is still validating previous sessions");
+			return false;
+		}
 		if (!sr_session_prepare_recording(obs_get_video_frame_time()))
 			return false;
 		const bool ok = sr_capture_set_all_disk_recording_impl(true, camera_count);
