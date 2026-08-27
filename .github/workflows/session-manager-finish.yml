@@ -29,6 +29,7 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
 
           audio = Path('src/sr-master-audio.c')
           text = audio.read_text(encoding='utf-8')
@@ -49,17 +50,68 @@ jobs:
           text = text.replace(needle, replacement, 1)
           audio.write_text(text, encoding='utf-8')
 
+          panel = Path('src/sr-session-panel.cpp')
+          p = panel.read_text(encoding='utf-8')
+          if '#include "sr-storage-manager.h"' not in p:
+              p = p.replace('#include "sr-session.h"\n', '#include "sr-session.h"\n#include "sr-storage-manager.h"\n', 1)
+
+          if 'auto *deleteAllButton = new QPushButton' not in p:
+              old = '''\t\tauto *deleteButton = new QPushButton(T("Storage.DeleteSelected"), this);\n\t\tsecondary->addWidget(refreshButton);\n\t\tsecondary->addWidget(clearTargetButton);\n\t\tsecondary->addStretch(1);\n\t\tsecondary->addWidget(deleteButton);\n\t\troot->addLayout(secondary);\n\n\t\tauto *hint = new QLabel(T("Session.Hint"), this);'''
+              new = '''\t\tauto *deleteButton = new QPushButton(T("Storage.DeleteSelected"), this);\n\t\tauto *deleteAllButton = new QPushButton(T("Storage.DeleteAll"), this);\n\t\tsecondary->addWidget(refreshButton);\n\t\tsecondary->addWidget(clearTargetButton);\n\t\tsecondary->addStretch(1);\n\t\tsecondary->addWidget(deleteButton);\n\t\tsecondary->addWidget(deleteAllButton);\n\t\troot->addLayout(secondary);\n\n\t\tgcStatus = new QLabel(this);\n\t\tgcStatus->setWordWrap(true);\n\t\tgcStatus->setStyleSheet(QStringLiteral("color: gray;"));\n\t\troot->addWidget(gcStatus);\n\n\t\tauto *hint = new QLabel(T("Session.Hint"), this);'''
+              if old not in p:
+                  raise SystemExit('storage button insertion point not found')
+              p = p.replace(old, new, 1)
+
+          if 'deleteAllSessions();' not in p:
+              old = '''\t\tconnect(deleteButton, &QPushButton::clicked, this, [this]() { deleteSelected(); });'''
+              new = old + '''\n\t\tconnect(deleteAllButton, &QPushButton::clicked, this, [this]() { deleteAllSessions(); });'''
+              if old not in p:
+                  raise SystemExit('delete-all connect insertion point not found')
+              p = p.replace(old, new, 1)
+
+          if 'QStringList allSessionPaths() const' not in p:
+              marker = '''\tvoid updateButtons()\n\t{'''
+              block = '''\tQStringList allSessionPaths() const\n\t{\n\t\tQStringList paths;\n\t\tfor (int row = 0; row < table->rowCount(); row++) {\n\t\t\tQTableWidgetItem *item = table->item(row, 0);\n\t\t\tif (item)\n\t\t\t\tpaths.append(item->data(Qt::UserRole).toString());\n\t\t}\n\t\treturn paths;\n\t}\n\n'''
+              if marker not in p:
+                  raise SystemExit('all-session insertion point not found')
+              p = p.replace(marker, block + marker, 1)
+
+          if 'void deleteSessions(const QStringList &requestedPaths, bool all)' not in p:
+              pattern = re.compile(r'\tvoid deleteSelected\(\)\n\t\{.*?\n\t\}\n\n\tQString statusForPath', re.S)
+              replacement = '''\tvoid deleteSelected()\n\t{\n\t\tdeleteSessions(selectedPaths(), false);\n\t}\n\n\tvoid deleteAllSessions()\n\t{\n\t\tdeleteSessions(allSessionPaths(), true);\n\t}\n\n\tvoid deleteSessions(const QStringList &requestedPaths, bool all)\n\t{\n\t\tif (requestedPaths.isEmpty())\n\t\t\treturn;\n\n\t\tchar *rootRaw = sr_config_get_session_root();\n\t\tconst QString canonicalRoot = QFileInfo(QString::fromUtf8(rootRaw ? rootRaw : "")).canonicalFilePath();\n\t\tbfree(rootRaw);\n\t\tif (canonicalRoot.isEmpty()) {\n\t\t\tQMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteInvalid"));\n\t\t\treturn;\n\t\t}\n\n\t\tQStringList deletable;\n\t\tquint64 selectedBytes = 0;\n\t\tint inUseSkipped = 0;\n\t\tint invalidSkipped = 0;\n\t\tfor (const QString &path : requestedPaths) {\n\t\t\tconst QFileInfo selected(path);\n\t\t\tconst QString canonicalPath = selected.canonicalFilePath();\n\t\t\tif (canonicalPath.isEmpty() || selected.dir().canonicalPath() != canonicalRoot) {\n\t\t\t\tinvalidSkipped++;\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tconst QByteArray utf8 = canonicalPath.toUtf8();\n\t\t\tif (sr_session_path_is_active(utf8.constData()) ||\n\t\t\t    sr_session_path_is_opened(utf8.constData()) ||\n\t\t\t    sr_session_path_is_record_target(utf8.constData())) {\n\t\t\t\tinUseSkipped++;\n\t\t\t\tcontinue;\n\t\t\t}\n\t\t\tdeletable.append(canonicalPath);\n\t\t\tselectedBytes += directoryBytes(canonicalPath);\n\t\t}\n\n\t\tif (deletable.isEmpty()) {\n\t\t\tQMessageBox::warning(this, T("Storage.DeleteTitle"),\n\t\t\t\t\t     inUseSkipped ? T("Session.DeleteInUse") : T("Storage.DeleteInvalid"));\n\t\t\treturn;\n\t\t}\n\n\t\tconst QString question = T(all ? "Session.DeleteAllConfirm" : "Session.DeleteManyConfirm")\n\t\t\t\t\t\t .arg(deletable.size())\n\t\t\t\t\t\t .arg(formattedBytes(selectedBytes))\n\t\t\t\t\t\t .arg(inUseSkipped);\n\t\tif (QMessageBox::question(this, T("Storage.DeleteTitle"), question) != QMessageBox::Yes)\n\t\t\treturn;\n\n\t\tint deleted = 0;\n\t\tint errors = 0;\n\t\tfor (const QString &path : deletable) {\n\t\t\tif (QDir(path).removeRecursively())\n\t\t\t\tdeleted++;\n\t\t\telse\n\t\t\t\terrors++;\n\t\t}\n\t\trefresh();\n\n\t\tconst QString result = T("Session.DeleteManyResult")\n\t\t\t\t\t       .arg(deleted)\n\t\t\t\t\t       .arg(inUseSkipped)\n\t\t\t\t\t       .arg(invalidSkipped)\n\t\t\t\t\t       .arg(errors);\n\t\tif (errors || inUseSkipped || invalidSkipped)\n\t\t\tQMessageBox::information(this, T("Storage.DeleteTitle"), result);\n\t\telse\n\t\t\tgcStatus->setText(result);\n\t}\n\n\tQString statusForPath'''
+              p, count = pattern.subn(replacement, p, count=1)
+              if count != 1:
+                  raise SystemExit('deleteSessions replacement point not found')
+
+          if 'sr_storage_manager_status manager' not in p:
+              marker = '''\t\tchar *openedRaw = sr_session_get_opened_path();'''
+              block = '''\t\tsr_storage_manager_status manager = {};\n\t\tsr_storage_manager_get_status(&manager);\n\t\tif (!manager.cleanup_passes) {\n\t\t\tgcStatus->setText(T("Storage.GcNever"));\n\t\t} else {\n\t\t\tconst QString when = QDateTime::fromSecsSinceEpoch((qint64)manager.last_cleanup_unix)\n\t\t\t\t\t\t     .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));\n\t\t\tgcStatus->setText(T("Storage.GcSummary")\n\t\t\t\t\t\t  .arg(manager.cleanup_passes)\n\t\t\t\t\t\t  .arg(when)\n\t\t\t\t\t\t  .arg(manager.last_cleanup.segments_deleted)\n\t\t\t\t\t\t  .arg(manager.last_cleanup.segments_pinned)\n\t\t\t\t\t\t  .arg(manager.last_cleanup.errors)\n\t\t\t\t\t\t  .arg(formattedBytes(manager.last_cleanup.free_bytes_before))\n\t\t\t\t\t\t  .arg(formattedBytes(manager.last_cleanup.free_bytes_after)));\n\t\t}\n\n'''
+              if marker not in p:
+                  raise SystemExit('GC status insertion point not found')
+              p = p.replace(marker, block + marker, 1)
+
+          if 'QLabel *gcStatus = nullptr;' not in p:
+              marker = '''\tQLabel *diskLabel = nullptr;\n'''
+              if marker not in p:
+                  raise SystemExit('GC member insertion point not found')
+              p = p.replace(marker, marker + '\tQLabel *gcStatus = nullptr;\n', 1)
+          panel.write_text(p, encoding='utf-8')
+
           en = Path('data/locale/en-US.ini')
           en_text = en.read_text(encoding='utf-8')
           if 'Session.New=' not in en_text:
               en_text += '''\nSession.New="New Session"\nSession.Open="Open"\nSession.Resume="Resume Recording"\nSession.Rename="Rename"\nSession.ReturnToRecording="Return to Recording Session"\nSession.ClearTarget="Clear REC Target"\nSession.Hint="OPEN is the session currently being browsed/edited. TARGET is used by the next START RECORD. REC is the immutable session receiving the active recording run. Opening an archive never changes a live recording target."\nSession.Title="Replay Session Manager"\nSession.StopBeforeTarget="Stop replay recording before changing the recording target."\nSession.StopRecordingConfirm="Replay recording is active. Stop it before creating a new session?"\nSession.StopFailed="Could not stop all replay recorders. Check the OBS log."\nSession.NewTitle="New Replay Session"\nSession.NamePrompt="Session name"\nSession.CreateFailed="Could not create the replay session."\nSession.OpenFailed="Could not open the selected replay session."\nSession.TargetFailed="Could not select the replay session as the recording target."\nSession.RenameTitle="Rename Replay Session"\nSession.RenameFailed="Could not rename the replay session."\nSession.DeleteInUse="OPEN, TARGET, or REC sessions cannot be deleted. Close/clear/stop them first."\nSession.DeleteConfirm="Permanently delete %1 selected replay session(s) and all media inside them?"\nSession.DeleteFailed="%1 replay session(s) could not be completely deleted."\nSession.DiskSummary="Replay root: %1 · sessions: %2 · free: %3"\nSession.StateSummary="OPEN: %1 · TARGET: %2 · REC: %3"\n'''
-              en.write_text(en_text, encoding='utf-8')
+          if 'Session.DeleteManyConfirm=' not in en_text:
+              en_text += '''Session.DeleteManyConfirm="Permanently delete %1 selected closed session(s) using %2? In-use sessions skipped: %3. This cannot be undone."\nSession.DeleteAllConfirm="Permanently delete all %1 closed session(s) using %2? In-use sessions skipped: %3. This cannot be undone."\nSession.DeleteManyResult="Deleted %1 session(s); in-use skipped %2; invalid skipped %3; errors %4"\n'''
+          en.write_text(en_text, encoding='utf-8')
 
           es = Path('data/locale/es-ES.ini')
           es_text = es.read_text(encoding='utf-8')
           if 'Session.New=' not in es_text:
               es_text += '''\nSession.New="Nueva sesión"\nSession.Open="Abrir"\nSession.Resume="Reanudar grabación"\nSession.Rename="Renombrar"\nSession.ReturnToRecording="Volver a la sesión de grabación"\nSession.ClearTarget="Borrar destino REC"\nSession.Hint="OPEN es la sesión que se está viendo/editando. TARGET se usa en el próximo START RECORD. REC es la sesión inmutable que recibe la grabación activa. Abrir un archivo nunca cambia el destino de una grabación en curso."\nSession.Title="Administrador de sesiones de Replay"\nSession.StopBeforeTarget="Detén la grabación de Replay antes de cambiar el destino de grabación."\nSession.StopRecordingConfirm="La grabación de Replay está activa. ¿Detenerla antes de crear una nueva sesión?"\nSession.StopFailed="No se pudieron detener todos los grabadores de Replay. Revisa el registro de OBS."\nSession.NewTitle="Nueva sesión de Replay"\nSession.NamePrompt="Nombre de la sesión"\nSession.CreateFailed="No se pudo crear la sesión de Replay."\nSession.OpenFailed="No se pudo abrir la sesión de Replay seleccionada."\nSession.TargetFailed="No se pudo seleccionar la sesión como destino de grabación."\nSession.RenameTitle="Renombrar sesión de Replay"\nSession.RenameFailed="No se pudo renombrar la sesión de Replay."\nSession.DeleteInUse="Las sesiones OPEN, TARGET o REC no se pueden eliminar. Ciérralas, borra el destino o detén la grabación primero."\nSession.DeleteConfirm="¿Eliminar permanentemente %1 sesión(es) de Replay seleccionada(s) y todos sus medios?"\nSession.DeleteFailed="No se pudieron eliminar completamente %1 sesión(es) de Replay."\nSession.DiskSummary="Raíz de Replay: %1 · sesiones: %2 · libre: %3"\nSession.StateSummary="OPEN: %1 · TARGET: %2 · REC: %3"\n'''
-              es.write_text(es_text, encoding='utf-8')
+          if 'Session.DeleteManyConfirm=' not in es_text:
+              es_text += '''Session.DeleteManyConfirm="¿Eliminar permanentemente %1 sesión(es) cerrada(s) seleccionada(s) que usan %2? Sesiones en uso omitidas: %3. Esta acción no se puede deshacer."\nSession.DeleteAllConfirm="¿Eliminar permanentemente las %1 sesión(es) cerrada(s) que usan %2? Sesiones en uso omitidas: %3. Esta acción no se puede deshacer."\nSession.DeleteManyResult="Eliminadas %1 sesión(es); en uso omitidas %2; inválidas omitidas %3; errores %4"\n'''
+          es.write_text(es_text, encoding='utf-8')
 
       - name: Install repository formatters
         shell: bash
@@ -87,5 +139,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add CMakeLists.txt src/sr-session-panel.cpp src/sr-audio-session.c src/sr-master-audio.c data/locale/en-US.ini data/locale/es-ES.ini
-          git commit -m "fix: complete session audio resume and localization"
+          git commit -m "fix: preserve storage controls in session manager"
           git push origin HEAD:feature/session-manager
