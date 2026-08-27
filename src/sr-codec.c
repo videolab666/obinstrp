@@ -238,8 +238,12 @@ void sr_encoder_destroy(struct sr_encoder *enc)
 
 static bool copy_nv12_direct(struct sr_encoder *enc, const struct obs_source_frame *frame)
 {
-	if (!enc || !frame || frame->format != VIDEO_FORMAT_NV12 || !frame->data[0] || !frame->data[1] ||
-	    frame->width != (uint32_t)enc->ctx->width || frame->height != (uint32_t)enc->ctx->height)
+	/* Direct copy is valid only when the source is already limited-range NV12.
+	 * Full-range camera frames must pass through swscale so replay files have a
+	 * single BT.709 limited-range contract, matching the Program raw callback. */
+	if (!enc || !frame || frame->format != VIDEO_FORMAT_NV12 || frame->full_range || !frame->data[0] ||
+	    !frame->data[1] || frame->width != (uint32_t)enc->ctx->width ||
+	    frame->height != (uint32_t)enc->ctx->height)
 		return false;
 
 	av_image_copy_plane(enc->frame->data[0], enc->frame->linesize[0], frame->data[0], (int)frame->linesize[0],
@@ -265,7 +269,7 @@ AVPacket *sr_encoder_encode(struct sr_encoder *enc, const struct obs_source_fram
 
 	if (copy_nv12_direct(enc, frame)) {
 		if (!enc->direct_nv12_logged) {
-			obs_log(LOG_INFO, "replay encoder '%s': using direct NV12 input path (swscale bypassed)",
+			obs_log(LOG_INFO, "replay encoder '%s': using direct limited-range NV12 input path (swscale bypassed)",
 				enc->codec->name);
 			enc->direct_nv12_logged = true;
 		}
@@ -278,6 +282,17 @@ AVPacket *sr_encoder_encode(struct sr_encoder *enc, const struct obs_source_fram
 			enc->sws_src_format = src_format;
 		}
 		if (!enc->sws)
+			return NULL;
+
+		/* OBS source frames can be either full- or limited-range depending on
+		 * the capture device/source. Normalize every CPU-frame encoder path to
+		 * BT.709 limited NV12 so camera replay and PROGRAM use identical levels.
+		 * Applying this on every frame also handles a source changing range at
+		 * runtime without rebuilding the encoder. */
+		const int *coefficients = sws_getCoefficients(SWS_CS_ITU709);
+		const int source_full_range = frame->full_range ? 1 : 0;
+		if (sws_setColorspaceDetails(enc->sws, coefficients, source_full_range, coefficients, 0, 0, 1 << 16,
+					     1 << 16) < 0)
 			return NULL;
 
 		const uint8_t *src_data[MAX_AV_PLANES] = {0};
