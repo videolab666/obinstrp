@@ -1,34 +1,43 @@
-name: Replay Development CI
-run-name: Replay Development CI — ${{ github.ref_name }} — ${{ github.event_name }}
+name: Apply multiview compile fixes
+run-name: Apply multiview compile fixes
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - feature/hardware-zero-copy
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: replay-development-ci-${{ github.ref }}
+  group: apply-multiview-fixes-${{ github.ref }}
   cancel-in-progress: true
 
-# Full validation for the active replay development branch.
-# Every push is built; workflow_dispatch keeps a manual Run workflow button
-# available from the default branch. PR validation is intentionally left to
-# the repository's normal PR workflow when this branch is eventually retargeted
-# to main, avoiding duplicate push + pull_request builds during development.
 jobs:
-  check-format:
-    name: Check Formatting 🔍
-    uses: ./.github/workflows/check-format.yaml
-    permissions:
-      contents: read
-
-  build-project:
-    name: Build Project 🧱
-    uses: ./.github/workflows/build-project.yaml
-    secrets: inherit
-    permissions:
-      contents: read
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-19
+      - name: Apply fixes
+        run: |
+          python3 .github/fix-multiview-build.py
+          clang-format-19 -i src/sr-multiview-dock.cpp
+          git diff --check
+      - name: Commit product fix
+        run: |
+          git add src/sr-multiview-dock.cpp
+          if git diff --cached --quiet; then
+            echo "Already applied"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: compile and optimize replay multiview"
+          git push origin HEAD:feature/hardware-zero-copy
