@@ -19,80 +19,45 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Apply runtime hardening
+      - name: Recover interrupted recording runs
         shell: python
         run: |
           from pathlib import Path
 
-          panel = Path('src/sr-session-panel.cpp')
-          p = panel.read_text(encoding='utf-8')
-          if '#include <QHash>' not in p:
-              p = p.replace('#include <QHeaderView>\n', '#include <QHeaderView>\n#include <QHash>\n', 1)
-
-          old = 'connect(timer, &QTimer::timeout, this, [this]() { refresh(); });'
-          new = 'connect(timer, &QTimer::timeout, this, [this]() { refresh(false); });'
-          if old in p:
-              p = p.replace(old, new, 1)
-          elif new not in p:
-              raise SystemExit('session timer refresh hook not found')
-
-          old = '\tvoid refresh()\n\t{'
-          new = '\tvoid refresh(bool rescanSizes = true)\n\t{'
-          if old in p:
-              p = p.replace(old, new, 1)
-          elif new not in p:
-              raise SystemExit('session refresh function not found')
-
-          old = '''\t\t\tconst QString path = sessions.at(row).absoluteFilePath();\n\t\t\tconst QByteArray pathUtf8 = path.toUtf8();\n\t\t\tconst quint64 bytes = directoryBytes(path);\n\t\t\ttotalBytes += bytes;'''
-          new = '''\t\t\tconst QString path = sessions.at(row).absoluteFilePath();\n\t\t\tconst QByteArray pathUtf8 = path.toUtf8();\n\t\t\tquint64 bytes = sessionSizeCache.value(path, 0);\n\t\t\tif (rescanSizes || !sessionSizeCache.contains(path)) {\n\t\t\t\tbytes = directoryBytes(path);\n\t\t\t\tsessionSizeCache.insert(path, bytes);\n\t\t\t}\n\t\t\ttotalBytes += bytes;'''
-          if old in p:
-              p = p.replace(old, new, 1)
-          elif new not in p:
-              raise SystemExit('session size calculation point not found')
-
-          old = '\tQTimer *timer = nullptr;\n};'
-          new = '\tQTimer *timer = nullptr;\n\tQHash<QString, quint64> sessionSizeCache;\n};'
-          if old in p:
-              p = p.replace(old, new, 1)
-          elif new not in p:
-              raise SystemExit('session cache member point not found')
-
-          # Drop cached values as soon as physical sessions are deleted.
-          old = '''\t\tfor (const QString &path : deletable) {\n\t\t\tif (QDir(path).removeRecursively())\n\t\t\t\tdeleted++;\n\t\t\telse\n\t\t\t\terrors++;\n\t\t}'''
-          new = '''\t\tfor (const QString &path : deletable) {\n\t\t\tif (QDir(path).removeRecursively()) {\n\t\t\t\tsessionSizeCache.remove(path);\n\t\t\t\tdeleted++;\n\t\t\t} else {\n\t\t\t\terrors++;\n\t\t\t}\n\t\t}'''
-          if old in p:
-              p = p.replace(old, new, 1)
-          elif new not in p:
-              raise SystemExit('session delete cache point not found')
-          panel.write_text(p, encoding='utf-8')
-
           session = Path('src/sr-session.c')
           s = session.read_text(encoding='utf-8')
-          old = '''\t\tstruct sr_index_file_header header;\n\t\tif (fread(&header, 1, sizeof(header), file) == sizeof(header) &&\n\t\t    memcmp(header.magic, SR_INDEX_MAGIC, sizeof(header.magic)) == 0) {\n\t\t\tif (fseek(file, -(long)sizeof(struct sr_index_entry), SEEK_END) == 0) {\n\t\t\t\tstruct sr_index_entry entry;\n\t\t\t\tif (fread(&entry, 1, sizeof(entry), file) == sizeof(entry) && entry.timestamp_ns > current_max)\n\t\t\t\t\tcurrent_max = entry.timestamp_ns;\n\t\t\t}\n\t\t}'''
-          new = '''\t\tstruct sr_index_file_header header;\n\t\tif (fread(&header, 1, sizeof(header), file) == sizeof(header) &&\n\t\t    memcmp(header.magic, SR_INDEX_MAGIC, sizeof(header.magic)) == 0 &&\n\t\t    header.version == SR_SEGMENT_FORMAT_VERSION && fseek(file, 0, SEEK_END) == 0) {\n\t\t\tconst long file_size = ftell(file);\n\t\t\tconst long minimum_size = (long)(sizeof(header) + sizeof(struct sr_index_entry));\n\t\t\tif (file_size >= minimum_size &&\n\t\t\t    fseek(file, -(long)sizeof(struct sr_index_entry), SEEK_END) == 0) {\n\t\t\t\tstruct sr_index_entry entry;\n\t\t\t\tif (fread(&entry, 1, sizeof(entry), file) == sizeof(entry) &&\n\t\t\t\t    entry.timestamp_ns > current_max)\n\t\t\t\t\tcurrent_max = entry.timestamp_ns;\n\t\t\t}\n\t\t}'''
+          function = '''static void recover_stale_recording_runs(const char *session_dir, uint64_t media_end_ns)\n{\n\tsqlite3 *sql = open_session_sqlite(session_dir);\n\tif (!sql)\n\t\treturn;\n\n\tsqlite3_stmt *stmt = NULL;\n\tconst char *query =\n\t\t"UPDATE recording_runs SET ended_unix=COALESCE(ended_unix,unixepoch()),"\n\t\t"timeline_end_ns=CASE WHEN timeline_end_ns IS NULL AND ? >= timeline_start_ns THEN ? "\n\t\t"ELSE timeline_end_ns END "\n\t\t"WHERE id=(SELECT id FROM recording_runs WHERE ended_unix IS NULL ORDER BY id DESC LIMIT 1)";\n\tbool recovered = false;\n\tif (sqlite3_prepare_v2(sql, query, -1, &stmt, NULL) == SQLITE_OK) {\n\t\tsqlite3_bind_int64(stmt, 1, (sqlite3_int64)media_end_ns);\n\t\tsqlite3_bind_int64(stmt, 2, (sqlite3_int64)media_end_ns);\n\t\tif (sqlite3_step(stmt) == SQLITE_DONE)\n\t\t\trecovered = sqlite3_changes(sql) > 0;\n\t}\n\tsqlite3_finalize(stmt);\n\n\t/* Older interrupted rows are historical bookkeeping only. Mark them closed\n\t * without inventing an OBS end timestamp or media end that we cannot prove. */\n\tchar *error = NULL;\n\tif (sqlite3_exec(sql,\n\t\t\t "UPDATE recording_runs SET ended_unix=COALESCE(ended_unix,unixepoch()) "\n\t\t\t "WHERE ended_unix IS NULL",\n\t\t\t NULL, NULL, &error) != SQLITE_OK) {\n\t\tblog(LOG_WARNING, "Pitel Instant Replay: could not close stale recording runs: %s",\n\t\t     error ? error : "unknown");\n\t}\n\tsqlite3_free(error);\n\tsqlite3_close(sql);\n\n\tif (recovered)\n\t\tblog(LOG_INFO, "Pitel Instant Replay: recovered an interrupted recording run at session %.3f s",\n\t\t     (double)media_end_ns / 1e9);\n}\n\n'''
+          marker = 'static uint64_t frame_interval_ns(void)\n'
+          if 'static void recover_stale_recording_runs(' not in s:
+              if marker not in s:
+                  raise SystemExit('stale-run helper insertion point not found')
+              s = s.replace(marker, function + marker, 1)
+
+          old = '''\tconst uint64_t previous_end = last_media_timestamp(g_recording_path);\n\tg_recording_discontinuity = previous_end != 0;'''
+          new = '''\tconst uint64_t previous_end = last_media_timestamp(g_recording_path);\n\trecover_stale_recording_runs(g_recording_path, previous_end);\n\tg_recording_discontinuity = previous_end != 0;'''
           if old in s:
               s = s.replace(old, new, 1)
           elif new not in s:
-              raise SystemExit('index resume scan point not found')
+              raise SystemExit('stale-run recovery call insertion point not found')
           session.write_text(s, encoding='utf-8')
 
-      - name: Install repository formatters
+      - name: Install repository formatter
         shell: bash
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           brew tap obsproject/tools
           if brew help trust >/dev/null 2>&1; then brew trust obsproject/tools; fi
-          brew install --quiet obsproject/tools/clang-format@19 obsproject/tools/gersemi
+          brew install --quiet obsproject/tools/clang-format@19
           echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> "$GITHUB_PATH"
 
       - name: Format and validate
         shell: bash
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          clang-format-19 -i src/sr-session-panel.cpp src/sr-session.c
+          clang-format-19 -i src/sr-session.c
           git diff --check
 
-      - name: Commit runtime hardening
+      - name: Commit recovery hardening
         shell: bash
         run: |
           if git diff --quiet; then
@@ -100,6 +65,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/sr-session-panel.cpp src/sr-session.c
-          git commit -m "fix: harden session resume and storage UI refresh"
+          git add src/sr-session.c
+          git commit -m "fix: recover interrupted session recording runs"
           git push origin HEAD:feature/session-manager
