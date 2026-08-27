@@ -25,9 +25,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-format-19
-      - name: Apply GPU preview refactor
+      - name: Apply GPU preview follow-up
         run: |
-          python3 .github/apply-multiview-gpu-preview.py
           python3 .github/fix-multiview-gpu-preview-followup.py
           clang-format-19 -i src/sr-multiview-dock.cpp
           git diff --check
