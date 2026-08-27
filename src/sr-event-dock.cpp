@@ -979,27 +979,43 @@ protected:
 			return;
 		}
 		setFocus(Qt::MouseFocusReason);
-		const int x = event->position().toPoint().x();
-		constexpr int hit = 10;
-		if (haveSelection && qAbs(x - xFromTimestamp(selectionInNs)) <= hit)
+		const QPoint position = event->position().toPoint();
+		const QRect timeline = timelineRect();
+		dragOffsetPixels = 0;
+		if (haveSelection && markerHitRect(selectionInNs, false, timeline).contains(position)) {
 			dragTarget = DragTarget::In;
-		else if (haveSelection && qAbs(x - xFromTimestamp(selectionOutNs)) <= hit)
+			dragOffsetPixels = position.x() - xFromTimestamp(selectionInNs);
+			applyDrag(selectionInNs);
+		} else if (haveSelection && markerHitRect(selectionOutNs, true, timeline).contains(position)) {
 			dragTarget = DragTarget::Out;
-		else if (qAbs(x - xFromTimestamp(playheadNs)) <= hit)
+			dragOffsetPixels = position.x() - xFromTimestamp(selectionOutNs);
+			applyDrag(selectionOutNs);
+		} else {
+			/* The playhead owns the whole timeline body. IN/OUT can only be
+			 * grabbed by their blue label handles, so an overlapping red cursor
+			 * never drags an Event boundary by accident. */
 			dragTarget = DragTarget::Playhead;
-		else
-			dragTarget = DragTarget::Playhead;
-		applyDrag(timestampFromX(x));
+			applyDrag(timestampFromX(position.x()));
+		}
 		event->accept();
 	}
 
 	void mouseMoveEvent(QMouseEvent *event) override
 	{
+		const QPoint position = event->position().toPoint();
 		if (dragTarget == DragTarget::None || !(event->buttons() & Qt::LeftButton)) {
+			const QRect timeline = timelineRect();
+			const bool markerHover = haveSelection &&
+						 (markerHitRect(selectionInNs, false, timeline).contains(position) ||
+						  markerHitRect(selectionOutNs, true, timeline).contains(position));
+			setCursor(markerHover ? Qt::SizeHorCursor : Qt::ArrowCursor);
 			QWidget::mouseMoveEvent(event);
 			return;
 		}
-		applyDrag(timestampFromX(event->position().toPoint().x()));
+		const int effectiveX =
+			position.x() -
+			((dragTarget == DragTarget::In || dragTarget == DragTarget::Out) ? dragOffsetPixels : 0);
+		applyDrag(timestampFromX(effectiveX));
 		event->accept();
 	}
 
@@ -1011,6 +1027,7 @@ protected:
 		}
 		const DragTarget released = dragTarget;
 		dragTarget = DragTarget::None;
+		dragOffsetPixels = 0;
 		if ((released == DragTarget::In || released == DragTarget::Out) && haveSelection && rangeHandler)
 			rangeHandler(selectionInNs, selectionOutNs);
 		event->accept();
@@ -1307,6 +1324,17 @@ private:
 		}
 	}
 
+	QRect markerTagRect(uint64_t timestampNs, bool right, const QRect &timeline) const
+	{
+		const int x = xFromTimestamp(timestampNs);
+		return QRect(right ? x - 38 : x, timeline.top() + 15, 38, 17);
+	}
+
+	QRect markerHitRect(uint64_t timestampNs, bool right, const QRect &timeline) const
+	{
+		return markerTagRect(timestampNs, right, timeline).adjusted(-3, -3, 3, 3);
+	}
+
 	void paintMarker(QPainter &painter, uint64_t timestampNs, const QString &label, bool right,
 			 const QRect &timeline)
 	{
@@ -1316,7 +1344,7 @@ private:
 		QColor marker = palette().color(QPalette::Highlight);
 		painter.setPen(QPen(marker, 2));
 		painter.drawLine(x, timeline.top() + 14, x, timeline.bottom());
-		QRect tag(right ? x - 34 : x, timeline.top() + 16, 34, 15);
+		const QRect tag = markerTagRect(timestampNs, right, timeline);
 		painter.fillRect(tag, marker);
 		painter.setPen(palette().color(QPalette::HighlightedText));
 		painter.drawText(tag, Qt::AlignCenter, label);
@@ -1326,6 +1354,7 @@ private:
 	RangeHandler rangeHandler;
 	CommandHandler commandHandler;
 	DragTarget dragTarget = DragTarget::None;
+	int dragOffsetPixels = 0;
 	uint64_t recordStartNs = 0;
 	uint64_t recordEndNs = 0;
 	uint64_t viewStartNs = 0;
@@ -1620,10 +1649,11 @@ public:
 
 		eventViewStack = new QStackedWidget(this);
 		table = new SrEventTable(eventViewStack);
-		table->setColumnCount(6);
+		table->setColumnCount(7);
 		table->setHorizontalHeaderLabels({T("EventDock.Column.Id"), T("EventDock.Column.Duration"),
 						  T("EventDock.Column.Speed"), T("EventDock.Column.State"),
-						  T("EventDock.Column.Name"), T("EventDock.Column.Tag")});
+						  T("EventDock.Column.Angle"), T("EventDock.Column.Name"),
+						  T("EventDock.Column.Tag")});
 		table->setSelectionBehavior(QAbstractItemView::SelectRows);
 		table->setSelectionMode(QAbstractItemView::ExtendedSelection);
 		table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
@@ -1631,12 +1661,14 @@ public:
 		table->verticalHeader()->setMinimumSectionSize(16);
 		table->verticalHeader()->setDefaultSectionSize(18);
 		table->horizontalHeader()->setFixedHeight(21);
-		table->horizontalHeader()->setStretchLastSection(true);
+		table->horizontalHeader()->setStretchLastSection(false);
 		table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 		table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
 		table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
 		table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-		table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+		table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+		table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+		table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
 		eventViewStack->addWidget(table);
 
 		thumbnailList = new QListWidget(eventViewStack);
@@ -2107,7 +2139,7 @@ public:
 		connect(table->itemDelegate(), &QAbstractItemDelegate::closeEditor, this,
 			[this]() { tableEditing = false; });
 		connect(table, &QTableWidget::itemDoubleClicked, this, [this](QTableWidgetItem *item) {
-			if (item && (item->column() == 2 || item->column() == 4 || item->column() == 5))
+			if (item && (item->column() == 2 || item->column() == 5 || item->column() == 6))
 				tableEditing = true;
 			else if (item)
 				playSelectedEvent();
@@ -3162,6 +3194,7 @@ private:
 			button->setText(QStringLiteral("%1%2 %3").arg(preferredMarker, marker, camera));
 			if (camera == preferredCamera)
 				tooltip += QStringLiteral(" — ") + T("EventDock.Preferred");
+			tooltip += QStringLiteral("\n") + T("EventDock.AnglePreviewHint");
 			button->setProperty("coverageTooltip", tooltip);
 			button->setToolTip(tooltip);
 		}
@@ -3319,9 +3352,36 @@ private:
 		}
 
 		const QByteArray cameraUtf8 = camera.toUtf8();
-		const bool switching = haveState && state.cued && state.event_id == eventId;
-		const bool ok = switching ? sr_replay_channel_switch_camera(bus, cameraUtf8.constData())
-					  : sr_replay_channel_cue(bus, eventId, cameraUtf8.constData());
+		bool ok = false;
+		if (!replayPlayoutActive()) {
+			updateEditTimelineBounds();
+			sr_event_record event = {};
+			if (!controller || !sr_event_controller_get_event(controller, eventId, &event)) {
+				setStatus("EventDock.Failed");
+				return;
+			}
+			uint64_t target = editTimeline ? editTimeline->playheadTimestamp() : event.in_ns;
+			if (!target)
+				target = event.in_ns;
+			const uint64_t rangeIn = editTimelineHaveBounds ? editTimelineStartNs : event.in_ns;
+			const uint64_t rangeOut = editTimelineHaveBounds ? editTimelineEndNs : event.out_ns;
+			target = qBound(rangeIn, target, rangeOut);
+			if (haveState && state.cued && state.preview_mode && state.event_id == eventId)
+				ok = sr_replay_channel_switch_camera(bus, cameraUtf8.constData());
+			if (ok) {
+				editPreviewEventId = eventId;
+				editPreviewBus = bus;
+				editPreviewCamera = camera;
+				sr_replay_channel_pause(bus, true);
+			} else {
+				ok = cueEditPreviewAt(camera, eventId, target, rangeIn, rangeOut);
+			}
+			sr_event_controller_free_event(&event);
+		} else {
+			const bool switching = haveState && state.cued && state.event_id == eventId;
+			ok = switching ? sr_replay_channel_switch_camera(bus, cameraUtf8.constData())
+				       : sr_replay_channel_cue(bus, eventId, cameraUtf8.constData());
+		}
 		if (!ok) {
 			setStatus("EventDock.AngleSwitchFailed");
 			refreshAngleCoverage();
@@ -3723,6 +3783,8 @@ private:
 			if (!candidate.isEmpty() && !candidates.contains(candidate))
 				candidates.append(candidate);
 		};
+		if (editPreviewEventId == event.id)
+			addCandidate(editPreviewCamera);
 		if (event.preferred_camera_id) {
 			char *preferred = nullptr;
 			if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &preferred) &&
@@ -4034,6 +4096,15 @@ private:
 			return;
 		}
 
+		const uint64_t preservedCursor = editTimeline ? editTimeline->playheadTimestamp() : inNs;
+		const enum sr_replay_bus preservedBus = transportBus();
+		sr_replay_channel_state preservedState = {};
+		const bool keepEditPreview = sr_replay_channel_get_state(preservedBus, &preservedState) &&
+					     preservedState.cued && preservedState.preview_mode &&
+					     preservedState.event_id == eventId;
+		const QString preservedCamera = keepEditPreview ? QString::fromUtf8(preservedState.camera_name)
+								: QString();
+
 		sr_event_write update = {};
 		update.in_ns = inNs;
 		update.out_ns = outNs;
@@ -4057,19 +4128,36 @@ private:
 		for (int i = SR_REPLAY_BUS_A; i < SR_REPLAY_BUS_COUNT; i++) {
 			const auto bus = static_cast<sr_replay_bus>(i);
 			sr_replay_channel_state state = {};
-			if (sr_replay_channel_get_state(bus, &state) && state.cued && state.event_id == eventId)
-				sr_replay_channel_clear(bus);
+			if (!sr_replay_channel_get_state(bus, &state) || !state.cued || state.event_id != eventId)
+				continue;
+			if (keepEditPreview && bus == preservedBus && state.preview_mode)
+				continue;
+			sr_replay_channel_clear(bus);
 		}
 		eventThumbnailCache.erase(eventId);
 		anglePreviewCache.erase(eventId);
 		previewTargetEventId = 0;
 		previewLoadedEventId = 0;
-		editPreviewEventId = 0;
-		editPreviewCamera.clear();
+		if (keepEditPreview) {
+			editPreviewEventId = eventId;
+			editPreviewBus = preservedBus;
+			editPreviewCamera = preservedCamera;
+			sr_replay_channel_pause(preservedBus, true);
+			sr_replay_channel_seek(preservedBus, preservedCursor);
+		} else {
+			editPreviewEventId = eventId;
+			editPreviewBus = preservedBus;
+			editPreviewCamera.clear();
+			if (editTimeline)
+				editTimeline->setPlayhead(preservedCursor);
+		}
 		status->setText(T("EventDock.Timeline.EditSaved").arg((double)(outNs - inNs) / 1e9, 0, 'f', 3));
 		refresh(eventId);
 		refreshAngleCoverage();
-		previewSelectedEvent(true);
+		if (!keepEditPreview) {
+			previewSelectedEvent(true);
+			previewSeekTo(preservedCursor);
+		}
 		syncTimeline();
 	}
 
@@ -4780,9 +4868,32 @@ private:
 			auto *state = new QTableWidgetItem(stateText(event));
 			state->setFlags(state->flags() & ~Qt::ItemIsEditable);
 			table->setItem((int)i, 3, state);
-			table->setItem((int)i, 4,
+
+			QString preferredCamera;
+			if (event.preferred_camera_id) {
+				char *preferredName = nullptr;
+				if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id,
+									&preferredName) &&
+				    preferredName)
+					preferredCamera = QString::fromUtf8(preferredName);
+				bfree(preferredName);
+			}
+			QString angleText;
+			if (!preferredCamera.isEmpty())
+				angleText = QStringLiteral("★ ") + preferredCamera;
+			else if (!selectedCamera().isEmpty())
+				angleText = T("EventDock.AngleAutoCurrent").arg(selectedCamera());
+			else
+				angleText = T("EventDock.AngleAuto");
+			auto *angle = new QTableWidgetItem(angleText);
+			angle->setFlags(angle->flags() & ~Qt::ItemIsEditable);
+			angle->setToolTip(preferredCamera.isEmpty()
+						  ? T("EventDock.AngleAuto.Tooltip")
+						  : T("EventDock.AnglePreferred.Tooltip").arg(preferredCamera));
+			table->setItem((int)i, 4, angle);
+			table->setItem((int)i, 5,
 				       new QTableWidgetItem(QString::fromUtf8(event.name ? event.name : "")));
-			table->setItem((int)i, 5, new QTableWidgetItem(QString::fromUtf8(event.tag ? event.tag : "")));
+			table->setItem((int)i, 6, new QTableWidgetItem(QString::fromUtf8(event.tag ? event.tag : "")));
 			if (std::find(preserveSelection.begin(), preserveSelection.end(), event.id) !=
 			    preserveSelection.end())
 				selectedRows.push_back((int)i);
@@ -4806,7 +4917,7 @@ private:
 	void editEvent(QTableWidgetItem *item)
 	{
 		if (tableRefreshing || !controller || !item ||
-		    (item->column() != 2 && item->column() != 4 && item->column() != 5))
+		    (item->column() != 2 && item->column() != 5 && item->column() != 6))
 			return;
 		tableEditing = false;
 		QTableWidgetItem *idItem = table->item(item->row(), 0);
@@ -4825,8 +4936,8 @@ private:
 			speedText.remove(QChar('%'));
 			speed = speedText.trimmed().toDouble(&speedOk);
 		}
-		const QByteArray name = table->item(item->row(), 4)->text().trimmed().toUtf8();
-		const QByteArray tag = table->item(item->row(), 5)->text().trimmed().toUtf8();
+		const QByteArray name = table->item(item->row(), 5)->text().trimmed().toUtf8();
+		const QByteArray tag = table->item(item->row(), 6)->text().trimmed().toUtf8();
 		if (!speedOk || (speedOverride && (speed < 10.0 || speed > 400.0))) {
 			sr_event_controller_free_event(&event);
 			setStatus("EventDock.InvalidSpeed");
