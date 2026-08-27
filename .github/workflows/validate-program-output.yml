@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - feature/hardware-zero-copy
+      - feature/session-manager
 
 permissions:
   contents: read
@@ -14,10 +15,10 @@ concurrency:
   group: replay-development-ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Full validation for the active replay development branch.
+# Full validation for the active replay development branches.
 # Every push is built; workflow_dispatch keeps a manual Run workflow button
 # available from the default branch. PR validation is intentionally left to
-# the repository's normal PR workflow when this branch is eventually retargeted
+# the repository's normal PR workflow when a branch is eventually retargeted
 # to main, avoiding duplicate push + pull_request builds during development.
 jobs:
   check-format:
