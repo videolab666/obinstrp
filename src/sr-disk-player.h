@@ -41,7 +41,7 @@ struct sr_disk_player *sr_disk_player_create(const char *session_dir, const char
  * Multiview uses a much smaller cache per camera than the A/B playout buses so
  * a 6-9 angle editor cannot multiply the default replay cache by camera count. */
 struct sr_disk_player *sr_disk_player_create_with_cache(const char *session_dir, const char *camera_name,
-						 size_t max_cache_bytes);
+							size_t max_cache_bytes);
 void sr_disk_player_destroy(struct sr_disk_player *player);
 
 /* Rescans the camera's segment directory, including a readable active .part

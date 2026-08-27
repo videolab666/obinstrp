@@ -17,6 +17,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-event-controller.h"
 #include "sr-dock.h"
 #include "sr-event-export.h"
+#include "sr-multiview-dock.h"
 #include "sr-replay-channel.h"
 #include "sr-replay-coverage.h"
 #include "sr-replay-playlist.h"
@@ -71,6 +72,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QPainter>
 #include <QPushButton>
 #include <QProgressBar>
+#include <QPointer>
 #include <QRubberBand>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -1773,6 +1775,11 @@ public:
 		angleHeader->setSpacing(3);
 		angleHeader->addWidget(new QLabel(T("EventDock.Angles"), this));
 		angleHeader->addStretch(1);
+		auto *multiviewButton = new QToolButton(this);
+		multiviewButton->setText(T("Multiview.Open"));
+		multiviewButton->setAutoRaise(true);
+		multiviewButton->setToolTip(T("Multiview.OpenTooltip"));
+		angleHeader->addWidget(multiviewButton);
 		auto *angleLegend = new QLabel(T("EventDock.AnglesLegend"), this);
 		angleLegend->setStyleSheet(QStringLiteral("color: gray;"));
 		angleHeader->addWidget(angleLegend);
@@ -1959,6 +1966,7 @@ public:
 		});
 		connect(settingsGear, &QToolButton::clicked, this, []() { sr_dock_open_settings(); });
 		connect(setupButton, &QToolButton::clicked, this, [this]() { openReplaySetup(); });
+		connect(multiviewButton, &QToolButton::clicked, this, []() { sr_multiview_dock_show(); });
 		connect(up, &QPushButton::clicked, this, [this]() { moveRow(-1); });
 		connect(down, &QPushButton::clicked, this, [this]() { moveRow(1); });
 		connect(played, &QPushButton::clicked, this, [this]() { togglePlayed(); });
@@ -2190,6 +2198,143 @@ public:
 			anglePreviewJob->worker.join();
 		if (eventThumbnailJob && eventThumbnailJob->worker.joinable())
 			eventThumbnailJob->worker.join();
+	}
+
+	bool editorSnapshot(sr_event_editor_snapshot *snapshot)
+	{
+		if (!snapshot)
+			return false;
+		std::memset(snapshot, 0, sizeof(*snapshot));
+		if (!controller)
+			return false;
+		updateEditTimelineBounds();
+		snapshot->edit_mode = !replayPlayoutActive();
+		if (editTimelineHaveBounds) {
+			snapshot->record_start_ns = editTimelineStartNs;
+			snapshot->record_end_ns = editTimelineEndNs;
+		}
+		const uint64_t eventId = selectedEventId();
+		sr_event_record event = {};
+		if (!eventId || !sr_event_controller_get_event(controller, eventId, &event))
+			return true;
+		snapshot->event_id = event.id;
+		snapshot->in_ns = event.in_ns;
+		snapshot->out_ns = event.out_ns;
+		snapshot->available = editTimelineHaveBounds && event.out_ns > event.in_ns;
+		const QString storedCamera = eventPreferredCamera(event);
+		const QByteArray storedUtf8 = storedCamera.toUtf8();
+		if (!storedUtf8.isEmpty()) {
+			std::strncpy(snapshot->selected_camera, storedUtf8.constData(),
+				     sizeof(snapshot->selected_camera) - 1);
+			snapshot->selected_camera[sizeof(snapshot->selected_camera) - 1] = '\0';
+		}
+		uint64_t playhead = editTimeline ? editTimeline->playheadTimestamp() : event.in_ns;
+		sr_replay_channel_state state = {};
+		if (sr_replay_channel_get_state(transportBus(), &state) && state.cued && state.preview_mode &&
+		    state.event_id == event.id) {
+			playhead = state.playhead_ns;
+			snapshot->playing = state.playing && !state.paused;
+			snapshot->paused = state.paused;
+			snapshot->loop = state.loop;
+			std::strncpy(snapshot->preview_camera, state.camera_name, sizeof(snapshot->preview_camera) - 1);
+			snapshot->preview_camera[sizeof(snapshot->preview_camera) - 1] = '\0';
+		} else {
+			snapshot->loop = loopButton && loopButton->isChecked();
+			const QByteArray previewUtf8 = editPreviewCamera.toUtf8();
+			if (!previewUtf8.isEmpty()) {
+				std::strncpy(snapshot->preview_camera, previewUtf8.constData(),
+					     sizeof(snapshot->preview_camera) - 1);
+				snapshot->preview_camera[sizeof(snapshot->preview_camera) - 1] = '\0';
+			}
+		}
+		if (snapshot->available)
+			playhead = qBound(editTimelineStartNs, playhead, editTimelineEndNs);
+		snapshot->playhead_ns = playhead;
+		sr_event_controller_free_event(&event);
+		return true;
+	}
+
+	bool editorSeek(uint64_t timestampNs) { return !replayPlayoutActive() && previewSeekTo(timestampNs); }
+
+	bool editorSetRange(uint64_t inNs, uint64_t outNs)
+	{
+		if (replayPlayoutActive() || !selectedEventId() || outNs <= inNs)
+			return false;
+		const uint64_t eventId = selectedEventId();
+		editSelectedEventRange(inNs, outNs);
+		sr_event_record event = {};
+		if (!sr_event_controller_get_event(controller, eventId, &event))
+			return false;
+		const bool matched = event.in_ns == inNs && event.out_ns == outNs;
+		sr_event_controller_free_event(&event);
+		return matched;
+	}
+
+	bool editorSetMarker(bool outMarker)
+	{
+		if (replayPlayoutActive() || !editTimeline || !editTimeline->hasSelection())
+			return false;
+		setEditMarkerAtPlayhead(outMarker);
+		return true;
+	}
+
+	bool editorGotoMarker(bool outMarker)
+	{
+		if (replayPlayoutActive() || !editTimeline || !editTimeline->hasSelection())
+			return false;
+		return previewSeekTo(outMarker ? editTimeline->selectionOut() : editTimeline->selectionIn());
+	}
+
+	bool editorStepFrames(int frames)
+	{
+		if (replayPlayoutActive() || !editTimelineHaveBounds || !editTimeline || !frames)
+			return false;
+		stepEditFrames(frames);
+		return true;
+	}
+
+	bool editorSelectCamera(const QString &camera)
+	{
+		if (replayPlayoutActive() || !controller || !selectedEventId())
+			return false;
+		const uint64_t eventId = selectedEventId();
+		selectAngle(camera);
+		sr_event_record event = {};
+		if (!sr_event_controller_get_event(controller, eventId, &event))
+			return false;
+		const QString stored = eventPreferredCamera(event);
+		sr_event_controller_free_event(&event);
+		return stored == camera;
+	}
+
+	bool editorTogglePlay()
+	{
+		if (replayPlayoutActive() || !selectedEventId())
+			return false;
+		toggleEditPreview();
+		return true;
+	}
+
+	bool editorPlayFromIn()
+	{
+		if (replayPlayoutActive() || !selectedEventId())
+			return false;
+		previewPlayFromIn();
+		return true;
+	}
+
+	bool editorSetLoop(bool enabled)
+	{
+		if (replayPlayoutActive() || !selectedEventId())
+			return false;
+		if (loopButton) {
+			const QSignalBlocker blocker(loopButton);
+			loopButton->setChecked(enabled);
+		}
+		sr_replay_channel_state state = {};
+		if (sr_replay_channel_get_state(transportBus(), &state) && state.cued && state.preview_mode)
+			sr_replay_channel_set_loop(transportBus(), enabled);
+		return true;
 	}
 
 private:
@@ -5320,9 +5465,63 @@ private:
 	uint64_t previewLoadedEventId = 0;
 };
 
+QPointer<SrEventDock> g_event_dock;
+
 } // namespace
 
 QWidget *sr_event_dock_create(struct sr_event_controller *controller, QWidget *parent)
 {
-	return new SrEventDock(controller, parent);
+	auto *dock = new SrEventDock(controller, parent);
+	g_event_dock = dock;
+	return dock;
+}
+
+bool sr_event_dock_get_editor_snapshot(struct sr_event_editor_snapshot *snapshot)
+{
+	return g_event_dock && g_event_dock->editorSnapshot(snapshot);
+}
+
+bool sr_event_dock_editor_seek(uint64_t timestamp_ns)
+{
+	return g_event_dock && g_event_dock->editorSeek(timestamp_ns);
+}
+
+bool sr_event_dock_editor_set_range(uint64_t in_ns, uint64_t out_ns)
+{
+	return g_event_dock && g_event_dock->editorSetRange(in_ns, out_ns);
+}
+
+bool sr_event_dock_editor_set_marker(bool out_marker)
+{
+	return g_event_dock && g_event_dock->editorSetMarker(out_marker);
+}
+
+bool sr_event_dock_editor_goto_marker(bool out_marker)
+{
+	return g_event_dock && g_event_dock->editorGotoMarker(out_marker);
+}
+
+bool sr_event_dock_editor_step_frames(int frames)
+{
+	return g_event_dock && g_event_dock->editorStepFrames(frames);
+}
+
+bool sr_event_dock_editor_select_camera(const char *camera_name)
+{
+	return g_event_dock && g_event_dock->editorSelectCamera(QString::fromUtf8(camera_name ? camera_name : ""));
+}
+
+bool sr_event_dock_editor_toggle_play(void)
+{
+	return g_event_dock && g_event_dock->editorTogglePlay();
+}
+
+bool sr_event_dock_editor_play_from_in(void)
+{
+	return g_event_dock && g_event_dock->editorPlayFromIn();
+}
+
+bool sr_event_dock_editor_set_loop(bool enabled)
+{
+	return g_event_dock && g_event_dock->editorSetLoop(enabled);
 }

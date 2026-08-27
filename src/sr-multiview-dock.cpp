@@ -47,16 +47,20 @@ extern "C" {
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QHideEvent>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMap>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QPointer>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScrollArea>
+#include <QShowEvent>
 #include <QSet>
 #include <QSizePolicy>
 #include <QToolButton>
@@ -228,7 +232,8 @@ private:
 		}
 		uint8_t *dstData[4] = {converted.bits(), nullptr, nullptr, nullptr};
 		int dstLinesize[4] = {converted.bytesPerLine(), 0, 0, 0};
-		const int rows = sws_scale(sws, source->data, source->linesize, 0, source->height, dstData, dstLinesize);
+		const int rows =
+			sws_scale(sws, source->data, source->linesize, 0, source->height, dstData, dstLinesize);
 		av_frame_free(&owned);
 		if (rows <= 0)
 			return false;
@@ -251,7 +256,9 @@ private:
 			std::string camera;
 			{
 				std::unique_lock<std::mutex> lock(mutex);
-				condition.wait(lock, [this, handledSerial]() { return stopping || requestSerial != handledSerial; });
+				condition.wait(lock, [this, handledSerial]() {
+					return stopping || requestSerial != handledSerial;
+				});
 				if (stopping)
 					break;
 				serial = requestSerial;
@@ -267,7 +274,8 @@ private:
 				openedSession = session;
 				openedCamera = camera;
 				if (!session.empty() && !camera.empty())
-					player = sr_disk_player_create_with_cache(session.c_str(), camera.c_str(), 12ULL * 1024ULL * 1024ULL);
+					player = sr_disk_player_create_with_cache(session.c_str(), camera.c_str(),
+										  12ULL * 1024ULL * 1024ULL);
 			}
 
 			bool ok = false;
@@ -391,10 +399,7 @@ public:
 		refreshPixmap();
 	}
 
-	void setDecodeFailed()
-	{
-		setMessage(T("Multiview.DecodeWaiting"));
-	}
+	void setDecodeFailed() { setMessage(T("Multiview.DecodeWaiting")); }
 
 	void setMessage(const QString &message)
 	{
@@ -436,14 +441,14 @@ private:
 		if (lastImage.isNull() || !picture || picture->width() <= 0 || picture->height() <= 0)
 			return;
 		picture->setPixmap(QPixmap::fromImage(lastImage).scaled(picture->size(), Qt::KeepAspectRatio,
-									  Qt::SmoothTransformation));
+									Qt::SmoothTransformation));
 	}
 
 	void updateTitle()
 	{
 		QString marker = coverage == SR_REPLAY_COVERAGE_FULL      ? QStringLiteral("●")
 				 : coverage == SR_REPLAY_COVERAGE_PARTIAL ? QStringLiteral("◐")
-									       : QStringLiteral("○");
+									  : QStringLiteral("○");
 		QString prefix;
 		if (selected)
 			prefix += QStringLiteral("✓ ");
@@ -454,10 +459,11 @@ private:
 
 	void updateStyle()
 	{
-		QString border = selected ? QStringLiteral("#2f83ff") : preview ? QStringLiteral("#d3a11f")
-									       : QStringLiteral("#555");
-		setStyleSheet(QStringLiteral("SrMultiviewTile { border: 2px solid %1; border-radius: 4px; }")
-				      .arg(border));
+		QString border = selected  ? QStringLiteral("#2f83ff")
+				 : preview ? QStringLiteral("#d3a11f")
+					   : QStringLiteral("#555");
+		setStyleSheet(
+			QStringLiteral("SrMultiviewTile { border: 2px solid %1; border-radius: 4px; }").arg(border));
 		updateTitle();
 	}
 
@@ -565,8 +571,8 @@ protected:
 			QColor rangeColor = palette().highlight().color();
 			rangeColor.setAlpha(90);
 			painter.fillRect(QRect(std::max(area.left(), left), area.top() + 18,
-						       std::max(0, std::min(area.right(), right) - std::max(area.left(), left)),
-						       area.height() - 19),
+					       std::max(0, std::min(area.right(), right) - std::max(area.left(), left)),
+					       area.height() - 19),
 					 rangeColor);
 			paintMarker(painter, inNs, QStringLiteral("IN"), false, area);
 			paintMarker(painter, outNs, QStringLiteral("OUT"), true, area);
@@ -583,9 +589,9 @@ protected:
 			triangle << QPoint(x - 5, area.top()) << QPoint(x + 5, area.top()) << QPoint(x, area.top() + 7);
 			painter.drawPolygon(triangle);
 		}
-		const QString zoom = zoomLocked
-					     ? QStringLiteral("%1×").arg((double)(recordEndNs - recordStartNs) / viewSpan(), 0, 'f', 1)
-					     : QStringLiteral("FIT");
+		const QString zoom = zoomLocked ? QStringLiteral("%1×").arg(
+							  (double)(recordEndNs - recordStartNs) / viewSpan(), 0, 'f', 1)
+						: QStringLiteral("FIT");
 		painter.setPen(palette().text().color());
 		painter.drawText(QRect(area.right() - 80, 1, 76, 16), Qt::AlignRight | Qt::AlignVCenter, zoom);
 	}
@@ -613,8 +619,8 @@ protected:
 		if (drag == Drag::None || !(event->buttons() & Qt::LeftButton)) {
 			const QRect area = timelineRect();
 			const QPoint point = event->position().toPoint();
-			const bool marker = haveRange &&
-					    (markerRect(inNs, false, area).contains(point) || markerRect(outNs, true, area).contains(point));
+			const bool marker = haveRange && (markerRect(inNs, false, area).contains(point) ||
+							  markerRect(outNs, true, area).contains(point));
 			setCursor(marker ? Qt::SizeHorCursor : Qt::ArrowCursor);
 			return;
 		}
@@ -670,10 +676,7 @@ private:
 	QRect timelineRect() const { return rect().adjusted(8, 18, -8, -5); }
 	uint64_t viewSpan() const { return viewEndNs > viewStartNs ? viewEndNs - viewStartNs : 0; }
 
-	uint64_t clamp(uint64_t timestamp) const
-	{
-		return std::min(recordEndNs, std::max(recordStartNs, timestamp));
-	}
+	uint64_t clamp(uint64_t timestamp) const { return std::min(recordEndNs, std::max(recordStartNs, timestamp)); }
 
 	int xFromTimestamp(uint64_t timestamp) const
 	{
@@ -716,8 +719,8 @@ private:
 		const uint64_t span = viewSpan();
 		if (!span)
 			return;
-		const uint64_t candidates[] = {100000000ULL, 250000000ULL, 500000000ULL, 1000000000ULL,
-					       2000000000ULL, 5000000000ULL, 10000000000ULL, 30000000000ULL,
+		const uint64_t candidates[] = {100000000ULL,   250000000ULL,    500000000ULL,   1000000000ULL,
+					       2000000000ULL,  5000000000ULL,   10000000000ULL, 30000000000ULL,
 					       60000000000ULL, 300000000000ULL, 600000000000ULL};
 		uint64_t step = candidates[0];
 		for (uint64_t candidate : candidates) {
@@ -826,9 +829,9 @@ private:
 
 class SrMultiviewDock : public QWidget {
 public:
-	explicit SrMultiviewDock(sr_event_controller *eventController, QWidget *parent = nullptr)
-		: QWidget(parent), controller(eventController)
+	explicit SrMultiviewDock(sr_event_controller *eventController, QWidget *parent = nullptr) : QWidget(parent)
 	{
+		(void)eventController;
 		setObjectName(QStringLiteral("PitelInstantReplayMultiview"));
 		setFocusPolicy(Qt::StrongFocus);
 		auto *root = new QVBoxLayout(this);
@@ -895,8 +898,8 @@ public:
 		loop->setCheckable(true);
 		fit = new QPushButton(QStringLiteral("FIT"), this);
 		live = new QPushButton(QStringLiteral("LIVE"), this);
-		for (QPushButton *button : {playPause, playFromIn, gotoIn, setIn, setOut, gotoOut, prevFrame, nextFrame,
-					    loop, fit, live})
+		for (QPushButton *button :
+		     {playPause, playFromIn, gotoIn, setIn, setOut, gotoOut, prevFrame, nextFrame, loop, fit, live})
 			controls->addWidget(button);
 		controls->addStretch(1);
 		timeLabel = new QLabel(this);
@@ -912,7 +915,8 @@ public:
 		connect(setOut, &QPushButton::clicked, this, []() { sr_event_dock_editor_set_marker(true); });
 		connect(prevFrame, &QPushButton::clicked, this, []() { sr_event_dock_editor_step_frames(-1); });
 		connect(nextFrame, &QPushButton::clicked, this, []() { sr_event_dock_editor_step_frames(1); });
-		connect(loop, &QPushButton::toggled, this, [](bool checked) { sr_event_dock_editor_set_loop(checked); });
+		connect(loop, &QPushButton::toggled, this,
+			[](bool checked) { sr_event_dock_editor_set_loop(checked); });
 		connect(fit, &QPushButton::clicked, timeline, [this]() { timeline->fit(); });
 		connect(live, &QPushButton::clicked, timeline, [this]() { timeline->live(); });
 		connect(quality, &QComboBox::currentIndexChanged, this, [this](int) { forceDecode = true; });
@@ -941,8 +945,11 @@ protected:
 	void hideEvent(QHideEvent *event) override
 	{
 		QWidget::hideEvent(event);
-		/* Hidden dock performs no new decode work. Worker threads stay asleep and
-		 * keep only their bounded warm caches for a quick reopen. */
+		/* Release all readers/decoders while the dock is hidden. The worker
+		 * threads remain asleep, so a closed Multiview costs no decoder or
+		 * segment-reader resources. */
+		for (const auto &tile : tiles)
+			tile->decoder().setSource(QString(), QString());
 	}
 
 	void keyPressEvent(QKeyEvent *event) override
@@ -995,7 +1002,8 @@ private:
 	{
 		std::vector<SrMultiviewTile *> result;
 		for (const auto &tile : tiles) {
-			if (!hiddenCameras.contains(tile->camera()) && (soloCamera.isEmpty() || tile->camera() == soloCamera))
+			if (!hiddenCameras.contains(tile->camera()) &&
+			    (soloCamera.isEmpty() || tile->camera() == soloCamera))
 				result.push_back(tile.get());
 		}
 		return result;
@@ -1018,8 +1026,10 @@ private:
 			visible[i]->setVisible(true);
 		}
 		for (const auto &tile : tiles) {
-			if (std::find(visible.begin(), visible.end(), tile.get()) == visible.end())
+			if (std::find(visible.begin(), visible.end(), tile.get()) == visible.end()) {
 				tile->setVisible(false);
+				tile->decoder().setSource(QString(), QString());
+			}
 		}
 		for (int column = 0; column < std::max(1, columns); column++)
 			grid->setColumnStretch(column, 1);
@@ -1062,7 +1072,10 @@ private:
 		cameraNames = names;
 		if (cameraNames.size() > 9)
 			cameraNames = cameraNames.mid(0, 9);
-		hiddenCameras.intersect(QSet<QString>(cameraNames.begin(), cameraNames.end()));
+		QSet<QString> availableCameras;
+		for (const QString &camera : cameraNames)
+			availableCameras.insert(camera);
+		hiddenCameras.intersect(availableCameras);
 		tiles.clear();
 		for (const QString &camera : cameraNames) {
 			auto tile = std::make_unique<SrMultiviewTile>(camera, gridHost);
@@ -1111,7 +1124,7 @@ private:
 	void setControlsEnabled(bool enabled)
 	{
 		for (QWidget *widget : {static_cast<QWidget *>(autoAngle), playPause, playFromIn, gotoIn, setIn, setOut,
-					  gotoOut, prevFrame, nextFrame, loop, fit, live})
+					gotoOut, prevFrame, nextFrame, loop, fit, live})
 			widget->setEnabled(enabled);
 		timeline->setEnabled(enabled);
 	}
@@ -1150,12 +1163,14 @@ private:
 		const QString selected = QString::fromUtf8(snapshot.selected_camera);
 
 		for (const auto &tile : tiles) {
-			if (hiddenCameras.contains(tile->camera()) || (!soloCamera.isEmpty() && tile->camera() != soloCamera))
+			if (hiddenCameras.contains(tile->camera()) ||
+			    (!soloCamera.isEmpty() && tile->camera() != soloCamera))
 				continue;
 			sr_replay_coverage_info coverage = {};
 			const QByteArray camera = tile->camera().toUtf8();
 			if (!sr_replay_coverage_query(camera.constData(), snapshot.in_ns, snapshot.out_ns, &coverage) ||
-			    coverage.coverage == SR_REPLAY_COVERAGE_NONE || snapshot.playhead_ns < coverage.playable_in_ns ||
+			    coverage.coverage == SR_REPLAY_COVERAGE_NONE ||
+			    snapshot.playhead_ns < coverage.playable_in_ns ||
 			    snapshot.playhead_ns > coverage.playable_out_ns)
 				continue;
 
@@ -1184,7 +1199,8 @@ private:
 				tile->setDecodeFailed();
 				continue;
 			}
-			const uint64_t relative = actualNs > snapshot.record_start_ns ? actualNs - snapshot.record_start_ns : 0;
+			const uint64_t relative =
+				actualNs > snapshot.record_start_ns ? actualNs - snapshot.record_start_ns : 0;
 			tile->setImage(image, relative);
 		}
 	}
@@ -1217,8 +1233,9 @@ private:
 		}
 		stateLabel->setText(QStringLiteral("Event #%1 · %2")
 					    .arg(snapshot.event_id)
-					    .arg(snapshot.selected_camera[0] ? QString::fromUtf8(snapshot.selected_camera)
-									 : T("Multiview.AutoAngle")));
+					    .arg(snapshot.selected_camera[0]
+							 ? QString::fromUtf8(snapshot.selected_camera)
+							 : T("Multiview.AutoAngle")));
 		const uint64_t relative = snapshot.playhead_ns > snapshot.record_start_ns
 						  ? snapshot.playhead_ns - snapshot.record_start_ns
 						  : 0;

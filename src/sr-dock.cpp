@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "sr-dock.h"
 #include "sr-config.h"
 #include "sr-event-dock.h"
+#include "sr-multiview-dock.h"
 #include "sr-thumb.h"
 #include "sr-capture.h"
 #include "sr-credit.h"
@@ -1012,6 +1013,11 @@ void sr_dock_register(struct sr_event_controller *controller)
 		delete tabs;
 		return;
 	}
+
+	auto *multiview = sr_multiview_dock_create(controller);
+	if (!obs_frontend_add_dock_by_id("pitel_instant_replay_multiview_dock", obs_module_text("Multiview.Title"),
+					 multiview))
+		delete multiview;
 	g_dock = clips;
 }
 

@@ -116,6 +116,12 @@ static const struct sr_segment_descriptor *find_segment(struct sr_disk_player *p
 
 struct sr_disk_player *sr_disk_player_create(const char *session_dir, const char *camera_name)
 {
+	return sr_disk_player_create_with_cache(session_dir, camera_name, (size_t)SR_DISK_PLAYER_FRAME_CACHE_BYTES);
+}
+
+struct sr_disk_player *sr_disk_player_create_with_cache(const char *session_dir, const char *camera_name,
+							size_t max_cache_bytes)
+{
 	if (!session_dir || !*session_dir || !camera_name || !*camera_name)
 		return NULL;
 
@@ -123,7 +129,7 @@ struct sr_disk_player *sr_disk_player_create(const char *session_dir, const char
 	p->session_dir = bstrdup(session_dir);
 	p->camera_name = bstrdup(camera_name);
 	p->current_position = -1;
-	sr_frame_cache_init(&p->frame_cache, (size_t)SR_DISK_PLAYER_FRAME_CACHE_BYTES);
+	sr_frame_cache_init(&p->frame_cache, max_cache_bytes);
 
 	if (!sr_disk_player_refresh(p)) {
 		sr_disk_player_destroy(p);

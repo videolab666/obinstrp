@@ -29,8 +29,7 @@ FetchContent_Declare(
   URL https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip
   URL_HASH SHA3_256=628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-  SOURCE_SUBDIR
-  __pitel_instant_replay_no_cmake__
+  SOURCE_SUBDIR __pitel_instant_replay_no_cmake__
 )
 FetchContent_MakeAvailable(sr_sqlite_source)
 
@@ -106,6 +105,7 @@ target_sources(
     src/sr-event-controller.c
     src/sr-media-guard.c
     src/sr-event-dock.cpp
+    src/sr-multiview-dock.cpp
     src/sr-replay-channel.c
     src/sr-replay-coverage.c
     src/sr-replay-playlist.c
