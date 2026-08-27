@@ -51,9 +51,8 @@ static FILE *open_replay_read_file(const char *path)
 	 * names. A long-lived scrub/decode reader must not make that rename fail on
 	 * Windows. FILE_SHARE_WRITE also keeps live-index refresh compatible with
 	 * the writer's periodic flushes. */
-	HANDLE handle = CreateFileW(wide_path, GENERIC_READ,
-				  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
-				  FILE_ATTRIBUTE_NORMAL, NULL);
+	HANDLE handle = CreateFileW(wide_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				    NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	bfree(wide_path);
 	if (handle == INVALID_HANDLE_VALUE)
 		return NULL;
