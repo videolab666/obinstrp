@@ -13,6 +13,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-camera-list.h"
 #include "sr-disk-player.h"
 #include "sr-event-dock.h"
+#include "sr-gpu-video.h"
 #include "sr-replay-coverage.h"
 #include "sr-session.h"
 
@@ -21,8 +22,6 @@ the Free Software Foundation; either version 2 of the License, or
 
 extern "C" {
 #include <libavutil/frame.h>
-#include <libavutil/hwcontext.h>
-#include <libswscale/swscale.h>
 }
 
 #include <algorithm>
@@ -48,14 +47,12 @@ extern "C" {
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHideEvent>
-#include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMap>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QPixmap>
 #include <QPointer>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -68,6 +65,16 @@ extern "C" {
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QWidget>
+#include <QWindow>
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include <obs-nix-platform.h>
+#endif
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#endif
 
 #define NS_PER_SECOND 1000000000ULL
 
@@ -107,6 +114,155 @@ uint64_t addSignedOffset(uint64_t timestamp, int64_t offset)
 	return value < timestamp ? timestamp - value : 0;
 }
 
+static QSize previewPixelSize(const QWidget *widget)
+{
+	const qreal ratio = widget ? widget->devicePixelRatioF() : 1.0;
+	return QSize(std::max(1, (int)std::lround(widget->width() * ratio)),
+		     std::max(1, (int)std::lround(widget->height() * ratio)));
+}
+
+static bool qtToGsWindow(QWindow *window, gs_window &gsWindow)
+{
+	if (!window)
+		return false;
+#ifdef _WIN32
+	gsWindow.hwnd = (HWND)window->winId();
+#elif __APPLE__
+	gsWindow.view = (id)window->winId();
+#else
+	if (obs_get_nix_platform() != OBS_NIX_PLATFORM_X11_EGL)
+		return false;
+	gsWindow.id = window->winId();
+	gsWindow.display = obs_get_nix_platform_display();
+#endif
+	return true;
+}
+
+class SrMultiviewGpuDisplay : public QWidget {
+public:
+	explicit SrMultiviewGpuDisplay(QWidget *parent = nullptr) : QWidget(parent)
+	{
+		setAttribute(Qt::WA_PaintOnScreen);
+		setAttribute(Qt::WA_StaticContents);
+		setAttribute(Qt::WA_NoSystemBackground);
+		setAttribute(Qt::WA_OpaquePaintEvent);
+		setAttribute(Qt::WA_DontCreateNativeAncestors);
+		setAttribute(Qt::WA_NativeWindow);
+		setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+		setMinimumSize(160, 90);
+		renderer = sr_gpu_renderer_create();
+	}
+
+	~SrMultiviewGpuDisplay() override
+	{
+		if (display) {
+			obs_display_remove_draw_callback(display, drawCallback, this);
+			obs_display_destroy(display);
+			display = nullptr;
+		}
+		pthread_mutex_lock(&frameMutex);
+		AVFrame *old = frame;
+		frame = nullptr;
+		pthread_mutex_unlock(&frameMutex);
+		av_frame_free(&old);
+		sr_gpu_renderer_destroy(renderer);
+		pthread_mutex_destroy(&frameMutex);
+	}
+
+	void setFrame(const AVFrame *next)
+	{
+		AVFrame *copy = next ? av_frame_clone(next) : nullptr;
+		pthread_mutex_lock(&frameMutex);
+		AVFrame *old = frame;
+		frame = copy;
+		pthread_mutex_unlock(&frameMutex);
+		av_frame_free(&old);
+	}
+
+protected:
+	QPaintEngine *paintEngine() const override { return nullptr; }
+
+	void paintEvent(QPaintEvent *event) override
+	{
+		createDisplay();
+		QWidget::paintEvent(event);
+	}
+
+	void showEvent(QShowEvent *event) override
+	{
+		QWidget::showEvent(event);
+		createDisplay();
+		if (display)
+			obs_display_set_enabled(display, true);
+	}
+
+	void hideEvent(QHideEvent *event) override
+	{
+		if (display)
+			obs_display_set_enabled(display, false);
+		QWidget::hideEvent(event);
+	}
+
+private:
+	static void drawCallback(void *data, uint32_t cx, uint32_t cy)
+	{
+		static_cast<SrMultiviewGpuDisplay *>(data)->render(cx, cy);
+	}
+
+	void createDisplay()
+	{
+		if (display || !renderer || !windowHandle() || !windowHandle()->isExposed())
+			return;
+		const QSize size = previewPixelSize(this);
+		gs_init_data info = {};
+		info.cx = (uint32_t)size.width();
+		info.cy = (uint32_t)size.height();
+		info.format = GS_BGRA;
+		info.zsformat = GS_ZS_NONE;
+		if (!qtToGsWindow(windowHandle(), info.window))
+			return;
+		display = obs_display_create(&info, 0x00000000);
+		if (display)
+			obs_display_add_draw_callback(display, drawCallback, this);
+	}
+
+	void render(uint32_t cx, uint32_t cy)
+	{
+		if (!renderer || !cx || !cy)
+			return;
+		pthread_mutex_lock(&frameMutex);
+		AVFrame *current = frame ? av_frame_clone(frame) : nullptr;
+		pthread_mutex_unlock(&frameMutex);
+		if (!current)
+			return;
+
+		const uint32_t sourceWidth = (uint32_t)std::max(current->width, 1);
+		const uint32_t sourceHeight = (uint32_t)std::max(current->height, 1);
+		const double scale = std::min((double)cx / sourceWidth, (double)cy / sourceHeight);
+		const uint32_t drawWidth = std::max(1u, (uint32_t)std::lround(sourceWidth * scale));
+		const uint32_t drawHeight = std::max(1u, (uint32_t)std::lround(sourceHeight * scale));
+		const int x = ((int)cx - (int)drawWidth) / 2;
+		const int y = ((int)cy - (int)drawHeight) / 2;
+
+		gs_viewport_push();
+		gs_projection_push();
+		gs_matrix_push();
+		gs_set_viewport(0, 0, (int)cx, (int)cy);
+		gs_ortho(0.0f, (float)cx, 0.0f, (float)cy, -100.0f, 100.0f);
+		gs_matrix_translate3f((float)x, (float)y, 0.0f);
+		sr_gpu_renderer_draw(renderer, current, drawWidth, drawHeight);
+		gs_matrix_pop();
+		gs_projection_pop();
+		gs_viewport_pop();
+		av_frame_free(&current);
+	}
+
+	obs_display_t *display = nullptr;
+	struct sr_gpu_renderer *renderer = nullptr;
+	pthread_mutex_t frameMutex = PTHREAD_MUTEX_INITIALIZER;
+	AVFrame *frame = nullptr;
+};
+
 class SrMultiviewDecoder {
 public:
 	SrMultiviewDecoder()
@@ -123,6 +279,7 @@ public:
 		}
 		if (worker.joinable())
 			worker.join();
+		av_frame_free(&publishedFrame);
 	}
 
 	void setSource(const QString &session, const QString &camera)
@@ -140,105 +297,42 @@ public:
 
 	void request(uint64_t timestampNs, int targetHeight)
 	{
+		UNUSED_PARAMETER(targetHeight);
 		std::lock_guard<std::mutex> lock(mutex);
 		requestedTimestampNs = timestampNs;
-		requestedHeight = targetHeight;
 		requestSerial++;
 		condition.notify_all();
 	}
 
-	bool takeImage(QImage *image, uint64_t *actualTimestampNs, bool *success)
+	bool takeFrame(AVFrame **outFrame, uint64_t *actualTimestampNs, bool *success)
 	{
-		if (!image)
+		if (!outFrame)
 			return false;
+		*outFrame = nullptr;
 		std::lock_guard<std::mutex> lock(mutex);
 		if (!publishedSerial || publishedSerial == consumedSerial)
 			return false;
 		consumedSerial = publishedSerial;
-		*image = publishedImage;
+		*outFrame = publishedFrame ? av_frame_clone(publishedFrame) : nullptr;
 		if (actualTimestampNs)
 			*actualTimestampNs = publishedTimestampNs;
 		if (success)
-			*success = publishedSuccess;
+			*success = publishedSuccess && *outFrame;
 		return true;
 	}
 
 private:
-	void publish(uint64_t serial, bool success, uint64_t timestampNs, const QImage &image)
+	void publish(uint64_t serial, bool success, uint64_t timestampNs, AVFrame *decoded)
 	{
 		std::lock_guard<std::mutex> lock(mutex);
-		/* A slow random seek is obsolete as soon as the operator requested a
-		 * newer timestamp. Never let stale decode work visually catch up later. */
 		if (serial != requestSerial)
 			return;
+		AVFrame *copy = success && decoded ? av_frame_clone(decoded) : nullptr;
+		av_frame_free(&publishedFrame);
+		publishedFrame = copy;
 		publishedSerial = serial;
-		publishedSuccess = success;
+		publishedSuccess = copy != nullptr;
 		publishedTimestampNs = timestampNs;
-		publishedImage = image;
-	}
-
-	static bool softwareFrame(const AVFrame *input, AVFrame **owned, const AVFrame **source)
-	{
-		if (!input || !owned || !source)
-			return false;
-		*owned = nullptr;
-		*source = input;
-		if (!input->hw_frames_ctx)
-			return true;
-
-		AVFrame *transfer = av_frame_alloc();
-		if (!transfer)
-			return false;
-		if (av_hwframe_transfer_data(transfer, input, 0) < 0) {
-			av_frame_free(&transfer);
-			return false;
-		}
-		*owned = transfer;
-		*source = transfer;
-		return true;
-	}
-
-	bool convertFrame(const AVFrame *frame, int targetHeight, QImage *image)
-	{
-		if (!frame || !image)
-			return false;
-		AVFrame *owned = nullptr;
-		const AVFrame *source = nullptr;
-		if (!softwareFrame(frame, &owned, &source) || !source || source->width <= 0 || source->height <= 0) {
-			av_frame_free(&owned);
-			return false;
-		}
-
-		int height = targetHeight > 0 ? std::min(targetHeight, source->height) : source->height;
-		height = std::max(2, height);
-		int width = (int)std::llround((long double)source->width * height / source->height);
-		width = std::max(2, width);
-		if (width & 1)
-			width++;
-		if (height & 1)
-			height++;
-
-		sws = sws_getCachedContext(sws, source->width, source->height, (AVPixelFormat)source->format, width,
-					   height, AV_PIX_FMT_RGBA, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
-		if (!sws) {
-			av_frame_free(&owned);
-			return false;
-		}
-
-		QImage converted(width, height, QImage::Format_RGBA8888);
-		if (converted.isNull()) {
-			av_frame_free(&owned);
-			return false;
-		}
-		uint8_t *dstData[4] = {converted.bits(), nullptr, nullptr, nullptr};
-		int dstLinesize[4] = {static_cast<int>(converted.bytesPerLine()), 0, 0, 0};
-		const int rows =
-			sws_scale(sws, source->data, source->linesize, 0, source->height, dstData, dstLinesize);
-		av_frame_free(&owned);
-		if (rows <= 0)
-			return false;
-		*image = std::move(converted);
-		return true;
 	}
 
 	void run()
@@ -251,7 +345,6 @@ private:
 		for (;;) {
 			uint64_t serial = 0;
 			uint64_t timestampNs = 0;
-			int targetHeight = 360;
 			std::string session;
 			std::string camera;
 			{
@@ -263,7 +356,6 @@ private:
 					break;
 				serial = requestSerial;
 				timestampNs = requestedTimestampNs;
-				targetHeight = requestedHeight;
 				session = requestedSession;
 				camera = requestedCamera;
 			}
@@ -279,26 +371,21 @@ private:
 			}
 
 			bool ok = false;
-			QImage image;
 			uint64_t actualNs = timestampNs;
+			AVFrame *decoded = nullptr;
 			if (player && timestampNs) {
-				AVFrame *frame = nullptr;
-				ok = sr_disk_player_decode_at(player, timestampNs, &frame, &actualNs);
+				ok = sr_disk_player_decode_at(player, timestampNs, &decoded, &actualNs);
 				if (!ok) {
 					sr_disk_player_refresh(player);
-					ok = sr_disk_player_decode_at(player, timestampNs, &frame, &actualNs);
+					ok = sr_disk_player_decode_at(player, timestampNs, &decoded, &actualNs);
 				}
-				if (ok)
-					ok = convertFrame(frame, targetHeight, &image);
-				av_frame_free(&frame);
 			}
-			publish(serial, ok, actualNs, image);
+			publish(serial, ok, actualNs, decoded);
+			av_frame_free(&decoded);
 			handledSerial = serial;
 		}
 
 		sr_disk_player_destroy(player);
-		sws_freeContext(sws);
-		sws = nullptr;
 	}
 
 	std::mutex mutex;
@@ -307,16 +394,13 @@ private:
 	bool stopping = false;
 	uint64_t requestSerial = 0;
 	uint64_t requestedTimestampNs = 0;
-	int requestedHeight = 360;
 	std::string requestedSession;
 	std::string requestedCamera;
-
 	uint64_t publishedSerial = 0;
 	uint64_t consumedSerial = 0;
 	uint64_t publishedTimestampNs = 0;
 	bool publishedSuccess = false;
-	QImage publishedImage;
-	SwsContext *sws = nullptr;
+	AVFrame *publishedFrame = nullptr;
 };
 
 class SrMultiviewTile : public QFrame {
@@ -338,14 +422,15 @@ public:
 		title->setStyleSheet(QStringLiteral("font-weight: 600;"));
 		title->setAttribute(Qt::WA_TransparentForMouseEvents);
 		layout->addWidget(title);
-		picture = new QLabel(this);
-		picture->setAlignment(Qt::AlignCenter);
-		picture->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-		picture->setMinimumSize(160, 90);
-		picture->setStyleSheet(QStringLiteral("background: #080808; color: #aaa;"));
-		picture->setText(T("Multiview.Waiting"));
+		videoBorder = new QFrame(this);
+		videoBorder->setObjectName(QStringLiteral("multiviewVideoBorder"));
+		auto *videoLayout = new QVBoxLayout(videoBorder);
+		videoLayout->setContentsMargins(2, 2, 2, 2);
+		videoLayout->setSpacing(0);
+		picture = new SrMultiviewGpuDisplay(videoBorder);
 		picture->setAttribute(Qt::WA_TransparentForMouseEvents);
-		layout->addWidget(picture, 1);
+		videoLayout->addWidget(picture);
+		layout->addWidget(videoBorder, 1);
 		footer = new QLabel(this);
 		footer->setStyleSheet(QStringLiteral("color: gray; font-size: 10px;"));
 		footer->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -390,23 +475,25 @@ public:
 			setMessage(T("Multiview.NoMediaAtCursor"));
 	}
 
-	void setImage(const QImage &image, uint64_t relativeTimestampNs)
+	void setFrame(const AVFrame *frame, uint64_t relativeTimestampNs)
 	{
-		if (image.isNull())
+		if (!frame)
 			return;
-		lastImage = image;
+		haveFrame = true;
+		picture->setFrame(frame);
 		footer->setText(clockText(relativeTimestampNs));
-		refreshPixmap();
+	}
+
+	void clearFrame()
+	{
+		haveFrame = false;
+		if (picture)
+			picture->setFrame(nullptr);
 	}
 
 	void setDecodeFailed() { setMessage(T("Multiview.DecodeWaiting")); }
 
-	void setMessage(const QString &message)
-	{
-		if (lastImage.isNull())
-			picture->setText(message);
-		footer->setText(message);
-	}
+	void setMessage(const QString &message) { footer->setText(message); }
 
 protected:
 	void resizeEvent(QResizeEvent *event) override
@@ -436,14 +523,6 @@ protected:
 	}
 
 private:
-	void refreshPixmap()
-	{
-		if (lastImage.isNull() || !picture || picture->width() <= 0 || picture->height() <= 0)
-			return;
-		picture->setPixmap(QPixmap::fromImage(lastImage).scaled(picture->size(), Qt::KeepAspectRatio,
-									Qt::SmoothTransformation));
-	}
-
 	void updateTitle()
 	{
 		QString marker = coverage == SR_REPLAY_COVERAGE_FULL      ? QStringLiteral("●")
@@ -459,19 +538,28 @@ private:
 
 	void updateStyle()
 	{
-		QString border = selected  ? QStringLiteral("#2f83ff")
-				 : preview ? QStringLiteral("#d3a11f")
-					   : QStringLiteral("#555");
+		const QString tileBorder = selected  ? QStringLiteral("#00bfe8")
+					   : preview ? QStringLiteral("#d3a11f")
+						     : QStringLiteral("#555");
+		const QString imageBorder = selected  ? QStringLiteral("#00e5ff")
+					    : preview ? QStringLiteral("#e1a91c")
+						      : QStringLiteral("#303030");
+		const int imageWidth = selected ? 4 : preview ? 2 : 1;
 		setStyleSheet(
-			QStringLiteral("SrMultiviewTile { border: 2px solid %1; border-radius: 4px; }").arg(border));
+			QStringLiteral("SrMultiviewTile { border: 2px solid %1; border-radius: 4px; } "
+				       "QFrame#multiviewVideoBorder { border: %2px solid %3; background: #080808; }")
+				.arg(tileBorder)
+				.arg(imageWidth)
+				.arg(imageBorder));
 		updateTitle();
 	}
 
 	QString cameraName;
 	QLabel *title = nullptr;
-	QLabel *picture = nullptr;
+	QFrame *videoBorder = nullptr;
+	SrMultiviewGpuDisplay *picture = nullptr;
 	QLabel *footer = nullptr;
-	QImage lastImage;
+	bool haveFrame = false;
 	bool selected = false;
 	bool preview = false;
 	bool atPlayhead = false;
@@ -948,8 +1036,10 @@ protected:
 		/* Release all readers/decoders while the dock is hidden. The worker
 		 * threads remain asleep, so a closed Multiview costs no decoder or
 		 * segment-reader resources. */
-		for (const auto &tile : tiles)
+		for (const auto &tile : tiles) {
 			tile->decoder().setSource(QString(), QString());
+			tile->clearFrame();
+		}
 	}
 
 	void keyPressEvent(QKeyEvent *event) override
@@ -1029,6 +1119,7 @@ private:
 			if (std::find(visible.begin(), visible.end(), tile.get()) == visible.end()) {
 				tile->setVisible(false);
 				tile->decoder().setSource(QString(), QString());
+				tile->clearFrame();
 			}
 		}
 		for (int column = 0; column < std::max(1, columns); column++)
@@ -1191,18 +1282,20 @@ private:
 	void collectFrames(const sr_event_editor_snapshot &snapshot)
 	{
 		for (const auto &tile : tiles) {
-			QImage image;
+			AVFrame *frame = nullptr;
 			uint64_t actualNs = 0;
 			bool success = false;
-			if (!tile->decoder().takeImage(&image, &actualNs, &success))
+			if (!tile->decoder().takeFrame(&frame, &actualNs, &success))
 				continue;
-			if (!success) {
+			if (!success || !frame) {
+				av_frame_free(&frame);
 				tile->setDecodeFailed();
 				continue;
 			}
 			const uint64_t relative =
 				actualNs > snapshot.record_start_ns ? actualNs - snapshot.record_start_ns : 0;
-			tile->setImage(image, relative);
+			tile->setFrame(frame, relative);
+			av_frame_free(&frame);
 		}
 	}
 
