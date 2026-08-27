@@ -1,34 +1,73 @@
-name: Replay Development CI
-run-name: Replay Development CI — ${{ github.ref_name }} — ${{ github.event_name }}
+name: Apply live replay rotation hardening
+run-name: Apply live replay rotation hardening
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - feature/hardware-zero-copy
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: replay-development-ci-${{ github.ref }}
+  group: apply-live-replay-rotation-${{ github.ref }}
   cancel-in-progress: true
 
-# Full validation for the active replay development branch.
-# Every push is built; workflow_dispatch keeps a manual Run workflow button
-# available from the default branch. PR validation is intentionally left to
-# the repository's normal PR workflow when this branch is eventually retargeted
-# to main, avoiding duplicate push + pull_request builds during development.
 jobs:
-  check-format:
-    name: Check Formatting 🔍
-    uses: ./.github/workflows/check-format.yaml
-    permissions:
-      contents: read
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hardware-zero-copy
+          fetch-depth: 0
 
-  build-project:
-    name: Build Project 🧱
-    uses: ./.github/workflows/build-project.yaml
-    secrets: inherit
-    permissions:
-      contents: read
+      - name: Install clang-format 19
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-19
+
+      - name: Harden active segment publication and format
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/sr-segment-writer.c")
+          text = path.read_text(encoding="utf-8")
+          old = '''\tconst bool ok = write_exact(w->segment_file, &sh, sizeof(sh)) &&
+          \t\t\twrite_exact(w->segment_file, w->extradata, sh.extradata_size) &&
+          \t\t\twrite_exact(w->index_file, &ih, sizeof(ih));'''
+          new = '''\t/* Publish complete headers immediately. The live scrubber is allowed to
+          \t * discover active .part files, so leaving these records in stdio buffers
+          \t * creates a window where a valid active segment looks corrupt. Flush the
+          \t * segment header/extradata first, then publish the matching index header. */
+          \tconst bool ok = write_exact(w->segment_file, &sh, sizeof(sh)) &&
+          \t\t\twrite_exact(w->segment_file, w->extradata, sh.extradata_size) &&
+          \t\t\tfflush(w->segment_file) == 0 && write_exact(w->index_file, &ih, sizeof(ih)) &&
+          \t\t\tfflush(w->index_file) == 0;'''
+          if new not in text:
+              if text.count(old) != 1:
+                  raise RuntimeError(f"open_segment header block: expected 1 match, found {text.count(old)}")
+              text = text.replace(old, new, 1)
+              path.write_text(text, encoding="utf-8")
+          PY
+
+          clang-format-19 -i src/sr-segment-reader.c src/sr-segment-writer.c
+          git diff --check
+          grep -q 'FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE' src/sr-segment-reader.c
+          grep -q 'fflush(w->segment_file) == 0' src/sr-segment-writer.c
+          grep -q 'fflush(w->index_file) == 0' src/sr-segment-writer.c
+
+      - name: Commit source changes
+        shell: bash
+        run: |
+          git add src/sr-segment-reader.c src/sr-segment-writer.c
+          if git diff --cached --quiet; then
+            echo "Live replay rotation hardening is already applied and formatted."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: harden live replay segment rotation"
+          git push origin HEAD:feature/hardware-zero-copy
