@@ -13,6 +13,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-camera-identity.h"
 #include "sr-capture.h"
 #include "sr-program-recorder.h"
+#include "sr-session.h"
 
 #include <obs-module.h>
 #include <util/bmem.h>
@@ -41,25 +42,19 @@ static bool contains_key(const struct camera_list_builder *builder, const char *
 	return false;
 }
 
-static void append_camera(struct camera_list_builder *builder, obs_source_t *source)
+static bool contains_name(const struct camera_list_builder *builder, const char *name)
 {
-	if (builder->failed || !source)
-		return;
-
-	char key[SR_CAMERA_STABLE_KEY_MAX] = {0};
-	if (!sr_camera_key_from_source(source, key, sizeof(key))) {
-		builder->failed = true;
-		return;
+	for (size_t i = 0; i < builder->count; i++) {
+		if (builder->items[i].name && strcmp(builder->items[i].name, name) == 0)
+			return true;
 	}
-	if (contains_key(builder, key))
-		return;
+	return false;
+}
 
-	const char *name = obs_source_get_name(source);
-	if (!name || !*name) {
-		builder->failed = true;
+static void append_named(struct camera_list_builder *builder, const char *name, const char *key)
+{
+	if (builder->failed || !name || !*name || !key || !*key || contains_key(builder, key))
 		return;
-	}
-
 	if (builder->count == builder->capacity) {
 		const size_t next_capacity = builder->capacity ? builder->capacity * 2 : 8;
 		struct camera_entry *next = brealloc(builder->items, next_capacity * sizeof(*next));
@@ -70,16 +65,34 @@ static void append_camera(struct camera_list_builder *builder, obs_source_t *sou
 		builder->items = next;
 		builder->capacity = next_capacity;
 	}
-
 	struct camera_entry *entry = &builder->items[builder->count];
 	memset(entry, 0, sizeof(*entry));
 	entry->name = bstrdup(name);
-	if (!entry->name) {
+	if (!entry->name || strlen(key) >= sizeof(entry->key)) {
+		bfree(entry->name);
+		entry->name = NULL;
 		builder->failed = true;
 		return;
 	}
-	memcpy(entry->key, key, strlen(key) + 1);
+	strcpy(entry->key, key);
 	builder->count++;
+}
+
+static void append_camera(struct camera_list_builder *builder, obs_source_t *source)
+{
+	if (builder->failed || !source)
+		return;
+	char key[SR_CAMERA_STABLE_KEY_MAX] = {0};
+	if (!sr_camera_key_from_source(source, key, sizeof(key))) {
+		builder->failed = true;
+		return;
+	}
+	const char *name = obs_source_get_name(source);
+	if (!name || !*name) {
+		builder->failed = true;
+		return;
+	}
+	append_named(builder, name, key);
 }
 
 static void enum_capture_filter(obs_source_t *parent, obs_source_t *child, void *param)
@@ -117,6 +130,27 @@ static void free_builder(struct camera_list_builder *builder)
 	memset(builder, 0, sizeof(*builder));
 }
 
+static void append_opened_session_cameras(struct camera_list_builder *builder)
+{
+	char *session = sr_session_get_opened_path();
+	if (!session)
+		return;
+	char **names = NULL;
+	size_t count = 0;
+	if (sr_session_list_camera_names(session, &names, &count)) {
+		for (size_t i = 0; i < count && !builder->failed; i++) {
+			if (!names[i] || !*names[i] || contains_name(builder, names[i]))
+				continue;
+			char key[SR_CAMERA_STABLE_KEY_MAX] = {0};
+			int64_t ignored = 0;
+			if (sr_session_resolve_camera(session, names[i], key, sizeof(key), &ignored))
+				append_named(builder, names[i], key);
+		}
+	}
+	sr_session_free_camera_names(names, count);
+	bfree(session);
+}
+
 bool sr_camera_list_capture(struct sr_camera_list *list)
 {
 	if (!list)
@@ -130,31 +164,20 @@ bool sr_camera_list_capture(struct sr_camera_list *list)
 		return false;
 	}
 
-	if (sr_program_recorder_selected() && !contains_key(&builder, SR_PROGRAM_CAMERA_KEY)) {
-		if (builder.count == builder.capacity) {
-			const size_t next_capacity = builder.capacity ? builder.capacity * 2 : 8;
-			struct camera_entry *next = brealloc(builder.items, next_capacity * sizeof(*next));
-			if (!next) {
-				free_builder(&builder);
-				return false;
-			}
-			builder.items = next;
-			builder.capacity = next_capacity;
-		}
-		struct camera_entry *entry = &builder.items[builder.count];
-		memset(entry, 0, sizeof(*entry));
-		entry->name = bstrdup(SR_PROGRAM_CAMERA_NAME);
-		if (!entry->name) {
-			free_builder(&builder);
-			return false;
-		}
-		memcpy(entry->key, SR_PROGRAM_CAMERA_KEY, sizeof(SR_PROGRAM_CAMERA_KEY));
-		builder.count++;
+	/* Add archived cameras after current OBS sources. Persistent keys prevent
+	 * duplicates; a removed source still appears with the label saved in that
+	 * session.sqlite and remains available to Multiview/Replay A/B. */
+	append_opened_session_cameras(&builder);
+	if (builder.failed) {
+		free_builder(&builder);
+		return false;
 	}
+
+	if (sr_program_recorder_selected() && !contains_key(&builder, SR_PROGRAM_CAMERA_KEY))
+		append_named(&builder, SR_PROGRAM_CAMERA_NAME, SR_PROGRAM_CAMERA_KEY);
 
 	if (builder.count > 1)
 		qsort(builder.items, builder.count, sizeof(*builder.items), compare_entries);
-
 	if (builder.count) {
 		list->names = bmalloc(builder.count * sizeof(*list->names));
 		if (!list->names) {
