@@ -231,7 +231,7 @@ private:
 			return false;
 		}
 		uint8_t *dstData[4] = {converted.bits(), nullptr, nullptr, nullptr};
-		int dstLinesize[4] = {converted.bytesPerLine(), 0, 0, 0};
+		int dstLinesize[4] = {static_cast<int>(converted.bytesPerLine()), 0, 0, 0};
 		const int rows =
 			sws_scale(sws, source->data, source->linesize, 0, source->height, dstData, dstLinesize);
 		av_frame_free(&owned);
@@ -1123,8 +1123,9 @@ private:
 
 	void setControlsEnabled(bool enabled)
 	{
-		for (QWidget *widget : {static_cast<QWidget *>(autoAngle), playPause, playFromIn, gotoIn, setIn, setOut,
-					gotoOut, prevFrame, nextFrame, loop, fit, live})
+		QWidget *controls[] = {autoAngle, playPause, playFromIn, gotoIn, setIn, setOut,
+				       gotoOut,   prevFrame, nextFrame,  loop,   fit,   live};
+		for (QWidget *widget : controls)
 			widget->setEnabled(enabled);
 		timeline->setEnabled(enabled);
 	}
@@ -1261,7 +1262,6 @@ private:
 		forceDecode = false;
 	}
 
-	sr_event_controller *controller = nullptr;
 	QToolButton *cameraMenuButton = nullptr;
 	QMenu *cameraMenu = nullptr;
 	QComboBox *quality = nullptr;
