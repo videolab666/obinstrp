@@ -16,6 +16,13 @@ the Free Software Foundation; either version 2 of the License, or
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#include <stdint.h>
+#include <windows.h>
+#endif
+
 #define SR_MAX_EXTRADATA_SIZE (1024u * 1024u)
 #define SR_MAX_PACKET_SIZE (256u * 1024u * 1024u)
 
@@ -30,6 +37,43 @@ struct sr_segment_reader {
 	struct sr_index_entry *entries;
 	size_t entry_count;
 };
+
+static FILE *open_replay_read_file(const char *path)
+{
+#ifdef _WIN32
+	wchar_t *wide_path = NULL;
+	if (!path || !*path || !os_utf8_to_wcs_ptr(path, 0, &wide_path))
+		return NULL;
+
+	/* Active .part files are intentionally readable while the recorder is
+	 * writing them. FILE_SHARE_DELETE is critical here: the writer rotates a
+	 * completed segment by renaming .srseg.part/.sridx.part to their final
+	 * names. A long-lived scrub/decode reader must not make that rename fail on
+	 * Windows. FILE_SHARE_WRITE also keeps live-index refresh compatible with
+	 * the writer's periodic flushes. */
+	HANDLE handle = CreateFileW(wide_path, GENERIC_READ,
+				  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+				  FILE_ATTRIBUTE_NORMAL, NULL);
+	bfree(wide_path);
+	if (handle == INVALID_HANDLE_VALUE)
+		return NULL;
+
+	const int fd = _open_osfhandle((intptr_t)handle, _O_RDONLY | _O_BINARY);
+	if (fd < 0) {
+		CloseHandle(handle);
+		return NULL;
+	}
+
+	FILE *file = _fdopen(fd, "rb");
+	if (!file) {
+		_close(fd);
+		return NULL;
+	}
+	return file;
+#else
+	return os_fopen(path, "rb");
+#endif
+}
 
 static bool read_exact(FILE *f, void *data, size_t bytes)
 {
@@ -113,8 +157,8 @@ struct sr_segment_reader *sr_segment_reader_open(const char *segment_path, const
 		return NULL;
 
 	struct sr_segment_reader *r = bzalloc(sizeof(*r));
-	r->segment_file = os_fopen(segment_path, "rb");
-	r->index_file = os_fopen(index_path, "rb");
+	r->segment_file = open_replay_read_file(segment_path);
+	r->index_file = open_replay_read_file(index_path);
 	if (!r->segment_file || !r->index_file) {
 		blog(LOG_WARNING, "Pitel Instant Replay: could not open replay segment/index '%s' / '%s'", segment_path,
 		     index_path);
