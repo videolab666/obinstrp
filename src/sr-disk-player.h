@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <libavutil/frame.h>
@@ -35,6 +36,12 @@ struct sr_disk_player_performance {
  * It is the core that will later replace RAM-snapshot playback for timeline
  * events and jog/shuttle operation. */
 struct sr_disk_player *sr_disk_player_create(const char *session_dir, const char *camera_name);
+
+/* Same persistent player with a caller-selected software-frame cache budget.
+ * Multiview uses a much smaller cache per camera than the A/B playout buses so
+ * a 6-9 angle editor cannot multiply the default replay cache by camera count. */
+struct sr_disk_player *sr_disk_player_create_with_cache(const char *session_dir, const char *camera_name,
+						 size_t max_cache_bytes);
 void sr_disk_player_destroy(struct sr_disk_player *player);
 
 /* Rescans the camera's segment directory, including a readable active .part
