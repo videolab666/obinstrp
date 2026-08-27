@@ -14,6 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-config.h"
 #include "sr-event-controller.h"
 #include "sr-session.h"
+#include "sr-storage-manager.h"
 
 #include <obs-module.h>
 #include <util/bmem.h>
@@ -133,11 +134,18 @@ public:
 		auto *refreshButton = new QPushButton(T("Storage.Refresh"), this);
 		auto *clearTargetButton = new QPushButton(T("Session.ClearTarget"), this);
 		auto *deleteButton = new QPushButton(T("Storage.DeleteSelected"), this);
+		auto *deleteAllButton = new QPushButton(T("Storage.DeleteAll"), this);
 		secondary->addWidget(refreshButton);
 		secondary->addWidget(clearTargetButton);
 		secondary->addStretch(1);
 		secondary->addWidget(deleteButton);
+		secondary->addWidget(deleteAllButton);
 		root->addLayout(secondary);
+
+		gcStatus = new QLabel(this);
+		gcStatus->setWordWrap(true);
+		gcStatus->setStyleSheet(QStringLiteral("color: gray;"));
+		root->addWidget(gcStatus);
 
 		auto *hint = new QLabel(T("Session.Hint"), this);
 		hint->setWordWrap(true);
@@ -152,6 +160,7 @@ public:
 		connect(refreshButton, &QPushButton::clicked, this, [this]() { refresh(); });
 		connect(clearTargetButton, &QPushButton::clicked, this, [this]() { clearTarget(); });
 		connect(deleteButton, &QPushButton::clicked, this, [this]() { deleteSelected(); });
+		connect(deleteAllButton, &QPushButton::clicked, this, [this]() { deleteAllSessions(); });
 		connect(table, &QTableWidget::itemDoubleClicked, this, [this](QTableWidgetItem *) { openSelected(); });
 		connect(table, &QTableWidget::itemSelectionChanged, this, [this]() { updateButtons(); });
 
@@ -181,6 +190,17 @@ private:
 			return paths;
 		for (const QModelIndex &index : table->selectionModel()->selectedRows(0)) {
 			QTableWidgetItem *item = table->item(index.row(), 0);
+			if (item)
+				paths.append(item->data(Qt::UserRole).toString());
+		}
+		return paths;
+	}
+
+	QStringList allSessionPaths() const
+	{
+		QStringList paths;
+		for (int row = 0; row < table->rowCount(); row++) {
+			QTableWidgetItem *item = table->item(row, 0);
 			if (item)
 				paths.append(item->data(Qt::UserRole).toString());
 		}
@@ -313,31 +333,75 @@ private:
 		refresh();
 	}
 
-	void deleteSelected()
+	void deleteSelected() { deleteSessions(selectedPaths(), false); }
+
+	void deleteAllSessions() { deleteSessions(allSessionPaths(), true); }
+
+	void deleteSessions(const QStringList &requestedPaths, bool all)
 	{
-		const QStringList paths = selectedPaths();
-		if (paths.isEmpty())
+		if (requestedPaths.isEmpty())
 			return;
-		for (const QString &path : paths) {
-			const QByteArray utf8 = path.toUtf8();
+
+		char *rootRaw = sr_config_get_session_root();
+		const QString canonicalRoot = QFileInfo(QString::fromUtf8(rootRaw ? rootRaw : "")).canonicalFilePath();
+		bfree(rootRaw);
+		if (canonicalRoot.isEmpty()) {
+			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Storage.DeleteInvalid"));
+			return;
+		}
+
+		QStringList deletable;
+		quint64 selectedBytes = 0;
+		int inUseSkipped = 0;
+		int invalidSkipped = 0;
+		for (const QString &path : requestedPaths) {
+			const QFileInfo selected(path);
+			const QString canonicalPath = selected.canonicalFilePath();
+			if (canonicalPath.isEmpty() || selected.dir().canonicalPath() != canonicalRoot) {
+				invalidSkipped++;
+				continue;
+			}
+
+			const QByteArray utf8 = canonicalPath.toUtf8();
 			if (sr_session_path_is_active(utf8.constData()) ||
 			    sr_session_path_is_opened(utf8.constData()) ||
 			    sr_session_path_is_record_target(utf8.constData())) {
-				QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Session.DeleteInUse"));
-				return;
+				inUseSkipped++;
+				continue;
 			}
+			deletable.append(canonicalPath);
+			selectedBytes += directoryBytes(canonicalPath);
 		}
-		if (QMessageBox::question(this, T("Storage.DeleteTitle"),
-					  T("Session.DeleteConfirm").arg(paths.size())) != QMessageBox::Yes)
+
+		if (deletable.isEmpty()) {
+			QMessageBox::warning(this, T("Storage.DeleteTitle"),
+					     inUseSkipped ? T("Session.DeleteInUse") : T("Storage.DeleteInvalid"));
 			return;
-		int failed = 0;
-		for (const QString &path : paths) {
-			if (!QDir(path).removeRecursively())
-				failed++;
 		}
-		if (failed)
-			QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Session.DeleteFailed").arg(failed));
+
+		const QString question = T(all ? "Session.DeleteAllConfirm" : "Session.DeleteManyConfirm")
+						 .arg(deletable.size())
+						 .arg(formattedBytes(selectedBytes))
+						 .arg(inUseSkipped);
+		if (QMessageBox::question(this, T("Storage.DeleteTitle"), question) != QMessageBox::Yes)
+			return;
+
+		int deleted = 0;
+		int errors = 0;
+		for (const QString &path : deletable) {
+			if (QDir(path).removeRecursively())
+				deleted++;
+			else
+				errors++;
+		}
 		refresh();
+
+		const QString result =
+			T("Session.DeleteManyResult").arg(deleted).arg(inUseSkipped).arg(invalidSkipped).arg(errors);
+		if (errors || inUseSkipped || invalidSkipped)
+			QMessageBox::information(this, T("Storage.DeleteTitle"), result);
+		else
+			gcStatus->setText(result);
 	}
 
 	QString statusForPath(const QByteArray &path) const
@@ -399,6 +463,23 @@ private:
 					   .arg(formattedBytes(totalBytes))
 					   .arg(formattedBytes(freeBytes)));
 
+		sr_storage_manager_status manager = {};
+		sr_storage_manager_get_status(&manager);
+		if (!manager.cleanup_passes) {
+			gcStatus->setText(T("Storage.GcNever"));
+		} else {
+			const QString when = QDateTime::fromSecsSinceEpoch((qint64)manager.last_cleanup_unix)
+						     .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+			gcStatus->setText(T("Storage.GcSummary")
+						  .arg(manager.cleanup_passes)
+						  .arg(when)
+						  .arg(manager.last_cleanup.segments_deleted)
+						  .arg(manager.last_cleanup.segments_pinned)
+						  .arg(manager.last_cleanup.errors)
+						  .arg(formattedBytes(manager.last_cleanup.free_bytes_before))
+						  .arg(formattedBytes(manager.last_cleanup.free_bytes_after)));
+		}
+
 		char *openedRaw = sr_session_get_opened_path();
 		char *targetRaw = sr_session_get_record_target_path();
 		char *recordRaw = sr_session_get_recording_path();
@@ -418,6 +499,7 @@ private:
 	sr_event_controller *controller = nullptr;
 	QLabel *stateLabel = nullptr;
 	QLabel *diskLabel = nullptr;
+	QLabel *gcStatus = nullptr;
 	QTableWidget *table = nullptr;
 	QPushButton *newButton = nullptr;
 	QPushButton *openButton = nullptr;
