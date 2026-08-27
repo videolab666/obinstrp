@@ -6,34 +6,115 @@ on:
       - feature/session-timecode-hardening
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-zero-time-ui:
+  audit-timebase-and-timeline:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Apply zero-time UI compatibility
-        run: python3 .github/scripts/patch-zero-session-time-ui.py
-      - name: Format changed C++ files
+      - name: Audit Session clock and Event timeline invariants
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y clang-format-19
-          clang-format-19 -i src/sr-event-dock.cpp src/sr-multiview-dock.cpp
-      - name: Validate zero Session timestamp handling
-        run: |
-          git diff --check
-          grep -q 'if (endNs <= startNs)' src/sr-event-dock.cpp
-          ! grep -q 'if (!startNs || endNs <= startNs)' src/sr-event-dock.cpp
-          grep -q 'if (player) {' src/sr-multiview-dock.cpp
-          ! grep -q 'if (player && timestampNs)' src/sr-multiview-dock.cpp
-      - name: Commit zero-time compatibility
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/sr-event-dock.cpp src/sr-multiview-dock.cpp
-          git diff --cached --check
-          git commit -m 'fix: support zero-based Session timelines in UI'
-          git push origin HEAD:feature/session-timecode-hardening
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          event = Path('src/sr-event-dock.cpp').read_text(encoding='utf-8')
+          multiview = Path('src/sr-multiview-dock.cpp').read_text(encoding='utf-8')
+          session = Path('src/sr-session.c').read_text(encoding='utf-8')
+          audio = Path('src/sr-master-audio.c').read_text(encoding='utf-8')
+          capture = Path('src/sr-capture-session.c').read_text(encoding='utf-8')
+          writer = Path('src/sr-segment-writer.c').read_text(encoding='utf-8')
+          panel = Path('src/sr-session-panel.cpp').read_text(encoding='utf-8')
+          controller = Path('src/sr-event-controller.c').read_text(encoding='utf-8')
+
+          failures = []
+          def require(condition, message):
+              if not condition:
+                  failures.append(message)
+
+          # A new Session starts at zero. Zero is data, never a boolean sentinel.
+          require('g_recording_timeline_start_ns = 0;' in session,
+                  'new Session does not start at zero')
+          require('uint64_t result = 0;' in session,
+                  'inactive Session mapper can leak native OBS uptime')
+          require('if (endNs <= startNs)' in event and 'if (!startNs || endNs <= startNs)' not in event,
+                  'main timeline rejects a valid zero Session start')
+          require('if (player) {' in multiview and 'if (player && timestampNs)' not in multiview,
+                  'Multiview decoder rejects timestamp 0')
+          require(not re.search(r'if\s*\(\s*recording_start\s*\)', controller),
+                  'Event controller treats recording start as boolean')
+
+          # Resume is determined by committed physical media, not wall clock or DB bookkeeping.
+          require('sr_session_get_media_bounds' in session,
+                  'Resume is not based on physical media indexes')
+          require('SELECT MAX(timeline_end_ns) FROM recording_runs' not in session,
+                  'recording_runs metadata still controls Resume media end')
+          require('sr_storage_manager_wait_initial_recovery(10000)' in capture,
+                  'START can race initial crash recovery')
+          require('sr_session_recording_generation() != w->recording_generation' in writer,
+                  'video writer is not bound to a recording generation')
+          require('writer->state->recording_generation != sr_session_recording_generation()' in audio,
+                  'camera audio writer is not bound to a recording generation')
+          require('state->recording_generation != sr_session_recording_generation()' in audio,
+                  'master audio callback lacks a recording-generation guard')
+          require('size_t *count = camera_count ? camera_count : &local_count;' in capture,
+                  'nullable camera_count can leave a phantom Run active')
+          require('sr_session_clear_record_target();' in panel[panel.index('void resumeSelected()'):panel.index('void returnToRecording()')],
+                  'failed Resume open leaves a stale Recording Target')
+
+          # Selecting another Event focuses once: the Event takes ~60% of the viewport,
+          # leaving approximately 20% edit room on each side. Manual zoom/pan stays intact
+          # while event_id is unchanged.
+          require('void focusSelection(uint64_t inNs, uint64_t outNs)' in event,
+                  'main Event timeline has no selection focus helper')
+          require('focusSelection(event.in_ns, event.out_ns)' in event,
+                  'main Event selection does not trigger focus')
+          require('const bool eventChanged = timelineEventId != event.id;' in event,
+                  'main Event focus is not one-shot per selected Event')
+          require('eventSpan / 0.60L' in event,
+                  'main Event viewport does not reserve ~20% margins')
+          require('focusedEventId' in multiview and 'void focusRange(' in multiview,
+                  'Multiview does not mirror selected-Event focus')
+          require('state.event_id != focusedEventId' in multiview,
+                  'Multiview focus is not keyed to Event changes')
+          require('rangeSpan / 0.60L' in multiview,
+                  'Multiview Event viewport does not reserve ~20% margins')
+
+          # Multiview ruler must remain readable from sub-second to multi-hour views.
+          require('void paintRuler(QPainter &painter, const QRect &area)' in multiview,
+                  'Multiview timeline ruler missing')
+          require('rulerBand' in multiview and 'pixels >= 88.0L' in multiview,
+                  'Multiview ruler lacks visible band/adaptive label spacing')
+          require('minorStep = step / 4' in multiview,
+                  'Multiview ruler lacks minor ticks')
+          require('palette().text().color()' in multiview,
+                  'Multiview ruler labels are not drawn with readable text color')
+
+          # Archived bounds may use only Session/media clocks.
+          start = event.index('void updateEditTimelineBounds()')
+          end = event.index('\n\tQString editTimelineStatusText', start)
+          bounds = event[start:end]
+          require('obs_get_video_frame_time' not in bounds,
+                  'archive timeline bounds still mix raw OBS uptime with Session time')
+          require('sr_session_get_recording_path' in bounds,
+                  'archive bounds do not distinguish OPEN from REC')
+
+          if failures:
+              print('Timeline/timebase audit FAILED:')
+              for failure in failures:
+                  print(' -', failure)
+              raise SystemExit(1)
+          print('Timeline/timebase audit passed.')
+          PY
+
+  check-format:
+    uses: ./.github/workflows/check-format.yaml
+    permissions:
+      contents: read
+
+  build-project:
+    uses: ./.github/workflows/build-project.yaml
+    secrets: inherit
+    permissions:
+      contents: read
