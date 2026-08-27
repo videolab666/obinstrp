@@ -14,11 +14,11 @@ the Free Software Foundation; either version 2 of the License, or
 #include <stddef.h>
 #include <stdint.h>
 
-#include <libavutil/frame.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include <libavutil/frame.h>
 
 struct sr_disk_player;
 
