@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-segment-catalog.h"
 #include "sr-camera-identity.h"
 #include "sr-segment-reader.h"
+#include "sr-session.h"
 
 #include <obs-module.h>
 #include <util/dstr.h>
@@ -32,10 +33,8 @@ static char *replace_suffix(const char *path, const char *old_suffix, const char
 {
 	if (!ends_with(path, old_suffix))
 		return NULL;
-
 	const size_t path_len = strlen(path);
 	const size_t old_len = strlen(old_suffix);
-
 	struct dstr out = {0};
 	dstr_ncopy(&out, path, path_len - old_len);
 	dstr_cat(&out, new_suffix);
@@ -67,20 +66,17 @@ static bool append_descriptor(struct sr_segment_descriptor **items, size_t *coun
 	struct sr_segment_reader *reader = sr_segment_reader_open(segment_path, index_path);
 	if (!reader)
 		return false;
-
 	struct sr_segment_stream_info info;
 	if (!sr_segment_reader_get_info(reader, &info)) {
 		sr_segment_reader_close(reader);
 		return false;
 	}
-
 	uint64_t end_ns = info.segment_start_ns;
 	if (info.indexed_packets) {
 		struct sr_index_entry last;
 		if (sr_segment_reader_find(reader, UINT64_MAX, false, &last))
 			end_ns = last.timestamp_ns;
 	}
-
 	if (*count == *capacity) {
 		const size_t next_capacity = *capacity ? *capacity * 2 : 32;
 		struct sr_segment_descriptor *next = brealloc(*items, next_capacity * sizeof(**items));
@@ -91,7 +87,6 @@ static bool append_descriptor(struct sr_segment_descriptor **items, size_t *coun
 		*items = next;
 		*capacity = next_capacity;
 	}
-
 	struct sr_segment_descriptor *dst = &(*items)[(*count)++];
 	memset(dst, 0, sizeof(*dst));
 	dst->sequence = info.sequence;
@@ -103,7 +98,6 @@ static bool append_descriptor(struct sr_segment_descriptor **items, size_t *coun
 	dst->active = active;
 	dst->segment_path = bstrdup(segment_path);
 	dst->index_path = bstrdup(index_path);
-
 	sr_segment_reader_close(reader);
 	return true;
 }
@@ -113,31 +107,26 @@ static void scan_directory(const char *camera_dir, struct sr_segment_descriptor 
 {
 	if (!camera_dir || !*camera_dir)
 		return;
-
 	struct dstr pattern = {0};
 	dstr_copy(&pattern, camera_dir);
 	dstr_replace(&pattern, "\\", "/");
 	if (pattern.len && dstr_end(&pattern) != '/')
 		dstr_cat_ch(&pattern, '/');
 	dstr_cat(&pattern, "*.srseg*");
-
 	os_glob_t *glob = NULL;
 	if (os_glob(pattern.array, 0, &glob) == 0) {
 		for (size_t i = 0; i < glob->gl_pathc; i++) {
 			if (glob->gl_pathv[i].directory)
 				continue;
-
 			const char *segment_path = glob->gl_pathv[i].path;
 			const bool active = ends_with(segment_path, ".srseg.part");
 			const bool finalized = ends_with(segment_path, ".srseg") && !active;
 			if (!active && !finalized)
 				continue;
-
 			char *index_path = active ? replace_suffix(segment_path, ".srseg.part", ".sridx.part")
 						  : replace_suffix(segment_path, ".srseg", ".sridx");
 			if (!index_path)
 				continue;
-
 			if (os_file_exists(index_path))
 				append_descriptor(items, count, capacity, segment_path, index_path, active);
 			bfree(index_path);
@@ -154,7 +143,6 @@ bool sr_segment_catalog_scan(const char *session_dir, const char *camera_name, s
 		return false;
 	*segments = NULL;
 	*count = 0;
-
 	if (!session_dir || !*session_dir || !camera_name || !*camera_name)
 		return false;
 
@@ -162,25 +150,24 @@ bool sr_segment_catalog_scan(const char *session_dir, const char *camera_name, s
 	size_t item_count = 0;
 	size_t capacity = 0;
 
+	/* Resolve by the session registry first. Unlike obs_get_source_by_name(),
+	 * this keeps archived media reachable after the OBS source was renamed or
+	 * removed from the current scene collection. */
 	char key[SR_CAMERA_STABLE_KEY_MAX] = {0};
+	int64_t ignored_offset = 0;
 	char *stable_dir = NULL;
-	if (sr_camera_key_from_name(camera_name, key, sizeof(key)))
+	if (sr_session_resolve_camera(session_dir, camera_name, key, sizeof(key), &ignored_offset))
 		stable_dir = sr_camera_directory_for_key(session_dir, key);
 	char *legacy_dir = sr_camera_legacy_directory(session_dir, camera_name);
 
-	/* New recordings are keyed by the persistent OBS source UUID. Also scan
-     * the old display-name hash directory so a session started with an older
-     * plugin remains replayable after upgrading. */
 	scan_directory(stable_dir, &items, &item_count, &capacity);
 	if (!stable_dir || !legacy_dir || strcmp(stable_dir, legacy_dir) != 0)
 		scan_directory(legacy_dir, &items, &item_count, &capacity);
-
 	bfree(stable_dir);
 	bfree(legacy_dir);
 
 	if (item_count > 1)
 		qsort(items, item_count, sizeof(*items), descriptor_compare);
-
 	*segments = items;
 	*count = item_count;
 	return true;
@@ -202,10 +189,6 @@ const struct sr_segment_descriptor *sr_segment_catalog_find(const struct sr_segm
 {
 	if (!segments || !count)
 		return NULL;
-
-	/* Sorted by start time. Binary-search the newest segment whose start is
-     * at/before the requested timestamp, then walk backward across rare
-     * overlapping ranges until a containing segment is found. */
 	size_t lo = 0;
 	size_t hi = count;
 	while (lo < hi) {
@@ -217,7 +200,6 @@ const struct sr_segment_descriptor *sr_segment_catalog_find(const struct sr_segm
 	}
 	if (lo == 0)
 		return NULL;
-
 	for (size_t i = lo; i > 0; i--) {
 		const struct sr_segment_descriptor *candidate = &segments[i - 1];
 		if (candidate->start_ns <= timestamp_ns && candidate->end_ns >= timestamp_ns)
