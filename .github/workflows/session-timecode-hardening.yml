@@ -9,36 +9,31 @@ permissions:
   contents: write
 
 jobs:
-  apply-final-ui-hardening:
+  apply-zero-time-ui:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply final Session guards
-        run: python3 .github/scripts/patch-session-final-guards.py
-      - name: Apply Event timeline focus and Multiview ruler
-        run: python3 .github/scripts/patch-event-timeline-focus.py
-      - name: Format changed C/C++ files
+      - name: Apply zero-time UI compatibility
+        run: python3 .github/scripts/patch-zero-session-time-ui.py
+      - name: Format changed C++ files
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang-format-19
-          mapfile -t files < <(git diff --name-only -- '*.c' '*.h' '*.cpp')
-          if ((${#files[@]})); then
-            clang-format-19 -i "${files[@]}"
-          fi
-      - name: Validate patch before commit
+          clang-format-19 -i src/sr-event-dock.cpp src/sr-multiview-dock.cpp
+      - name: Validate zero Session timestamp handling
         run: |
           git diff --check
-          grep -q 'focusSelection(event.in_ns, event.out_ns)' src/sr-event-dock.cpp
-          grep -q 'focusedEventId' src/sr-multiview-dock.cpp
-          grep -q 'pixels >= 88.0L' src/sr-multiview-dock.cpp
-          grep -q 'uint64_t result = 0;' src/sr-session.c
-      - name: Commit patched sources
+          grep -q 'if (endNs <= startNs)' src/sr-event-dock.cpp
+          ! grep -q 'if (!startNs || endNs <= startNs)' src/sr-event-dock.cpp
+          grep -q 'if (player) {' src/sr-multiview-dock.cpp
+          ! grep -q 'if (player && timestampNs)' src/sr-multiview-dock.cpp
+      - name: Commit zero-time compatibility
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src
+          git add src/sr-event-dock.cpp src/sr-multiview-dock.cpp
           git diff --cached --check
-          git commit -m 'feat: focus selected replay events on timeline'
+          git commit -m 'fix: support zero-based Session timelines in UI'
           git push origin HEAD:feature/session-timecode-hardening
