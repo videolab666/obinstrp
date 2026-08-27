@@ -49,8 +49,10 @@ struct sr_gpu_renderer {
 	ID3D11VideoProcessorEnumerator *enumerator = nullptr;
 	ID3D11VideoProcessor *processor = nullptr;
 	ID3D11VideoProcessorOutputView *output_view = nullptr;
-	uint32_t processor_width = 0;
-	uint32_t processor_height = 0;
+	uint32_t processor_src_width = 0;
+	uint32_t processor_src_height = 0;
+	uint32_t processor_dst_width = 0;
+	uint32_t processor_dst_height = 0;
 #endif
 };
 
@@ -109,6 +111,16 @@ static void release_cached_d3d11_texture(void *unused, uint8_t *data)
 		texture->Release();
 }
 
+static void reset_processor_dimensions(sr_gpu_renderer *renderer)
+{
+	if (!renderer)
+		return;
+	renderer->processor_src_width = 0;
+	renderer->processor_src_height = 0;
+	renderer->processor_dst_width = 0;
+	renderer->processor_dst_height = 0;
+}
+
 static void release_d3d11_pipeline(sr_gpu_renderer *renderer)
 {
 	if (!renderer)
@@ -120,8 +132,7 @@ static void release_d3d11_pipeline(sr_gpu_renderer *renderer)
 	com_release(renderer->video_device);
 	com_release(renderer->context);
 	renderer->device = nullptr;
-	renderer->processor_width = 0;
-	renderer->processor_height = 0;
+	reset_processor_dimensions(renderer);
 }
 #endif
 
@@ -333,8 +344,7 @@ static bool ensure_target_texture(sr_gpu_renderer *renderer, uint32_t width, uin
 
 #ifdef _WIN32
 	com_release(renderer->output_view);
-	renderer->processor_width = 0;
-	renderer->processor_height = 0;
+	reset_processor_dimensions(renderer);
 #endif
 	if (renderer->texture)
 		gs_texture_destroy(renderer->texture);
@@ -356,9 +366,11 @@ static bool ensure_target_texture(sr_gpu_renderer *renderer, uint32_t width, uin
 static void draw_sdr_texture(gs_texture_t *texture, uint32_t width, uint32_t height);
 
 #ifdef _WIN32
-static bool ensure_d3d11_pipeline(sr_gpu_renderer *renderer, uint32_t width, uint32_t height)
+static bool ensure_d3d11_pipeline(sr_gpu_renderer *renderer, uint32_t src_width, uint32_t src_height,
+				  uint32_t dst_width, uint32_t dst_height)
 {
-	if (!renderer || gs_get_device_type() != GS_DEVICE_DIRECT3D_11)
+	if (!renderer || !src_width || !src_height || !dst_width || !dst_height ||
+	    gs_get_device_type() != GS_DEVICE_DIRECT3D_11)
 		return false;
 
 	ID3D11Device *current_device = static_cast<ID3D11Device *>(gs_get_device_obj());
@@ -384,8 +396,9 @@ static bool ensure_d3d11_pipeline(sr_gpu_renderer *renderer, uint32_t width, uin
 		}
 	}
 
-	if (renderer->processor && renderer->processor_width == width && renderer->processor_height == height &&
-	    renderer->output_view)
+	if (renderer->processor && renderer->processor_src_width == src_width &&
+	    renderer->processor_src_height == src_height && renderer->processor_dst_width == dst_width &&
+	    renderer->processor_dst_height == dst_height && renderer->output_view)
 		return true;
 
 	com_release(renderer->output_view);
@@ -396,12 +409,12 @@ static bool ensure_d3d11_pipeline(sr_gpu_renderer *renderer, uint32_t width, uin
 	content.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
 	content.InputFrameRate.Numerator = 60;
 	content.InputFrameRate.Denominator = 1;
-	content.InputWidth = width;
-	content.InputHeight = height;
+	content.InputWidth = src_width;
+	content.InputHeight = src_height;
 	content.OutputFrameRate.Numerator = 60;
 	content.OutputFrameRate.Denominator = 1;
-	content.OutputWidth = width;
-	content.OutputHeight = height;
+	content.OutputWidth = dst_width;
+	content.OutputHeight = dst_height;
 	content.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
 
 	if (FAILED(renderer->video_device->CreateVideoProcessorEnumerator(&content, &renderer->enumerator)) ||
@@ -423,15 +436,22 @@ static bool ensure_d3d11_pipeline(sr_gpu_renderer *renderer, uint32_t width, uin
 		return false;
 	}
 
-	renderer->processor_width = width;
-	renderer->processor_height = height;
+	renderer->processor_src_width = src_width;
+	renderer->processor_src_height = src_height;
+	renderer->processor_dst_width = dst_width;
+	renderer->processor_dst_height = dst_height;
 	return true;
 }
 
 static bool draw_native_d3d11(sr_gpu_renderer *renderer, const AVFrame *frame, uint32_t width, uint32_t height)
 {
-	if (!sr_gpu_frame_is_native(frame) || !ensure_target_texture(renderer, width, height) ||
-	    !ensure_d3d11_pipeline(renderer, width, height))
+	if (!sr_gpu_frame_is_native(frame) || frame->width <= 0 || frame->height <= 0 || !width || !height)
+		return false;
+
+	const uint32_t source_width = static_cast<uint32_t>(frame->width);
+	const uint32_t source_height = static_cast<uint32_t>(frame->height);
+	if (!ensure_target_texture(renderer, width, height) ||
+	    !ensure_d3d11_pipeline(renderer, source_width, source_height, width, height))
 		return false;
 
 	ID3D11Texture2D *input = reinterpret_cast<ID3D11Texture2D *>(frame->data[0]);
@@ -456,8 +476,8 @@ static bool draw_native_d3d11(sr_gpu_renderer *renderer, const AVFrame *frame, u
 									 &input_view)))
 		return false;
 
-	RECT source_rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-	RECT dest_rect = source_rect;
+	RECT source_rect = {0, 0, static_cast<LONG>(source_width), static_cast<LONG>(source_height)};
+	RECT dest_rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
 	renderer->video_context->VideoProcessorSetStreamFrameFormat(renderer->processor, 0,
 								    D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
 	renderer->video_context->VideoProcessorSetStreamSourceRect(renderer->processor, 0, TRUE, &source_rect);
