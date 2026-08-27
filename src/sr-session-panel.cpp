@@ -88,7 +88,8 @@ QString sessionName(const QString &path)
 class SrSessionPanel final : public QWidget {
 public:
 	explicit SrSessionPanel(sr_event_controller *eventController, QWidget *parent = nullptr)
-		: QWidget(parent), controller(eventController)
+		: QWidget(parent),
+		  controller(eventController)
 	{
 		auto *root = new QVBoxLayout(this);
 		stateLabel = new QLabel(this);
@@ -205,7 +206,8 @@ private:
 	{
 		if (!sr_session_recording_is_active())
 			return true;
-		if (QMessageBox::question(this, T("Session.Title"), T("Session.StopRecordingConfirm")) != QMessageBox::Yes)
+		if (QMessageBox::question(this, T("Session.Title"), T("Session.StopRecordingConfirm")) !=
+		    QMessageBox::Yes)
 			return false;
 		size_t count = 0;
 		if (!sr_capture_set_all_disk_recording(false, &count)) {
@@ -232,7 +234,7 @@ private:
 		const QString suggested = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
 		const QString name = QInputDialog::getText(this, T("Session.NewTitle"), T("Session.NamePrompt"),
 							   QLineEdit::Normal, suggested, &accepted)
-				     .trimmed();
+					     .trimmed();
 		if (!accepted)
 			return;
 		const QByteArray utf8 = name.toUtf8();
@@ -291,7 +293,7 @@ private:
 		bool accepted = false;
 		const QString name = QInputDialog::getText(this, T("Session.RenameTitle"), T("Session.NamePrompt"),
 							   QLineEdit::Normal, current, &accepted)
-				     .trimmed();
+					     .trimmed();
 		if (!accepted || name.isEmpty())
 			return;
 		const QByteArray pathUtf8 = path.toUtf8();
@@ -318,14 +320,15 @@ private:
 			return;
 		for (const QString &path : paths) {
 			const QByteArray utf8 = path.toUtf8();
-			if (sr_session_path_is_active(utf8.constData()) || sr_session_path_is_opened(utf8.constData()) ||
+			if (sr_session_path_is_active(utf8.constData()) ||
+			    sr_session_path_is_opened(utf8.constData()) ||
 			    sr_session_path_is_record_target(utf8.constData())) {
 				QMessageBox::warning(this, T("Storage.DeleteTitle"), T("Session.DeleteInUse"));
 				return;
 			}
 		}
-		if (QMessageBox::question(this, T("Storage.DeleteTitle"), T("Session.DeleteConfirm").arg(paths.size())) !=
-		    QMessageBox::Yes)
+		if (QMessageBox::question(this, T("Storage.DeleteTitle"),
+					  T("Session.DeleteConfirm").arg(paths.size())) != QMessageBox::Yes)
 			return;
 		int failed = 0;
 		for (const QString &path : paths) {
@@ -359,7 +362,8 @@ private:
 		const QFileInfoList candidates = rootDir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time);
 		QFileInfoList sessions;
 		for (const QFileInfo &candidate : candidates) {
-			const QString metadata = QDir(candidate.absoluteFilePath()).filePath(QStringLiteral("session.json"));
+			const QString metadata =
+				QDir(candidate.absoluteFilePath()).filePath(QStringLiteral("session.json"));
 			if (QFileInfo(metadata).isFile())
 				sessions.append(candidate);
 		}
@@ -378,8 +382,8 @@ private:
 			nameItem->setToolTip(path);
 			table->setItem(row, 0, nameItem);
 			table->setItem(row, 1,
-				       new QTableWidgetItem(QDateTime::fromSecsSinceEpoch(sessionCreatedUnix(path)).toString(
-					       QStringLiteral("yyyy-MM-dd HH:mm:ss"))));
+				       new QTableWidgetItem(QDateTime::fromSecsSinceEpoch(sessionCreatedUnix(path))
+								    .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))));
 			table->setItem(row, 2, new QTableWidgetItem(formattedBytes(bytes)));
 			table->setItem(row, 3, new QTableWidgetItem(statusForPath(pathUtf8)));
 			if (!preserve.isEmpty() && preserve == path)

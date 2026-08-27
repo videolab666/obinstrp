@@ -29,7 +29,8 @@ FetchContent_Declare(
   URL https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip
   URL_HASH SHA3_256=628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-  SOURCE_SUBDIR __pitel_instant_replay_no_cmake__
+  SOURCE_SUBDIR
+  __pitel_instant_replay_no_cmake__
 )
 FetchContent_MakeAvailable(sr_sqlite_source)
 
@@ -78,8 +79,9 @@ endif()
 
 set_source_files_properties(
   src/capture-filter.c
-  PROPERTIES COMPILE_DEFINITIONS
-             "SR_SESSION_RECORDING_PRODUCER;sr_capture_set_all_disk_recording=sr_capture_set_all_disk_recording_impl;sr_capture_get_recording_summary=sr_capture_get_recording_summary_impl;sr_camera_audio_writer_push=sr_session_camera_audio_writer_push"
+  PROPERTIES
+    COMPILE_DEFINITIONS
+      "SR_SESSION_RECORDING_PRODUCER;sr_capture_set_all_disk_recording=sr_capture_set_all_disk_recording_impl;sr_capture_get_recording_summary=sr_capture_get_recording_summary_impl;sr_camera_audio_writer_push=sr_session_camera_audio_writer_push"
 )
 
 set_source_files_properties(
@@ -93,17 +95,15 @@ set_source_files_properties(
 # enter the asynchronous AAC queue.
 set_source_files_properties(
   src/sr-master-audio.c
-  PROPERTIES COMPILE_DEFINITIONS
-             "SR_SESSION_RECORDING_PRODUCER;obs_add_raw_audio_callback=sr_session_add_raw_audio_callback;obs_remove_raw_audio_callback=sr_session_remove_raw_audio_callback"
+  PROPERTIES
+    COMPILE_DEFINITIONS
+      "SR_SESSION_RECORDING_PRODUCER;obs_add_raw_audio_callback=sr_session_add_raw_audio_callback;obs_remove_raw_audio_callback=sr_session_remove_raw_audio_callback"
 )
 
 # sr-session-panel.cpp wraps the original dock registration and swaps the old
 # Storage widget for Session Manager after the unified dock exists. No changes
 # are required inside the large, already-stable sr-dock.cpp implementation.
-set_source_files_properties(
-  src/sr-dock.cpp
-  PROPERTIES COMPILE_DEFINITIONS "sr_dock_register=sr_dock_register_impl"
-)
+set_source_files_properties(src/sr-dock.cpp PROPERTIES COMPILE_DEFINITIONS "sr_dock_register=sr_dock_register_impl")
 
 target_sources(
   ${CMAKE_PROJECT_NAME}

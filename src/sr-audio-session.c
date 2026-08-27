@@ -77,5 +77,6 @@ bool sr_session_camera_audio_writer_push(struct sr_camera_audio_writer *writer, 
 	if (!audio)
 		return false;
 	const uint64_t source_timestamp = timestamp_ns ? timestamp_ns : audio->timestamp;
-	return sr_camera_audio_writer_push(writer, audio, channels, sr_session_map_recording_timestamp(source_timestamp));
+	return sr_camera_audio_writer_push(writer, audio, channels,
+					   sr_session_map_recording_timestamp(source_timestamp));
 }

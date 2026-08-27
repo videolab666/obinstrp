@@ -800,6 +800,7 @@ bool sr_master_audio_acquire(void)
 		state->reserve_blocked = false;
 		state->reserve_recheck_after_ns = 0;
 		state->next_sequence = find_next_sequence(state->audio_dir);
+		state->next_segment_discontinuity = sr_session_recording_starts_with_discontinuity();
 		state->enqueue_epoch++;
 		state->active = true;
 		session_dir = NULL;
@@ -868,6 +869,7 @@ struct sr_camera_audio_writer *sr_camera_audio_writer_create(const char *session
 	state->min_free_bytes =
 		sr_config_get_low_space_action() == SR_STORAGE_LOW_SPACE_WARN_ONLY ? 0 : sr_config_get_min_free_bytes();
 	state->next_sequence = find_next_sequence(state->audio_dir);
+	state->next_segment_discontinuity = sr_session_recording_starts_with_discontinuity();
 	state->active = true;
 	state->active_refs = 1;
 	if (pthread_mutex_init(&state->mutex, NULL) != 0) {
