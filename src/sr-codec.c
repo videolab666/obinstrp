@@ -269,7 +269,7 @@ AVPacket *sr_encoder_encode(struct sr_encoder *enc, const struct obs_source_fram
 
 	if (copy_nv12_direct(enc, frame)) {
 		if (!enc->direct_nv12_logged) {
-			obs_log(LOG_INFO, "replay encoder '%s': using direct limited-range NV12 input path (swscale bypassed)",
+			obs_log(LOG_INFO, "replay encoder '%s': direct limited NV12 input (swscale bypassed)",
 				enc->codec->name);
 			enc->direct_nv12_logged = true;
 		}
