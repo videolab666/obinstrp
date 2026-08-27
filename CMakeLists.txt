@@ -79,14 +79,22 @@ endif()
 set_source_files_properties(
   src/capture-filter.c
   PROPERTIES COMPILE_DEFINITIONS
-             "SR_SESSION_RECORDING_PRODUCER;sr_capture_set_all_disk_recording=sr_capture_set_all_disk_recording_impl;sr_capture_get_recording_summary=sr_capture_get_recording_summary_impl"
+             "SR_SESSION_RECORDING_PRODUCER;sr_capture_set_all_disk_recording=sr_capture_set_all_disk_recording_impl;sr_capture_get_recording_summary=sr_capture_get_recording_summary_impl;sr_camera_audio_writer_push=sr_session_camera_audio_writer_push"
 )
 
 set_source_files_properties(
   src/sr-program-recorder.c
-  src/sr-master-audio.c
   src/sr-storage-manager.c
   PROPERTIES COMPILE_DEFINITIONS "SR_SESSION_RECORDING_PRODUCER"
+)
+
+# Master audio is also a recording producer. Its raw OBS callback is proxied so
+# audio timestamps are mapped to the compact Recording Run timeline before they
+# enter the asynchronous AAC queue.
+set_source_files_properties(
+  src/sr-master-audio.c
+  PROPERTIES COMPILE_DEFINITIONS
+             "SR_SESSION_RECORDING_PRODUCER;obs_add_raw_audio_callback=sr_session_add_raw_audio_callback;obs_remove_raw_audio_callback=sr_session_remove_raw_audio_callback"
 )
 
 # sr-session-panel.cpp wraps the original dock registration and swaps the old
@@ -119,6 +127,7 @@ target_sources(
     src/sr-load.c
     src/sr-config.c
     src/sr-master-audio.c
+    src/sr-audio-session.c
     src/sr-master-audio-reader.c
     src/sr-master-audio-catalog.c
     src/sr-master-audio-player.c
