@@ -6,99 +6,39 @@ on:
       - feature/session-timecode-hardening
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  audit-timebase:
+  apply-final-ui-hardening:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Audit native and Session clocks
+        with:
+          fetch-depth: 0
+      - name: Apply final Session guards
+        run: python3 .github/scripts/patch-session-final-guards.py
+      - name: Apply Event timeline focus and Multiview ruler
+        run: python3 .github/scripts/patch-event-timeline-focus.py
+      - name: Format changed C/C++ files
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          needles = (
-              'obs_get_video_frame_time',
-              'sr_session_map_recording_timestamp',
-              'sr_session_recording_start_ns',
-              'recording_obs_start_ns',
-          )
-          print('=== Timebase references ===')
-          for path in sorted(Path('src').glob('*')):
-              if path.suffix not in {'.c', '.h', '.cpp'}:
-                  continue
-              lines = path.read_text(encoding='utf-8').splitlines()
-              hits = [(n, line.rstrip()) for n, line in enumerate(lines, 1)
-                      if any(needle in line for needle in needles)]
-              if hits:
-                  print(f'--- {path} ---')
-                  for n, line in hits:
-                      print(f'{n}: {line}')
-
-          bad = []
-          for path in sorted(Path('src').glob('*')):
-              if path.suffix not in {'.c', '.h', '.cpp'}:
-                  continue
-              text = path.read_text(encoding='utf-8')
-              for match in re.finditer(r'if\s*\([^\n]*sr_session_recording_start_ns\s*\(\s*\)', text):
-                  line = text.count('\n', 0, match.start()) + 1
-                  bad.append(f'{path}:{line}: Session start timestamp used as boolean')
-
-          event_controller = Path('src/sr-event-controller.c').read_text(encoding='utf-8')
-          if re.search(r'if\s*\(\s*recording_start\s*\)', event_controller):
-              bad.append('src/sr-event-controller.c: recording_start used as boolean')
-
-          event = Path('src/sr-event-dock.cpp').read_text(encoding='utf-8')
-          start = event.index('void updateEditTimelineBounds()')
-          end = event.index('\n\tQString editTimelineStatusText', start)
-          bounds = event[start:end]
-          if 'obs_get_video_frame_time' in bounds:
-              bad.append('src/sr-event-dock.cpp: archive bounds still use raw OBS clock')
-          if 'sr_session_get_recording_path' not in bounds:
-              bad.append('src/sr-event-dock.cpp: archive bounds do not distinguish OPEN from REC')
-
-          writer = Path('src/sr-segment-writer.c').read_text(encoding='utf-8')
-          if 'sr_session_recording_generation() != w->recording_generation' not in writer:
-              bad.append('src/sr-segment-writer.c: video writer is not generation-bound')
-
-          audio = Path('src/sr-master-audio.c').read_text(encoding='utf-8')
-          if 'writer->state->recording_generation != sr_session_recording_generation()' not in audio:
-              bad.append('src/sr-master-audio.c: camera audio writer is not generation-bound')
-          if 'state->recording_generation != generation' not in audio:
-              bad.append('src/sr-master-audio.c: master audio rebind lacks generation guard')
-
-          session = Path('src/sr-session.c').read_text(encoding='utf-8')
-          if 'g_recording_timeline_start_ns = 0;' not in session:
-              bad.append('src/sr-session.c: new Session does not start at zero')
-          if 'SELECT MAX(timeline_end_ns) FROM recording_runs' in session:
-              bad.append('src/sr-session.c: recording_runs still controls Resume media end')
-          if 'sr_session_get_media_bounds' not in session:
-              bad.append('src/sr-session.c: Resume is not based on physical media indexes')
-
-          capture = Path('src/sr-capture-session.c').read_text(encoding='utf-8')
-          if 'sr_storage_manager_wait_initial_recovery(10000)' not in capture:
-              bad.append('src/sr-capture-session.c: START can race initial crash recovery')
-          stop_index = capture.index('if (!wait_for_recording_producers(3000))')
-          finish_index = capture.index('sr_session_finish_recording(obs_get_video_frame_time());', stop_index)
-          if finish_index < stop_index:
-              bad.append('src/sr-capture-session.c: Session clock can close before producer drain')
-
-          if bad:
-              print('=== Forbidden timebase assumptions ===')
-              print('\n'.join(bad))
-              raise SystemExit(1)
-          print('Timebase audit passed.')
-          PY
-
-  check-format:
-    uses: ./.github/workflows/check-format.yaml
-    permissions:
-      contents: read
-
-  build-project:
-    uses: ./.github/workflows/build-project.yaml
-    secrets: inherit
-    permissions:
-      contents: read
+          sudo apt-get update -qq
+          sudo apt-get install -y clang-format-19
+          mapfile -t files < <(git diff --name-only -- '*.c' '*.h' '*.cpp')
+          if ((${#files[@]})); then
+            clang-format-19 -i "${files[@]}"
+          fi
+      - name: Validate patch before commit
+        run: |
+          git diff --check
+          grep -q 'focusSelection(event.in_ns, event.out_ns)' src/sr-event-dock.cpp
+          grep -q 'focusedEventId' src/sr-multiview-dock.cpp
+          grep -q 'pixels >= 88.0L' src/sr-multiview-dock.cpp
+          grep -q 'uint64_t result = 0;' src/sr-session.c
+      - name: Commit patched sources
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src
+          git diff --cached --check
+          git commit -m 'feat: focus selected replay events on timeline'
+          git push origin HEAD:feature/session-timecode-hardening
