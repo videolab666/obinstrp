@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: apply-event-angle-ux-${{ github.ref }}
@@ -23,12 +22,25 @@ jobs:
           ref: feature/hardware-zero-copy
           fetch-depth: 0
 
+      - name: Check whether patch is pending
+        id: pending
+        shell: bash
+        run: |
+          if [[ -f .github/scripts/run_event_angle_semantics.py && -f .github/scripts/apply_event_angle_semantics.py ]]; then
+            echo "apply=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "apply=false" >> "$GITHUB_OUTPUT"
+            echo "Event angle patch already applied; nothing to do."
+          fi
+
       - name: Install clang-format 19
+        if: steps.pending.outputs.apply == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-format-19
 
       - name: Apply event angle behavior
+        if: steps.pending.outputs.apply == 'true'
         run: |
           python3 .github/scripts/run_event_angle_semantics.py
           clang-format-19 -i src/sr-event-dock.cpp
@@ -39,63 +51,13 @@ jobs:
           grep -q 'sr_event_controller_set_preferred_camera(controller, eventId, name)' src/sr-event-dock.cpp
           grep -q 'sr_replay_playlist_start_with_transitions(bus, currentList(), nullptr, crossBus)' src/sr-event-dock.cpp
 
-      - name: Restore development CI and commit product changes
+      - name: Commit product changes
+        if: steps.pending.outputs.apply == 'true'
         shell: bash
         run: |
-          cat > .github/workflows/validate-program-output.yml <<'YAML'
-          name: Replay Development CI
-          run-name: Replay Development CI — ${{ github.ref_name }} — ${{ github.event_name }}
-
-          on:
-            workflow_dispatch:
-            push:
-              branches:
-                - feature/hardware-zero-copy
-
-          permissions:
-            contents: read
-
-          concurrency:
-            group: replay-development-ci-${{ github.ref }}
-            cancel-in-progress: true
-
-          # Full validation for the active replay development branch.
-          # Every push is built; workflow_dispatch keeps a manual Run workflow button
-          # available from the default branch. PR validation is intentionally left to
-          # the repository's normal PR workflow when this branch is eventually retargeted
-          # to main, avoiding duplicate push + pull_request builds during development.
-          jobs:
-            check-format:
-              name: Check Formatting 🔍
-              uses: ./.github/workflows/check-format.yaml
-              permissions:
-                contents: read
-
-            build-project:
-              name: Build Project 🧱
-              uses: ./.github/workflows/build-project.yaml
-              secrets: inherit
-              permissions:
-                contents: read
-          YAML
-
           rm -f .github/scripts/apply_event_angle_semantics.py .github/scripts/run_event_angle_semantics.py
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "feat: make replay angle selection event-native"
           git push origin HEAD:feature/hardware-zero-copy
-          echo "PRODUCT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-
-      - name: Start final validation
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail-with-body -L \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/videolab666/obinstrp/actions/workflows/validate-program-output.yml/dispatches \
-            -d '{"ref":"feature/hardware-zero-copy"}'
-          echo "Final validation dispatched for ${PRODUCT_SHA}"
