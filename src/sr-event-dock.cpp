@@ -1225,7 +1225,8 @@ private:
 		const long double factor = std::pow(1.25L, (long double)steps);
 		uint64_t nextSpan = (uint64_t)((long double)currentSpan / factor);
 		const uint64_t minimumSpan = std::max<uint64_t>(minimumDurationNs * 6ULL, 250000000ULL);
-		nextSpan = qBound(minimumSpan, nextSpan, recordSpan);
+		const uint64_t boundedMinimumSpan = std::min(minimumSpan, recordSpan);
+		nextSpan = qBound(boundedMinimumSpan, nextSpan, recordSpan);
 		if (nextSpan >= recordSpan - std::min<uint64_t>(recordSpan / 100, 1000000ULL)) {
 			fitView();
 			return;
@@ -3838,6 +3839,15 @@ private:
 		} else {
 			ok = cueEditPreviewAt(editPreviewCamera, eventId, timestampNs, editTimelineStartNs,
 					      editTimelineEndNs);
+			if (!ok && timestampNs > editTimelineStartNs) {
+				const uint64_t retryBack =
+					std::max<uint64_t>(editFrameDurationNs() * 3ULL, 100000000ULL);
+				const uint64_t retry = retryBack >= timestampNs - editTimelineStartNs
+							       ? editTimelineStartNs
+							       : timestampNs - retryBack;
+				ok = cueEditPreviewAt(editPreviewCamera, eventId, retry, editTimelineStartNs,
+						      editTimelineEndNs);
+			}
 		}
 		if (!ok)
 			return false;
@@ -4439,6 +4449,12 @@ private:
 
 	void takeToggleBus()
 	{
+		const enum sr_replay_bus bus = transportBus();
+		sr_replay_channel_state candidate = {};
+		if (sr_replay_channel_get_state(bus, &candidate) && candidate.cued && candidate.preview_mode) {
+			if (!cueSelected(bus))
+				return;
+		}
 		if (!controller || !sr_replay_take_toggle(controller)) {
 			setStatus("EventDock.TakeFailed");
 			return;
@@ -4466,6 +4482,11 @@ private:
 			setStatus("EventDock.NoCue");
 			return;
 		}
+		if (!replayPlayoutActive() && state.preview_mode) {
+			toggleEditPreview();
+			refreshTransportStatus();
+			return;
+		}
 		const bool ok = state.playing && !state.paused ? sr_replay_channel_pause(bus, true)
 				: state.paused                 ? sr_replay_channel_pause(bus, false)
 							       : sr_replay_channel_play(bus);
@@ -4483,6 +4504,12 @@ private:
 
 	void restartTransport()
 	{
+		sr_replay_channel_state state = {};
+		if (!replayPlayoutActive() && sr_replay_channel_get_state(transportBus(), &state) && state.cued &&
+		    state.preview_mode) {
+			gotoEditMarker(false);
+			return;
+		}
 		sr_replay_channel_restart(transportBus());
 		refreshTransportStatus();
 	}
