@@ -868,7 +868,7 @@ bool sr_session_recording_is_active(void)
 uint64_t sr_session_map_recording_timestamp(uint64_t obs_timestamp_ns)
 {
 	pthread_mutex_lock(&g_session_mutex);
-	uint64_t result = obs_timestamp_ns;
+	uint64_t result = 0;
 	if (g_recording_path) {
 		result = g_recording_timeline_start_ns;
 		if (obs_timestamp_ns >= g_recording_obs_start_ns &&

@@ -855,6 +855,35 @@ public:
 		update();
 	}
 
+	void focusSelection(uint64_t inNs, uint64_t outNs)
+	{
+		if (!haveRecording || outNs <= inNs || recordEndNs <= recordStartNs)
+			return;
+		inNs = clampToRecording(inNs);
+		outNs = clampToRecording(outNs);
+		if (outNs <= inNs)
+			return;
+
+		const uint64_t total = recordEndNs - recordStartNs;
+		const uint64_t eventSpan = outNs - inNs;
+		/* Leave about 20% of the viewport on each side of the selected Event.
+		 * A 250 ms floor keeps single-frame/very short Events editable. */
+		uint64_t span = (uint64_t)std::ceil((long double)eventSpan / 0.60L);
+		span = std::max<uint64_t>(250000000ULL, std::max<uint64_t>(eventSpan, span));
+		span = std::min<uint64_t>(span, total);
+		if (span >= total) {
+			fitView();
+			return;
+		}
+
+		const uint64_t center = inNs + eventSpan / 2;
+		zoomLocked = true;
+		viewStartNs = center > span / 2 ? center - span / 2 : recordStartNs;
+		viewEndNs = viewStartNs <= UINT64_MAX - span ? viewStartNs + span : recordEndNs;
+		clampView();
+		update();
+	}
+
 	void clearSelection()
 	{
 		haveSelection = false;
@@ -4260,9 +4289,12 @@ private:
 			return;
 		}
 
+		const bool eventChanged = timelineEventId != event.id;
 		timelineEventId = event.id;
 		editTimeline->setEnabled(true);
 		editTimeline->setSelection(event.in_ns, event.out_ns);
+		if (eventChanged)
+			editTimeline->focusSelection(event.in_ns, event.out_ns);
 		uint64_t playhead = event.in_ns;
 		sr_replay_channel_state preview = {};
 		if (sr_replay_channel_get_state(transportBus(), &preview) && preview.cued && preview.preview_mode &&

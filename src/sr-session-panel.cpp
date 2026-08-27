@@ -296,8 +296,10 @@ private:
 			QMessageBox::warning(this, T("Session.Title"), T("Session.TargetFailed"));
 			return;
 		}
-		if (!openPath(path))
+		if (!openPath(path)) {
+			sr_session_clear_record_target();
 			QMessageBox::warning(this, T("Session.Title"), T("Session.OpenFailed"));
+		}
 		refresh();
 	}
 

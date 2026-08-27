@@ -708,6 +708,8 @@ static void master_audio_callback(void *param, size_t mix_idx, struct audio_data
 	struct sr_master_audio_state *state = param;
 	if (!state || !data || !data->frames || !data->data[0] || !data->data[1])
 		return;
+	if (!sr_session_recording_is_active() || state->recording_generation != sr_session_recording_generation())
+		return;
 
 	enqueue_audio(state, data->data[0], data->data[1], data->frames, data->timestamp);
 }

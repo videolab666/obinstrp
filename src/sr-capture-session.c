@@ -42,6 +42,8 @@ static bool wait_for_recording_producers(uint32_t timeout_ms)
 
 bool sr_capture_set_all_disk_recording(bool enabled, size_t *camera_count)
 {
+	size_t local_count = 0;
+	size_t *count = camera_count ? camera_count : &local_count;
 	if (enabled) {
 		if (!sr_storage_manager_wait_initial_recovery(10000)) {
 			blog(LOG_WARNING,
@@ -50,8 +52,8 @@ bool sr_capture_set_all_disk_recording(bool enabled, size_t *camera_count)
 		}
 		if (!sr_session_prepare_recording(obs_get_video_frame_time()))
 			return false;
-		const bool ok = sr_capture_set_all_disk_recording_impl(true, camera_count);
-		if (!ok || (camera_count && *camera_count == 0)) {
+		const bool ok = sr_capture_set_all_disk_recording_impl(true, count);
+		if (!ok || *count == 0) {
 			size_t ignored = 0;
 			sr_capture_set_all_disk_recording_impl(false, &ignored);
 			if (wait_for_recording_producers(3000))
@@ -63,7 +65,7 @@ bool sr_capture_set_all_disk_recording(bool enabled, size_t *camera_count)
 		return ok;
 	}
 
-	const bool ok = sr_capture_set_all_disk_recording_impl(false, camera_count);
+	const bool ok = sr_capture_set_all_disk_recording_impl(false, count);
 	if (!ok)
 		return false;
 	if (!wait_for_recording_producers(3000)) {
