@@ -34,9 +34,22 @@ extern "C" {
 #include <vector>
 
 struct sr_gpu_renderer {
+	/* Native D3D11VA presentation target. Keep this at decoded-frame size and
+	 * let the OBS sprite shader do any Multiview scaling. Several D3D11 video
+	 * processor drivers apply different range/gamma behaviour when the video
+	 * processor also scales, which made Multiview disagree with Replay A. */
 	gs_texture_t *texture = nullptr;
 	uint32_t width = 0;
 	uint32_t height = 0;
+
+	/* Software decoded frames must not be uploaded into the video-processor
+	 * render target. In particular Intel D3D11 can leave updates to that
+	 * resource black in an obs_display swapchain. Use a normal dynamic BGRA
+	 * texture for CPU uploads instead. */
+	gs_texture_t *upload_texture = nullptr;
+	uint32_t upload_width = 0;
+	uint32_t upload_height = 0;
+
 	SwsContext *sws = nullptr;
 	std::vector<uint8_t> bgra;
 	bool native_failure_logged = false;
@@ -147,8 +160,14 @@ static void destroy_graphics_resources(sr_gpu_renderer *renderer)
 		gs_texture_destroy(renderer->texture);
 		renderer->texture = nullptr;
 	}
+	if (renderer->upload_texture) {
+		gs_texture_destroy(renderer->upload_texture);
+		renderer->upload_texture = nullptr;
+	}
 	renderer->width = 0;
 	renderer->height = 0;
+	renderer->upload_width = 0;
+	renderer->upload_height = 0;
 }
 
 extern "C" AVBufferRef *sr_gpu_create_replay_decode_device(void)
@@ -158,7 +177,12 @@ extern "C" AVBufferRef *sr_gpu_create_replay_decode_device(void)
 	obs_enter_graphics();
 	if (gs_get_device_type() == GS_DEVICE_DIRECT3D_11) {
 		ID3D11Device *device = static_cast<ID3D11Device *>(gs_get_device_obj());
-		if (device) {
+		/* Intel hybrid/iGPU D3D11VA has two problems in this plugin's current
+		 * path: multiple replay decoders can stall the shared immediate context,
+		 * and Intel's legacy VideoProcessor colour conversion does not match the
+		 * OBS compositor. Keep Intel recording on QSV, but decode replay frames
+		 * in software until a dedicated oneVPL/D3D11 interop path is added. */
+		if (device && d3d11_device_vendor_id(device) != SR_GPU_VENDOR_ID_INTEL) {
 			device_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
 			if (device_ref) {
 				AVHWDeviceContext *hw = reinterpret_cast<AVHWDeviceContext *>(device_ref->data);
@@ -189,7 +213,10 @@ extern "C" bool sr_gpu_replay_zero_copy_available(void)
 #ifdef _WIN32
 	bool available = false;
 	obs_enter_graphics();
-	available = gs_get_device_type() == GS_DEVICE_DIRECT3D_11 && gs_get_device_obj() != nullptr;
+	if (gs_get_device_type() == GS_DEVICE_DIRECT3D_11) {
+		ID3D11Device *device = static_cast<ID3D11Device *>(gs_get_device_obj());
+		available = device && d3d11_device_vendor_id(device) != SR_GPU_VENDOR_ID_INTEL;
+	}
 	obs_leave_graphics();
 	return available;
 #else
@@ -363,6 +390,26 @@ static bool ensure_target_texture(sr_gpu_renderer *renderer, uint32_t width, uin
 	return true;
 }
 
+static bool ensure_upload_texture(sr_gpu_renderer *renderer, uint32_t width, uint32_t height)
+{
+	if (!renderer || !width || !height)
+		return false;
+	if (renderer->upload_texture && renderer->upload_width == width && renderer->upload_height == height)
+		return true;
+
+	if (renderer->upload_texture)
+		gs_texture_destroy(renderer->upload_texture);
+	renderer->upload_texture = gs_texture_create(width, height, GS_BGRA, 1, nullptr, GS_DYNAMIC);
+	if (!renderer->upload_texture) {
+		renderer->upload_width = 0;
+		renderer->upload_height = 0;
+		return false;
+	}
+	renderer->upload_width = width;
+	renderer->upload_height = height;
+	return true;
+}
+
 static void draw_sdr_texture(gs_texture_t *texture, uint32_t width, uint32_t height);
 
 #ifdef _WIN32
@@ -450,8 +497,13 @@ static bool draw_native_d3d11(sr_gpu_renderer *renderer, const AVFrame *frame, u
 
 	const uint32_t source_width = static_cast<uint32_t>(frame->width);
 	const uint32_t source_height = static_cast<uint32_t>(frame->height);
-	if (!ensure_target_texture(renderer, width, height) ||
-	    !ensure_d3d11_pipeline(renderer, source_width, source_height, width, height))
+
+	/* Do colour conversion at native decoded size. Scaling in the D3D11 Video
+	 * Processor caused vendor-dependent levels/gamma in Multiview. The final
+	 * gs_draw_sprite below scales the already-converted BGRA texture using the
+	 * same OBS shader path as Replay A. */
+	if (!ensure_target_texture(renderer, source_width, source_height) ||
+	    !ensure_d3d11_pipeline(renderer, source_width, source_height, source_width, source_height))
 		return false;
 
 	ID3D11Texture2D *input = reinterpret_cast<ID3D11Texture2D *>(frame->data[0]);
@@ -477,7 +529,7 @@ static bool draw_native_d3d11(sr_gpu_renderer *renderer, const AVFrame *frame, u
 		return false;
 
 	RECT source_rect = {0, 0, static_cast<LONG>(source_width), static_cast<LONG>(source_height)};
-	RECT dest_rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+	RECT dest_rect = source_rect;
 	renderer->video_context->VideoProcessorSetStreamFrameFormat(renderer->processor, 0,
 								    D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
 	renderer->video_context->VideoProcessorSetStreamSourceRect(renderer->processor, 0, TRUE, &source_rect);
@@ -555,7 +607,7 @@ static bool draw_software(sr_gpu_renderer *renderer, const AVFrame *frame, uint3
 		source = transferred;
 	}
 
-	if (source->format < 0 || !ensure_target_texture(renderer, width, height)) {
+	if (source->format < 0 || !ensure_upload_texture(renderer, width, height)) {
 		av_frame_free(&transferred);
 		return false;
 	}
@@ -587,8 +639,8 @@ static bool draw_software(sr_gpu_renderer *renderer, const AVFrame *frame, uint3
 	if (rows <= 0)
 		return false;
 
-	gs_texture_set_image(renderer->texture, renderer->bgra.data(), width * 4u, false);
-	draw_sdr_texture(renderer->texture, width, height);
+	gs_texture_set_image(renderer->upload_texture, renderer->bgra.data(), width * 4u, false);
+	draw_sdr_texture(renderer->upload_texture, width, height);
 	return true;
 }
 
