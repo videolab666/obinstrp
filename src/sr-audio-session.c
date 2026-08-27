@@ -28,7 +28,7 @@ static void *g_raw_audio_param;
 static void sr_session_raw_audio_proxy(void *unused, size_t mix_idx, struct audio_data *data)
 {
 	UNUSED_PARAMETER(unused);
-	if (!data)
+	if (!data || !sr_session_recording_is_active())
 		return;
 
 	pthread_mutex_lock(&g_raw_audio_mutex);
@@ -74,7 +74,7 @@ void sr_session_remove_raw_audio_callback(size_t mix_idx, audio_output_callback_
 bool sr_session_camera_audio_writer_push(struct sr_camera_audio_writer *writer, const struct obs_audio_data *audio,
 					 size_t channels, uint64_t timestamp_ns)
 {
-	if (!audio)
+	if (!audio || !sr_session_recording_is_active())
 		return false;
 	const uint64_t source_timestamp = timestamp_ns ? timestamp_ns : audio->timestamp;
 	return sr_camera_audio_writer_push(writer, audio, channels,

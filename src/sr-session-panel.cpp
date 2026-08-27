@@ -273,8 +273,16 @@ private:
 
 	void openSelected()
 	{
-		if (!openPath(singleSelectedPath()))
+		const QString path = singleSelectedPath();
+		if (path.isEmpty())
+			return;
+		if (!openPath(path)) {
 			QMessageBox::warning(this, T("Session.Title"), T("Session.OpenFailed"));
+			refresh();
+			return;
+		}
+		if (!sr_session_recording_is_active())
+			sr_session_clear_record_target();
 		refresh();
 	}
 

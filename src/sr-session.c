@@ -10,6 +10,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "sr-session.h"
 
+#include "sr-audio-format.h"
 #include "sr-camera-identity.h"
 #include "sr-config.h"
 #include "sr-segment-format.h"
@@ -266,65 +267,231 @@ static sqlite3 *open_session_sqlite(const char *session_dir)
 	return sql;
 }
 
-static uint64_t scan_index_pattern(const char *pattern, uint64_t current_max)
+#define SR_INDEX_MAX_SEGMENT_SPAN_NS (10ULL * 60ULL * 1000000000ULL)
+#define SR_AUDIO_VIDEO_SLOP_NS (10ULL * 1000000000ULL)
+
+struct sr_media_bounds {
+	bool have;
+	uint64_t start_ns;
+	uint64_t end_ns;
+};
+
+static void media_bounds_add(struct sr_media_bounds *bounds, uint64_t start_ns, uint64_t end_ns)
+{
+	if (!bounds || end_ns < start_ns)
+		return;
+	if (!bounds->have) {
+		bounds->have = true;
+		bounds->start_ns = start_ns;
+		bounds->end_ns = end_ns;
+		return;
+	}
+	if (start_ns < bounds->start_ns)
+		bounds->start_ns = start_ns;
+	if (end_ns > bounds->end_ns)
+		bounds->end_ns = end_ns;
+}
+
+static bool valid_segment_timestamp(uint64_t segment_start_ns, uint64_t timestamp_ns)
+{
+	return timestamp_ns >= segment_start_ns && timestamp_ns - segment_start_ns <= SR_INDEX_MAX_SEGMENT_SPAN_NS;
+}
+
+static bool scan_video_index_file(const char *path, struct sr_media_bounds *bounds)
+{
+	FILE *file = os_fopen(path, "rb");
+	if (!file)
+		return false;
+
+	struct sr_index_file_header header;
+	bool ok = fread(&header, 1, sizeof(header), file) == sizeof(header) &&
+		  memcmp(header.magic, SR_INDEX_MAGIC, sizeof(header.magic)) == 0 &&
+		  header.version == SR_SEGMENT_FORMAT_VERSION && os_fseeki64(file, 0, SEEK_END) == 0;
+	const int64_t file_size = ok ? os_ftelli64(file) : -1;
+	if (!ok || file_size < (int64_t)(sizeof(header) + sizeof(struct sr_index_entry))) {
+		fclose(file);
+		return false;
+	}
+
+	const uint64_t payload = (uint64_t)file_size - sizeof(header);
+	const uint64_t entries = payload / sizeof(struct sr_index_entry);
+	if (!entries) {
+		fclose(file);
+		return false;
+	}
+
+	struct sr_index_entry first;
+	if (os_fseeki64(file, (int64_t)sizeof(header), SEEK_SET) != 0 ||
+	    fread(&first, 1, sizeof(first), file) != sizeof(first) ||
+	    !valid_segment_timestamp(header.segment_start_ns, first.timestamp_ns)) {
+		fclose(file);
+		return false;
+	}
+
+	struct sr_index_entry last = first;
+	bool have_last = false;
+	for (uint64_t back = 0; back < entries; back++) {
+		const uint64_t index = entries - 1 - back;
+		const uint64_t offset = sizeof(header) + index * sizeof(struct sr_index_entry);
+		struct sr_index_entry candidate;
+		if (offset > INT64_MAX || os_fseeki64(file, (int64_t)offset, SEEK_SET) != 0 ||
+		    fread(&candidate, 1, sizeof(candidate), file) != sizeof(candidate))
+			continue;
+		if (candidate.timestamp_ns < first.timestamp_ns ||
+		    !valid_segment_timestamp(header.segment_start_ns, candidate.timestamp_ns))
+			continue;
+		last = candidate;
+		have_last = true;
+		break;
+	}
+	fclose(file);
+	if (!have_last)
+		return false;
+	media_bounds_add(bounds, first.timestamp_ns, last.timestamp_ns);
+	return true;
+}
+
+static bool scan_audio_index_file(const char *path, struct sr_media_bounds *bounds)
+{
+	FILE *file = os_fopen(path, "rb");
+	if (!file)
+		return false;
+
+	struct sr_audio_index_header header;
+	bool ok = fread(&header, 1, sizeof(header), file) == sizeof(header) &&
+		  memcmp(header.magic, SR_AUDIO_INDEX_MAGIC, sizeof(header.magic)) == 0 &&
+		  header.version == SR_AUDIO_FORMAT_VERSION && os_fseeki64(file, 0, SEEK_END) == 0;
+	const int64_t file_size = ok ? os_ftelli64(file) : -1;
+	if (!ok || file_size < (int64_t)(sizeof(header) + sizeof(struct sr_audio_index_entry))) {
+		fclose(file);
+		return false;
+	}
+
+	const uint64_t payload = (uint64_t)file_size - sizeof(header);
+	const uint64_t entries = payload / sizeof(struct sr_audio_index_entry);
+	if (!entries) {
+		fclose(file);
+		return false;
+	}
+
+	struct sr_audio_index_entry first;
+	if (os_fseeki64(file, (int64_t)sizeof(header), SEEK_SET) != 0 ||
+	    fread(&first, 1, sizeof(first), file) != sizeof(first) ||
+	    !valid_segment_timestamp(header.segment_start_ns, first.timestamp_ns)) {
+		fclose(file);
+		return false;
+	}
+
+	struct sr_audio_index_entry last = first;
+	bool have_last = false;
+	for (uint64_t back = 0; back < entries; back++) {
+		const uint64_t index = entries - 1 - back;
+		const uint64_t offset = sizeof(header) + index * sizeof(struct sr_audio_index_entry);
+		struct sr_audio_index_entry candidate;
+		if (offset > INT64_MAX || os_fseeki64(file, (int64_t)offset, SEEK_SET) != 0 ||
+		    fread(&candidate, 1, sizeof(candidate), file) != sizeof(candidate))
+			continue;
+		if (candidate.timestamp_ns < first.timestamp_ns ||
+		    !valid_segment_timestamp(header.segment_start_ns, candidate.timestamp_ns))
+			continue;
+		last = candidate;
+		have_last = true;
+		break;
+	}
+	fclose(file);
+	if (!have_last)
+		return false;
+	media_bounds_add(bounds, first.timestamp_ns, last.timestamp_ns);
+	return true;
+}
+
+static void scan_index_pattern(const char *pattern, bool audio, struct sr_media_bounds *bounds)
 {
 	os_glob_t *glob = NULL;
-	if (os_glob(pattern, 0, &glob) != 0)
-		return current_max;
+	if (!pattern || os_glob(pattern, 0, &glob) != 0)
+		return;
 	for (size_t i = 0; i < glob->gl_pathc; i++) {
 		if (glob->gl_pathv[i].directory)
 			continue;
-		FILE *file = os_fopen(glob->gl_pathv[i].path, "rb");
-		if (!file)
-			continue;
-		struct sr_index_file_header header;
-		if (fread(&header, 1, sizeof(header), file) == sizeof(header) &&
-		    memcmp(header.magic, SR_INDEX_MAGIC, sizeof(header.magic)) == 0 &&
-		    header.version == SR_SEGMENT_FORMAT_VERSION && fseek(file, 0, SEEK_END) == 0) {
-			const long file_size = ftell(file);
-			const long minimum_size = (long)(sizeof(header) + sizeof(struct sr_index_entry));
-			if (file_size >= minimum_size &&
-			    fseek(file, -(long)sizeof(struct sr_index_entry), SEEK_END) == 0) {
-				struct sr_index_entry entry;
-				if (fread(&entry, 1, sizeof(entry), file) == sizeof(entry) &&
-				    entry.timestamp_ns > current_max)
-					current_max = entry.timestamp_ns;
-			}
-		}
-		fclose(file);
+		if (audio)
+			scan_audio_index_file(glob->gl_pathv[i].path, bounds);
+		else
+			scan_video_index_file(glob->gl_pathv[i].path, bounds);
 	}
 	os_globfree(glob);
-	return current_max;
+}
+
+static void scan_session_pattern(const char *session_dir, const char *tail, bool audio, struct sr_media_bounds *bounds)
+{
+	char *pattern = join_path(session_dir, tail);
+	if (!pattern)
+		return;
+	scan_index_pattern(pattern, audio, bounds);
+	bfree(pattern);
+}
+
+bool sr_session_get_media_bounds(const char *session_dir, uint64_t *start_ns, uint64_t *end_ns)
+{
+	if (start_ns)
+		*start_ns = 0;
+	if (end_ns)
+		*end_ns = 0;
+	if (!session_dir || !*session_dir)
+		return false;
+
+	struct sr_media_bounds video = {0};
+	struct sr_media_bounds audio = {0};
+	scan_session_pattern(session_dir, "cam-*/*.sridx", false, &video);
+	scan_session_pattern(session_dir, "cam-*/*.sridx.part", false, &video);
+	scan_session_pattern(session_dir, "cam-*/*.sraidx", true, &audio);
+	scan_session_pattern(session_dir, "cam-*/*.sraidx.part", true, &audio);
+	scan_session_pattern(session_dir, "audio-master/*.sraidx", true, &audio);
+	scan_session_pattern(session_dir, "audio-master/*.sraidx.part", true, &audio);
+
+	struct sr_media_bounds result = {0};
+	if (video.have) {
+		result = video;
+		if (audio.have) {
+			const uint64_t video_end_slop = video.end_ns > UINT64_MAX - SR_AUDIO_VIDEO_SLOP_NS
+								? UINT64_MAX
+								: video.end_ns + SR_AUDIO_VIDEO_SLOP_NS;
+			const uint64_t audio_end_slop = audio.end_ns > UINT64_MAX - SR_AUDIO_VIDEO_SLOP_NS
+								? UINT64_MAX
+								: audio.end_ns + SR_AUDIO_VIDEO_SLOP_NS;
+			if (audio.start_ns <= video_end_slop && audio_end_slop >= video.start_ns) {
+				if (audio.start_ns < result.start_ns &&
+				    result.start_ns - audio.start_ns <= SR_AUDIO_VIDEO_SLOP_NS)
+					result.start_ns = audio.start_ns;
+				if (audio.end_ns > result.end_ns &&
+				    audio.end_ns - result.end_ns <= SR_AUDIO_VIDEO_SLOP_NS)
+					result.end_ns = audio.end_ns;
+				else if (audio.end_ns >
+					 result.end_ns + (result.end_ns <= UINT64_MAX - SR_AUDIO_VIDEO_SLOP_NS
+								  ? SR_AUDIO_VIDEO_SLOP_NS
+								  : 0))
+					blog(LOG_WARNING,
+					     "Pitel Instant Replay: ignoring audio timestamp tail outside video timeline in '%s'",
+					     session_dir);
+			}
+		}
+	} else if (audio.have) {
+		result = audio;
+	}
+
+	if (!result.have)
+		return false;
+	if (start_ns)
+		*start_ns = result.start_ns;
+	if (end_ns)
+		*end_ns = result.end_ns;
+	return true;
 }
 
 static uint64_t last_media_timestamp(const char *session_dir)
 {
-	uint64_t result = 0;
-	char *pattern = join_path(session_dir, "cam-*/*.sridx");
-	if (pattern) {
-		result = scan_index_pattern(pattern, result);
-		bfree(pattern);
-	}
-	pattern = join_path(session_dir, "cam-*/*.sridx.part");
-	if (pattern) {
-		result = scan_index_pattern(pattern, result);
-		bfree(pattern);
-	}
-
-	sqlite3 *sql = open_session_sqlite(session_dir);
-	if (sql) {
-		sqlite3_stmt *stmt = NULL;
-		if (sqlite3_prepare_v2(sql, "SELECT MAX(timeline_end_ns) FROM recording_runs", -1, &stmt, NULL) ==
-			    SQLITE_OK &&
-		    sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
-			const uint64_t run_end = (uint64_t)sqlite3_column_int64(stmt, 0);
-			if (run_end > result)
-				result = run_end;
-		}
-		sqlite3_finalize(stmt);
-		sqlite3_close(sql);
-	}
-	return result;
+	uint64_t start_ns = 0;
+	uint64_t end_ns = 0;
+	return sr_session_get_media_bounds(session_dir, &start_ns, &end_ns) ? end_ns : 0;
 }
 
 static void recover_stale_recording_runs(const char *session_dir, uint64_t media_end_ns)
@@ -399,9 +566,22 @@ static void finish_recording_run_locked(uint64_t obs_now_ns)
 {
 	if (!g_recording_path || !g_recording_run_id)
 		return;
+
+	uint64_t media_start_ns = 0;
+	uint64_t media_end_ns = 0;
+	const bool have_media = sr_session_get_media_bounds(g_recording_path, &media_start_ns, &media_end_ns);
 	uint64_t timeline_end = g_recording_timeline_start_ns;
-	if (obs_now_ns >= g_recording_obs_start_ns)
-		timeline_end += obs_now_ns - g_recording_obs_start_ns;
+	if (have_media && media_end_ns >= g_recording_timeline_start_ns)
+		timeline_end = media_end_ns;
+
+	uint64_t projected_end = g_recording_timeline_start_ns;
+	if (obs_now_ns >= g_recording_obs_start_ns &&
+	    obs_now_ns - g_recording_obs_start_ns <= UINT64_MAX - projected_end)
+		projected_end += obs_now_ns - g_recording_obs_start_ns;
+	if (projected_end > timeline_end + 2000000000ULL)
+		blog(LOG_WARNING,
+		     "Pitel Instant Replay: REC clock advanced to %.3f s but committed media ends at %.3f s; run end follows media",
+		     (double)projected_end / 1e9, (double)timeline_end / 1e9);
 
 	sqlite3 *sql = open_session_sqlite(g_recording_path);
 	if (!sql)
@@ -614,6 +794,12 @@ bool sr_session_prepare_recording(uint64_t obs_now_ns)
 		pthread_mutex_unlock(&g_session_mutex);
 		return true;
 	}
+	if (g_record_target_path && g_opened_path && !same_path(g_record_target_path, g_opened_path)) {
+		blog(LOG_WARNING,
+		     "Pitel Instant Replay: START REC refused because Opened Session and Recording Target differ; use Resume Recording explicitly");
+		pthread_mutex_unlock(&g_session_mutex);
+		return false;
+	}
 	if (!g_record_target_path && !create_session_locked(NULL, true, true, NULL)) {
 		pthread_mutex_unlock(&g_session_mutex);
 		return false;
@@ -624,11 +810,27 @@ bool sr_session_prepare_recording(uint64_t obs_now_ns)
 		pthread_mutex_unlock(&g_session_mutex);
 		return false;
 	}
-	const uint64_t previous_end = last_media_timestamp(g_recording_path);
-	recover_stale_recording_runs(g_recording_path, previous_end);
-	g_recording_discontinuity = previous_end != 0;
+
+	uint64_t media_start_ns = 0;
+	uint64_t previous_end = 0;
+	const bool have_media = sr_session_get_media_bounds(g_recording_path, &media_start_ns, &previous_end);
+	recover_stale_recording_runs(g_recording_path, have_media ? previous_end : 0);
+	g_recording_discontinuity = have_media;
 	g_recording_obs_start_ns = obs_now_ns;
-	g_recording_timeline_start_ns = previous_end ? previous_end + frame_interval_ns() : obs_now_ns;
+	if (have_media) {
+		const uint64_t interval = frame_interval_ns();
+		if (previous_end > UINT64_MAX - interval) {
+			bfree(g_recording_path);
+			g_recording_path = NULL;
+			pthread_mutex_unlock(&g_session_mutex);
+			return false;
+		}
+		g_recording_timeline_start_ns = previous_end + interval;
+	} else {
+		/* Session time is independent of OBS uptime. A new session always starts
+		 * at zero; only deltas inside a Run are derived from the native OBS clock. */
+		g_recording_timeline_start_ns = 0;
+	}
 	g_recording_run_id = 0;
 	if (!begin_recording_run_locked(obs_now_ns, g_recording_timeline_start_ns, g_recording_discontinuity)) {
 		bfree(g_recording_path);

@@ -53,7 +53,9 @@ struct sr_master_audio_state {
 	bool callback_registered;
 	bool stopping;
 	bool active;
+	bool worker_idle;
 	unsigned active_refs;
+	uint64_t recording_generation;
 
 	struct sr_master_audio_chunk *head;
 	struct sr_master_audio_chunk *tail;
@@ -533,6 +535,10 @@ static void finish_stream(struct sr_master_audio_state *state)
 	state->reserve_recheck_after_ns = 0;
 	stats_set_reserve_blocked(state, false);
 	state->encoder_failed_session = false;
+	pthread_mutex_lock(&state->mutex);
+	state->worker_idle = !state->active && state->head == NULL;
+	pthread_cond_broadcast(&state->cond);
+	pthread_mutex_unlock(&state->mutex);
 }
 
 static bool encode_chunk(struct sr_master_audio_state *state, struct sr_master_audio_chunk *chunk)
@@ -592,6 +598,10 @@ static struct sr_master_audio_chunk *pop_chunk(struct sr_master_audio_state *sta
 			pthread_mutex_unlock(&state->mutex);
 			return NULL;
 		}
+		if (!state->active) {
+			state->worker_idle = true;
+			pthread_cond_broadcast(&state->cond);
+		}
 		pthread_cond_wait(&state->cond, &state->mutex);
 	}
 
@@ -600,6 +610,7 @@ static struct sr_master_audio_chunk *pop_chunk(struct sr_master_audio_state *sta
 		return NULL;
 	}
 
+	state->worker_idle = false;
 	struct sr_master_audio_chunk *chunk = state->head;
 	state->head = chunk->next;
 	if (!state->head)
@@ -676,6 +687,7 @@ static bool enqueue_audio(struct sr_master_audio_state *state, const uint8_t *le
 	}
 
 	chunk->epoch = state->enqueue_epoch;
+	state->worker_idle = false;
 	if (state->tail)
 		state->tail->next = chunk;
 	else
@@ -708,6 +720,7 @@ bool sr_master_audio_init(void)
 	struct sr_master_audio_state *state = bzalloc(sizeof(*state));
 	state->max_queue_chunks = MASTER_AUDIO_MAX_QUEUE_CHUNKS;
 	state->sample_rate = MASTER_AUDIO_SAMPLE_RATE;
+	state->worker_idle = true;
 	if (pthread_mutex_init(&state->mutex, NULL) != 0) {
 		bfree(state);
 		return false;
@@ -786,13 +799,32 @@ bool sr_master_audio_acquire(void)
 		bfree(session_dir);
 		return false;
 	}
+	const uint64_t generation = sr_session_recording_generation();
 
 	pthread_mutex_lock(&state->mutex);
+	if (state->active_refs && (state->recording_generation != generation || !state->session_dir ||
+				   strcmp(state->session_dir, session_dir) != 0)) {
+		pthread_mutex_unlock(&state->mutex);
+		blog(LOG_ERROR,
+		     "Pitel Instant Replay: refused to bind master audio to a new Session while the previous Session still owns references");
+		bfree(audio_dir);
+		bfree(session_dir);
+		return false;
+	}
+	if (!state->active_refs && !state->worker_idle) {
+		pthread_mutex_unlock(&state->mutex);
+		blog(LOG_ERROR,
+		     "Pitel Instant Replay: refused to rebind master audio before the previous Session finished draining");
+		bfree(audio_dir);
+		bfree(session_dir);
+		return false;
+	}
 	if (!state->active_refs) {
 		bfree(state->session_dir);
 		bfree(state->audio_dir);
 		state->session_dir = session_dir;
 		state->audio_dir = audio_dir;
+		state->recording_generation = generation;
 		state->target_segment_ns = (uint64_t)sr_config_get_segment_duration_ms() * 1000000ULL;
 		state->min_free_bytes = sr_config_get_low_space_action() == SR_STORAGE_LOW_SPACE_WARN_ONLY
 						? 0
@@ -803,6 +835,7 @@ bool sr_master_audio_acquire(void)
 		state->next_segment_discontinuity = sr_session_recording_starts_with_discontinuity();
 		state->enqueue_epoch++;
 		state->active = true;
+		state->worker_idle = false;
 		session_dir = NULL;
 		audio_dir = NULL;
 	}
@@ -825,10 +858,30 @@ void sr_master_audio_release(void)
 		state->active_refs--;
 	if (!state->active_refs && state->active) {
 		state->active = false;
+		state->worker_idle = false;
 		state->enqueue_epoch++;
 		pthread_cond_broadcast(&state->cond);
 	}
 	pthread_mutex_unlock(&state->mutex);
+}
+
+bool sr_master_audio_wait_idle(uint32_t timeout_ms)
+{
+	struct sr_master_audio_state *state = g_audio;
+	if (!state)
+		return true;
+	const uint64_t deadline = os_gettime_ns() + (uint64_t)timeout_ms * 1000000ULL;
+	for (;;) {
+		pthread_mutex_lock(&state->mutex);
+		const bool idle = !state->active_refs && !state->active && !state->head && !state->queue_depth &&
+				  state->worker_idle;
+		pthread_mutex_unlock(&state->mutex);
+		if (idle)
+			return true;
+		if (os_gettime_ns() >= deadline)
+			return false;
+		os_sleep_ms(2);
+	}
 }
 
 void sr_master_audio_get_stats(struct sr_master_audio_stats *stats)

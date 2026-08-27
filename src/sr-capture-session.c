@@ -9,9 +9,11 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "sr-capture.h"
+#include "sr-master-audio.h"
 #include "sr-session.h"
 
 #include <obs-module.h>
+#include <util/platform.h>
 
 /* capture-filter.c is compiled with these two public symbols renamed. Keeping
  * the stable recorder implementation untouched is intentional: this adapter
@@ -19,6 +21,23 @@ the Free Software Foundation; either version 2 of the License, or
  * their proven Intel/NVIDIA locking and fallback behavior. */
 bool sr_capture_set_all_disk_recording_impl(bool enabled, size_t *camera_count);
 bool sr_capture_get_recording_summary_impl(struct sr_capture_recording_summary *summary);
+
+static bool wait_for_recording_producers(uint32_t timeout_ms)
+{
+	const uint64_t deadline = os_gettime_ns() + (uint64_t)timeout_ms * 1000000ULL;
+	for (;;) {
+		struct sr_capture_recording_summary summary = {0};
+		if (sr_capture_get_recording_summary_impl(&summary) && summary.active_count == 0)
+			break;
+		if (os_gettime_ns() >= deadline)
+			return false;
+		os_sleep_ms(5);
+	}
+
+	const uint64_t now = os_gettime_ns();
+	const uint32_t remaining_ms = now >= deadline ? 0 : (uint32_t)((deadline - now) / 1000000ULL);
+	return sr_master_audio_wait_idle(remaining_ms);
+}
 
 bool sr_capture_set_all_disk_recording(bool enabled, size_t *camera_count)
 {
@@ -29,17 +48,25 @@ bool sr_capture_set_all_disk_recording(bool enabled, size_t *camera_count)
 		if (!ok || (camera_count && *camera_count == 0)) {
 			size_t ignored = 0;
 			sr_capture_set_all_disk_recording_impl(false, &ignored);
-			sr_session_finish_recording(obs_get_video_frame_time());
+			if (wait_for_recording_producers(3000))
+				sr_session_finish_recording(obs_get_video_frame_time());
+			else
+				blog(LOG_ERROR,
+				     "Pitel Instant Replay: recorder rollback did not quiesce; session remains locked to prevent cross-session timestamp corruption");
 		}
 		return ok;
 	}
 
 	const bool ok = sr_capture_set_all_disk_recording_impl(false, camera_count);
-	/* Settings updates are synchronous; individual writers drain packets whose
-	 * timestamps were already mapped when queued. Closing the run here makes a
-	 * subsequent START create a clean discontinuity and compact timeline. */
+	if (!ok)
+		return false;
+	if (!wait_for_recording_producers(3000)) {
+		blog(LOG_ERROR,
+		     "Pitel Instant Replay: STOP timed out waiting for video/audio writers; session remains active and cannot be switched safely");
+		return false;
+	}
 	sr_session_finish_recording(obs_get_video_frame_time());
-	return ok;
+	return true;
 }
 
 bool sr_capture_get_recording_summary(struct sr_capture_recording_summary *summary)

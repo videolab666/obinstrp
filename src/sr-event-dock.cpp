@@ -3978,36 +3978,65 @@ private:
 
 	void updateEditTimelineBounds()
 	{
-		sr_capture_recording_summary recording = {};
-		if (sr_capture_get_recording_summary(&recording) && recording.recording_start_ns) {
-			const uint64_t recordingStart = recording.recording_start_ns;
-			uint64_t recordingEnd = recordingStart;
-			if (recording.recording_duration_ns <= UINT64_MAX - recordingStart)
-				recordingEnd = recordingStart + recording.recording_duration_ns;
-			if (recording.requested_count) {
-				const uint64_t now = obs_get_video_frame_time();
-				if (now > recordingEnd)
-					recordingEnd = now;
+		char *openedRaw = sr_session_get_opened_path();
+		const QString openedPath = QString::fromUtf8(openedRaw ? openedRaw : "");
+		bfree(openedRaw);
+
+		if (openedPath != editTimelineSessionPath) {
+			editTimelineSessionPath = openedPath;
+			editTimelineStartNs = 0;
+			editTimelineEndNs = 0;
+			editTimelineHaveBounds = false;
+			timelineEventId = 0;
+			editPreviewEventId = 0;
+			editPreviewCamera.clear();
+		}
+
+		/* Physical indexes define an archived Session's bounds. This also
+		 * handles legacy sessions whose first timestamp used OBS uptime rather
+		 * than zero: UI time remains relative to the actual media start. */
+		if (!openedPath.isEmpty() && !editTimelineHaveBounds) {
+			uint64_t mediaStart = 0;
+			uint64_t mediaEnd = 0;
+			const QByteArray sessionUtf8 = openedPath.toUtf8();
+			if (sr_session_get_media_bounds(sessionUtf8.constData(), &mediaStart, &mediaEnd) &&
+			    mediaEnd >= mediaStart) {
+				editTimelineStartNs = mediaStart;
+				editTimelineEndNs = mediaEnd;
+				editTimelineHaveBounds = mediaEnd > mediaStart;
 			}
-			if (!editTimelineHaveBounds || recordingStart < editTimelineStartNs)
-				editTimelineStartNs = recordingStart;
-			if (!editTimelineHaveBounds || recordingEnd > editTimelineEndNs)
-				editTimelineEndNs = recordingEnd;
-			editTimelineHaveBounds = editTimelineEndNs > editTimelineStartNs;
+		}
+
+		char *recordingRaw = sr_session_get_recording_path();
+		const QString recordingPath = QString::fromUtf8(recordingRaw ? recordingRaw : "");
+		bfree(recordingRaw);
+		const bool openedIsRecording = !openedPath.isEmpty() && openedPath == recordingPath &&
+					       sr_session_recording_is_active();
+		if (openedIsRecording) {
+			sr_capture_recording_summary recording = {};
+			if (sr_capture_get_recording_summary(&recording) && recording.requested_count) {
+				const uint64_t recordingStart = sr_session_recording_start_ns();
+				uint64_t recordingEnd = recordingStart;
+				if (recording.recording_duration_ns <= UINT64_MAX - recordingStart)
+					recordingEnd += recording.recording_duration_ns;
+				if (!editTimelineHaveBounds || recordingStart < editTimelineStartNs)
+					editTimelineStartNs = recordingStart;
+				if (!editTimelineHaveBounds || recordingEnd > editTimelineEndNs)
+					editTimelineEndNs = recordingEnd;
+				editTimelineHaveBounds = editTimelineEndNs > editTimelineStartNs;
+			}
 		}
 
 		const uint64_t eventId = selectedEventId();
 		sr_event_record event = {};
 		if (controller && eventId && sr_event_controller_get_event(controller, eventId, &event)) {
+			/* Events are not allowed to inflate a real media range. Legacy or
+			 * damaged out-of-range Events stay visible in the list but the editor
+			 * remains clamped to physical media. */
 			if (!editTimelineHaveBounds) {
 				editTimelineStartNs = event.in_ns;
 				editTimelineEndNs = event.out_ns;
 				editTimelineHaveBounds = event.out_ns > event.in_ns;
-			} else {
-				if (event.in_ns < editTimelineStartNs)
-					editTimelineStartNs = event.in_ns;
-				if (event.out_ns > editTimelineEndNs)
-					editTimelineEndNs = event.out_ns;
 			}
 			sr_event_controller_free_event(&event);
 		}
@@ -4346,6 +4375,13 @@ private:
 	void editSelectedEventRange(uint64_t inNs, uint64_t outNs)
 	{
 		if (!controller || replayPlayoutActive() || !editTimelineHaveBounds || outNs <= inNs) {
+			syncTimeline();
+			return;
+		}
+
+		inNs = qBound(editTimelineStartNs, inNs, editTimelineEndNs);
+		outNs = qBound(editTimelineStartNs, outNs, editTimelineEndNs);
+		if (outNs <= inNs) {
 			syncTimeline();
 			return;
 		}
@@ -5458,6 +5494,7 @@ private:
 	uint64_t editTimelineStartNs = 0;
 	uint64_t editTimelineEndNs = 0;
 	bool editTimelineHaveBounds = false;
+	QString editTimelineSessionPath;
 	uint64_t editPreviewEventId = 0;
 	enum sr_replay_bus editPreviewBus = SR_REPLAY_BUS_A;
 	QString editPreviewCamera;

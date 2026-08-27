@@ -500,6 +500,7 @@ static bool ensure_writer(struct sr_capture *c, const struct obs_video_info *ovi
 					  ? 0
 					  : sr_config_get_min_free_bytes(),
 		.max_queue_packets = 600,
+		.start_discontinuity = sr_session_recording_starts_with_discontinuity(),
 	};
 
 	c->writer = sr_segment_writer_create(&cfg);

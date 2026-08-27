@@ -92,7 +92,7 @@ static enum AVCodecID active_encoder_codec_id_locked(const struct sr_program_rec
 }
 
 static void active_encoder_get_extradata_locked(const struct sr_program_recorder *state, const uint8_t **data,
-						 int *size)
+						int *size)
 {
 	if (data)
 		*data = NULL;
@@ -156,6 +156,7 @@ static bool ensure_writer_locked(struct sr_program_recorder *state)
 		.extradata_size = extradata_size,
 		.target_segment_ms = sr_config_get_segment_duration_ms(),
 		.max_queue_packets = 600,
+		.start_discontinuity = sr_session_recording_starts_with_discontinuity(),
 		.min_free_bytes = sr_config_get_low_space_action() == SR_STORAGE_LOW_SPACE_WARN_ONLY
 					  ? 0
 					  : sr_config_get_min_free_bytes(),

@@ -51,6 +51,7 @@ uint64_t sr_session_map_recording_timestamp(uint64_t obs_timestamp_ns);
 uint64_t sr_session_recording_start_ns(void);
 uint64_t sr_session_recording_generation(void);
 bool sr_session_recording_starts_with_discontinuity(void);
+bool sr_session_get_media_bounds(const char *session_dir, uint64_t *start_ns, uint64_t *end_ns);
 
 bool sr_session_path_is_active(const char *path);
 bool sr_session_path_is_opened(const char *path);
