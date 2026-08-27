@@ -53,7 +53,7 @@ struct sr_capture {
 	bool parent_showing_held;
 	bool writer_failed;
 	bool master_audio_acquired;
-	uint64_t recording_start_ns;
+	uint64_t recording_obs_start_ns;
 
 	/* Format the current encoder was opened with. The GPU encoder is created
 	 * from the OBS render callback after filter_video has observed the source
@@ -194,10 +194,10 @@ static void publish_status(struct sr_capture *c, uint64_t now, bool force)
 		.requested_count = c->disk_recording ? 1 : 0,
 		.active_count = c->writer ? 1 : 0,
 		.failed_count = (c->writer_failed || c->encoder_failed) ? 1 : 0,
-		.recording_start_ns = c->disk_recording ? c->recording_start_ns : 0,
-		.recording_duration_ns = c->disk_recording && c->recording_start_ns &&
-							 video_now >= c->recording_start_ns
-						 ? video_now - c->recording_start_ns
+		.recording_start_ns = c->disk_recording ? c->recording_obs_start_ns : 0,
+		.recording_duration_ns = c->disk_recording && c->recording_obs_start_ns &&
+							 video_now >= c->recording_obs_start_ns
+						 ? video_now - c->recording_obs_start_ns
 						 : 0,
 	};
 	struct sr_capture_performance_entry performance = {
@@ -265,7 +265,7 @@ static void publish_recording_intent(struct sr_capture *c)
 	pthread_mutex_lock(&c->status_mutex);
 	c->status.camera_count = 1;
 	c->status.requested_count = c->disk_recording ? 1 : 0;
-	c->status.recording_start_ns = c->disk_recording ? c->recording_start_ns : 0;
+	c->status.recording_start_ns = c->disk_recording ? c->recording_obs_start_ns : 0;
 	if (!c->disk_recording)
 		c->status.recording_duration_ns = 0;
 	c->performance_status.disk_requested = c->disk_recording;
@@ -353,7 +353,7 @@ static void sr_capture_update(void *data, obs_data_t *settings)
 		if (!disk_recording)
 			c->restart_writer = true;
 		c->disk_recording = disk_recording;
-		c->recording_start_ns = disk_recording ? obs_get_video_frame_time() : 0;
+		c->recording_obs_start_ns = disk_recording ? obs_get_video_frame_time() : 0;
 		c->writer_failed = false;
 		if (disk_recording)
 			set_parent_showing_hold(c, true);

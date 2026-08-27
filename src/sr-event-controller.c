@@ -267,11 +267,9 @@ bool sr_event_controller_quick_mark(struct sr_event_controller *controller, uint
 
 	uint64_t effective_pre_roll_ns = pre_roll_ns;
 	const uint64_t recording_start = sr_session_recording_start_ns();
-	if (recording_start) {
-		const uint64_t available_ns = mapped_now > recording_start ? mapped_now - recording_start : 0;
-		if (effective_pre_roll_ns > available_ns)
-			effective_pre_roll_ns = available_ns;
-	}
+	const uint64_t available_ns = mapped_now > recording_start ? mapped_now - recording_start : 0;
+	if (effective_pre_roll_ns > available_ns)
+		effective_pre_roll_ns = available_ns;
 	const uint64_t in_ns = mapped_now > effective_pre_roll_ns ? mapped_now - effective_pre_roll_ns : 0;
 	const uint64_t out_ns = mapped_now + post_roll_ns;
 	const struct sr_event_write event = default_event(in_ns, out_ns, post_roll_ns != 0);

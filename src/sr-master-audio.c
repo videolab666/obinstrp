@@ -923,6 +923,7 @@ struct sr_camera_audio_writer *sr_camera_audio_writer_create(const char *session
 		sr_config_get_low_space_action() == SR_STORAGE_LOW_SPACE_WARN_ONLY ? 0 : sr_config_get_min_free_bytes();
 	state->next_sequence = find_next_sequence(state->audio_dir);
 	state->next_segment_discontinuity = sr_session_recording_starts_with_discontinuity();
+	state->recording_generation = sr_session_recording_generation();
 	state->active = true;
 	state->active_refs = 1;
 	if (pthread_mutex_init(&state->mutex, NULL) != 0) {
@@ -990,6 +991,9 @@ bool sr_camera_audio_writer_push(struct sr_camera_audio_writer *writer, const st
 				 size_t channels, uint64_t timestamp_ns)
 {
 	if (!writer || !writer->state || !audio || !audio->frames || !audio->data[0])
+		return false;
+	if (!sr_session_recording_is_active() ||
+	    writer->state->recording_generation != sr_session_recording_generation())
 		return false;
 	const uint8_t *right = channels > 1 ? audio->data[1] : audio->data[0];
 	return enqueue_audio(writer->state, audio->data[0], right, audio->frames,

@@ -42,6 +42,7 @@ struct sr_segment_writer {
 	size_t queue_depth;
 	size_t max_queue_packets;
 	uint64_t enqueue_epoch;
+	uint64_t recording_generation;
 	uint64_t write_epoch;
 	bool have_write_epoch;
 
@@ -350,7 +351,8 @@ static void close_segment(struct sr_segment_writer *w, bool finalize)
 			w->stats.segments_finalized++;
 			pthread_mutex_unlock(&w->mutex);
 		} else {
-			blog(LOG_ERROR, "Pitel Instant Replay: could not finalize segment for camera '%s'", w->camera_name);
+			blog(LOG_ERROR, "Pitel Instant Replay: could not finalize segment for camera '%s'",
+			     w->camera_name);
 			stats_set_failed(w);
 		}
 	}
@@ -544,6 +546,7 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	w->max_queue_packets = config->max_queue_packets ? config->max_queue_packets : 600;
 	w->need_keyframe = false;
 	w->initial_discontinuity = config->start_discontinuity;
+	w->recording_generation = sr_session_recording_generation();
 
 	/* Persist the camera identity as soon as the writer is created. Archive
 	 * replay no longer depends on the source still existing in today's OBS
@@ -560,7 +563,8 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 		return NULL;
 	}
 	if (os_mkdirs(w->camera_dir) == MKDIR_ERROR) {
-		blog(LOG_ERROR, "Pitel Instant Replay: could not create camera recording directory '%s'", w->camera_dir);
+		blog(LOG_ERROR, "Pitel Instant Replay: could not create camera recording directory '%s'",
+		     w->camera_dir);
 		sr_segment_writer_destroy(w);
 		return NULL;
 	}
@@ -573,7 +577,8 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	}
 	bfree(legacy_dir);
 	if (pthread_create(&w->thread, NULL, writer_thread, w) != 0) {
-		blog(LOG_ERROR, "Pitel Instant Replay: could not start disk writer thread for camera '%s'", w->camera_name);
+		blog(LOG_ERROR, "Pitel Instant Replay: could not start disk writer thread for camera '%s'",
+		     w->camera_name);
 		sr_segment_writer_destroy(w);
 		return NULL;
 	}
@@ -582,8 +587,7 @@ struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_write
 	     "Pitel Instant Replay: continuous recorder started for '%s' (%ux%u, %.3f fps, segment %.2f s, queue %zu, reserve %.1f GB%s)",
 	     w->camera_name, w->width, w->height, (double)w->fps_num / (double)w->fps_den,
 	     (double)w->target_segment_ns / 1e9, w->max_queue_packets,
-	     (double)w->min_free_bytes / (1024.0 * 1024.0 * 1024.0),
-	     w->initial_discontinuity ? ", resumed run" : "");
+	     (double)w->min_free_bytes / (1024.0 * 1024.0 * 1024.0), w->initial_discontinuity ? ", resumed run" : "");
 	return w;
 }
 
@@ -619,6 +623,12 @@ bool sr_segment_writer_push_video(struct sr_segment_writer *w, const AVPacket *p
 {
 	if (!w || !pkt || pkt->size <= 0)
 		return false;
+	if (!sr_session_recording_is_active() || sr_session_recording_generation() != w->recording_generation) {
+		pthread_mutex_lock(&w->mutex);
+		w->stats.packets_dropped++;
+		pthread_mutex_unlock(&w->mutex);
+		return false;
+	}
 	AVPacket *clone = av_packet_clone(pkt);
 	if (!clone)
 		return false;

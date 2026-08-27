@@ -487,13 +487,6 @@ bool sr_session_get_media_bounds(const char *session_dir, uint64_t *start_ns, ui
 	return true;
 }
 
-static uint64_t last_media_timestamp(const char *session_dir)
-{
-	uint64_t start_ns = 0;
-	uint64_t end_ns = 0;
-	return sr_session_get_media_bounds(session_dir, &start_ns, &end_ns) ? end_ns : 0;
-}
-
 static void recover_stale_recording_runs(const char *session_dir, uint64_t media_end_ns)
 {
 	sqlite3 *sql = open_session_sqlite(session_dir);
