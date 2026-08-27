@@ -32,6 +32,27 @@ AVBufferRef *sr_gpu_create_replay_decode_device(void);
  * presentation path. The decoder still has a software fallback. */
 bool sr_gpu_replay_zero_copy_available(void);
 
+#define SR_GPU_VENDOR_ID_INTEL 0x8086u
+#define SR_GPU_VENDOR_ID_NVIDIA 0x10DEu
+#define SR_GPU_VENDOR_ID_AMD 0x1002u
+
+/* PCI vendor id of the D3D11 adapter that owns OBS's compositor device.
+ * Returns 0 when the active renderer is not Windows/D3D11 or the adapter
+ * cannot be resolved. */
+uint32_t sr_gpu_active_adapter_vendor_id(void);
+
+/* PROGRAM texture encoding is zero-copy only when the encoder and the OBS
+ * compositor live on the same D3D11 adapter. The current GPU encoder backend
+ * implements NVENC on NVIDIA and AMF on AMD; Intel/QSV texture interop is not
+ * implemented yet. */
+bool sr_gpu_program_texture_encode_available(void);
+
+/* Multiview can open several independent replay decoders. Intel hybrid/iGPU
+ * drivers have shown whole-OBS stalls when several FFmpeg D3D11VA decoders
+ * share OBS's immediate/video context. Keep A/B replay on the native path,
+ * but use software decode for multiview on Intel and unknown adapters. */
+bool sr_gpu_multiview_hardware_decode_safe(void);
+
 /* True for an AVFrame that can be consumed by the native renderer without
  * first transferring it into system memory. */
 bool sr_gpu_frame_is_native(const AVFrame *frame);

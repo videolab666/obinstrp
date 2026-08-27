@@ -14,6 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-capture.h"
 #include "sr-codec.h"
 #include "sr-config.h"
+#include "sr-gpu-video.h"
 #include "sr-master-audio.h"
 #include "sr-segment-writer.h"
 #include "sr-session.h"
@@ -37,6 +38,7 @@ struct sr_program_recorder {
 	bool encoder_failed;
 	bool writer_failed;
 	bool master_audio_acquired;
+	bool gpu_supported;
 
 	struct sr_gpu_encoder *encoder;
 	struct sr_segment_writer *writer;
@@ -56,7 +58,7 @@ static struct sr_program_recorder g_program;
 bool sr_program_recorder_supported(void)
 {
 #ifdef _WIN32
-	return true;
+	return g_program.initialized && g_program.gpu_supported;
 #else
 	return false;
 #endif
@@ -190,7 +192,7 @@ static void program_rendered(void *param)
 		if (!state->encoder) {
 			state->encoder_failed = true;
 			blog(LOG_ERROR,
-			     "Pitel Instant Replay: PROGRAM recorder requires Windows D3D11 with NVENC or AMF; encoder unavailable");
+			     "Pitel Instant Replay: PROGRAM recorder could not open the hardware encoder on the active OBS D3D11 adapter");
 			pthread_mutex_unlock(&state->mutex);
 			return;
 		}
@@ -238,8 +240,14 @@ bool sr_program_recorder_init(void)
 	g_program.initialized = true;
 
 #ifdef _WIN32
-	obs_add_main_rendered_callback(program_rendered, &g_program);
-	g_program.callback_registered = true;
+	g_program.gpu_supported = sr_gpu_program_texture_encode_available();
+	if (g_program.gpu_supported) {
+		obs_add_main_rendered_callback(program_rendered, &g_program);
+		g_program.callback_registered = true;
+	} else {
+		blog(LOG_INFO,
+		     "Pitel Instant Replay: PROGRAM GPU recorder disabled on the active OBS adapter; NVENC requires OBS on NVIDIA and AMF requires OBS on AMD");
+	}
 #endif
 	return true;
 }

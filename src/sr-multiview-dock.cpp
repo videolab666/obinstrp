@@ -376,9 +376,13 @@ private:
 				player = nullptr;
 				openedSession = session;
 				openedCamera = camera;
-				if (!session.empty() && !camera.empty())
+				if (!session.empty() && !camera.empty()) {
 					player = sr_disk_player_create_with_cache(session.c_str(), camera.c_str(),
 										  12ULL * 1024ULL * 1024ULL);
+					if (player)
+						sr_disk_player_set_hardware_decode(
+							player, sr_gpu_multiview_hardware_decode_safe());
+				}
 			}
 
 			bool ok = false;

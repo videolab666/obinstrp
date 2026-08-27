@@ -364,17 +364,26 @@ extern "C" sr_gpu_encoder *sr_gpu_encoder_create(uint32_t width, uint32_t height
 						 enum sr_encoder_backend backend, int qp, uint32_t gop_interval_ms)
 {
 #ifdef _WIN32
+	const uint32_t vendor = sr_gpu_active_adapter_vendor_id();
 	const char *names[2] = {nullptr, nullptr};
 	size_t count = 0;
 	switch (backend) {
 	case SR_ENC_AUTO:
-		names[count++] = "h264_nvenc";
-		names[count++] = "h264_amf";
+		if (vendor == SR_GPU_VENDOR_ID_NVIDIA)
+			names[count++] = "h264_nvenc";
+		else if (vendor == SR_GPU_VENDOR_ID_AMD)
+			names[count++] = "h264_amf";
+		else
+			return nullptr;
 		break;
 	case SR_ENC_NVENC:
+		if (vendor != SR_GPU_VENDOR_ID_NVIDIA)
+			return nullptr;
 		names[count++] = "h264_nvenc";
 		break;
 	case SR_ENC_AMF:
+		if (vendor != SR_GPU_VENDOR_ID_AMD)
+			return nullptr;
 		names[count++] = "h264_amf";
 		break;
 	case SR_ENC_QSV:

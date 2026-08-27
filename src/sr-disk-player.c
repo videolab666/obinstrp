@@ -44,6 +44,7 @@ struct sr_disk_player {
 	uint64_t decode_requests;
 	uint64_t cache_hits;
 	uint64_t decoded_frames;
+	bool prefer_hardware_decode;
 };
 
 static void close_stream(struct sr_disk_player *p)
@@ -88,7 +89,9 @@ static bool open_segment(struct sr_disk_player *p, const struct sr_segment_descr
 		return false;
 	}
 
-	p->decoder = sr_decoder_create_replay(info.codec_id, info.extradata, info.extradata_size);
+	p->decoder = p->prefer_hardware_decode
+			     ? sr_decoder_create_replay(info.codec_id, info.extradata, info.extradata_size)
+			     : sr_decoder_create(info.codec_id, info.extradata, info.extradata_size);
 	if (!p->decoder) {
 		close_stream(p);
 		return false;
@@ -129,6 +132,7 @@ struct sr_disk_player *sr_disk_player_create_with_cache(const char *session_dir,
 	p->session_dir = bstrdup(session_dir);
 	p->camera_name = bstrdup(camera_name);
 	p->current_position = -1;
+	p->prefer_hardware_decode = true;
 	sr_frame_cache_init(&p->frame_cache, max_cache_bytes);
 
 	if (!sr_disk_player_refresh(p)) {
@@ -136,6 +140,15 @@ struct sr_disk_player *sr_disk_player_create_with_cache(const char *session_dir,
 		return NULL;
 	}
 	return p;
+}
+
+void sr_disk_player_set_hardware_decode(struct sr_disk_player *p, bool enabled)
+{
+	if (!p || p->prefer_hardware_decode == enabled)
+		return;
+	p->prefer_hardware_decode = enabled;
+	close_stream(p);
+	sr_frame_cache_clear(&p->frame_cache);
 }
 
 void sr_disk_player_destroy(struct sr_disk_player *p)

@@ -42,6 +42,12 @@ struct sr_disk_player *sr_disk_player_create(const char *session_dir, const char
  * a 6-9 angle editor cannot multiply the default replay cache by camera count. */
 struct sr_disk_player *sr_disk_player_create_with_cache(const char *session_dir, const char *camera_name,
 							size_t max_cache_bytes);
+
+/* Selects whether newly opened segments prefer the D3D11 replay decoder.
+ * Changing this closes the current decoder and clears cached frames. A/B uses
+ * the default hardware-preferred mode; multiview can opt into the safer
+ * software decoder on problematic hybrid/iGPU adapters. */
+void sr_disk_player_set_hardware_decode(struct sr_disk_player *player, bool enabled);
 void sr_disk_player_destroy(struct sr_disk_player *player);
 
 /* Rescans the camera's segment directory, including a readable active .part

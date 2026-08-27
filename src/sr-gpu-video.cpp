@@ -18,6 +18,7 @@ the Free Software Foundation; either version 2 of the License, or
 #define NOMINMAX
 #endif
 #include <d3d11.h>
+#include <dxgi.h>
 #endif
 
 extern "C" {
@@ -60,6 +61,27 @@ template<typename T> static void com_release(T *&value)
 		value->Release();
 		value = nullptr;
 	}
+}
+
+static uint32_t d3d11_device_vendor_id(ID3D11Device *device)
+{
+	if (!device)
+		return 0;
+
+	IDXGIDevice *dxgi_device = nullptr;
+	if (FAILED(device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void **>(&dxgi_device))))
+		return 0;
+
+	IDXGIAdapter *adapter = nullptr;
+	uint32_t vendor = 0;
+	if (SUCCEEDED(dxgi_device->GetAdapter(&adapter)) && adapter) {
+		DXGI_ADAPTER_DESC desc = {};
+		if (SUCCEEDED(adapter->GetDesc(&desc)))
+			vendor = desc.VendorId;
+	}
+	com_release(adapter);
+	com_release(dxgi_device);
+	return vendor;
 }
 
 static void ffmpeg_d3d11_lock(void *unused)
@@ -162,6 +184,32 @@ extern "C" bool sr_gpu_replay_zero_copy_available(void)
 #else
 	return false;
 #endif
+}
+
+extern "C" uint32_t sr_gpu_active_adapter_vendor_id(void)
+{
+#ifdef _WIN32
+	uint32_t vendor = 0;
+	obs_enter_graphics();
+	if (gs_get_device_type() == GS_DEVICE_DIRECT3D_11)
+		vendor = d3d11_device_vendor_id(static_cast<ID3D11Device *>(gs_get_device_obj()));
+	obs_leave_graphics();
+	return vendor;
+#else
+	return 0;
+#endif
+}
+
+extern "C" bool sr_gpu_program_texture_encode_available(void)
+{
+	const uint32_t vendor = sr_gpu_active_adapter_vendor_id();
+	return vendor == SR_GPU_VENDOR_ID_NVIDIA || vendor == SR_GPU_VENDOR_ID_AMD;
+}
+
+extern "C" bool sr_gpu_multiview_hardware_decode_safe(void)
+{
+	const uint32_t vendor = sr_gpu_active_adapter_vendor_id();
+	return vendor == SR_GPU_VENDOR_ID_NVIDIA || vendor == SR_GPU_VENDOR_ID_AMD;
 }
 
 extern "C" bool sr_gpu_frame_is_native(const AVFrame *frame)
