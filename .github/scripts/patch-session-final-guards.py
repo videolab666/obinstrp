@@ -64,17 +64,13 @@ text = once(text,
 write(rel, text)
 
 # If Resume selects a target but opening its Event DB fails, clear the target.
-# Otherwise a later START could appear mysteriously blocked by a hidden stale
-# target selected by a failed UI operation.
+# Scope the replacement to resumeSelected(): openSelected() and
+# returnToRecording() deliberately have similar openPath() blocks.
 rel = 'src/sr-session-panel.cpp'
 text = read(rel)
-text = once(text,
-            '\t\tif (!openPath(path))\n\t\t\tQMessageBox::warning(this, T("Session.Title"), T("Session.OpenFailed"));\n\t\trefresh();',
-            '\t\tif (!openPath(path)) {\n'
-            '\t\t\tsr_session_clear_record_target();\n'
-            '\t\t\tQMessageBox::warning(this, T("Session.Title"), T("Session.OpenFailed"));\n'
-            '\t\t}\n\t\trefresh();',
-            'resume open failure clears target')
+old = '''\tvoid resumeSelected()\n\t{\n\t\tconst QString path = singleSelectedPath();\n\t\tif (path.isEmpty() || sr_session_recording_is_active())\n\t\t\treturn;\n\t\tconst QByteArray utf8 = path.toUtf8();\n\t\tif (!sr_session_set_record_target(utf8.constData())) {\n\t\t\tQMessageBox::warning(this, T("Session.Title"), T("Session.TargetFailed"));\n\t\t\treturn;\n\t\t}\n\t\tif (!openPath(path))\n\t\t\tQMessageBox::warning(this, T("Session.Title"), T("Session.OpenFailed"));\n\t\trefresh();\n\t}\n'''
+new = '''\tvoid resumeSelected()\n\t{\n\t\tconst QString path = singleSelectedPath();\n\t\tif (path.isEmpty() || sr_session_recording_is_active())\n\t\t\treturn;\n\t\tconst QByteArray utf8 = path.toUtf8();\n\t\tif (!sr_session_set_record_target(utf8.constData())) {\n\t\t\tQMessageBox::warning(this, T("Session.Title"), T("Session.TargetFailed"));\n\t\t\treturn;\n\t\t}\n\t\tif (!openPath(path)) {\n\t\t\tsr_session_clear_record_target();\n\t\t\tQMessageBox::warning(this, T("Session.Title"), T("Session.OpenFailed"));\n\t\t}\n\t\trefresh();\n\t}\n'''
+text = once(text, old, new, 'resume open failure clears target')
 write(rel, text)
 
 print('Final Session timebase guards applied successfully')
