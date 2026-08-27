@@ -262,7 +262,16 @@ private:
 		gs_set_viewport(0, 0, (int)cx, (int)cy);
 		gs_ortho(0.0f, (float)cx, 0.0f, (float)cy, -100.0f, 100.0f);
 		gs_matrix_translate3f((float)x, (float)y, 0.0f);
+
+		/* Multiview is drawn directly into an obs_display, not through an
+		 * OBS_SOURCE_SRGB source. Reusing the source-render linear-sRGB state here
+		 * decompresses SDR twice and makes the tiles visibly brighter than Replay
+		 * A. Force the direct display pass to stay nonlinear, then restore the
+		 * caller's graphics state. */
+		const bool previousLinearSrgb = gs_set_linear_srgb(false);
 		sr_gpu_renderer_draw(renderer, current, drawWidth, drawHeight);
+		gs_set_linear_srgb(previousLinearSrgb);
+
 		gs_matrix_pop();
 		gs_projection_pop();
 		gs_viewport_pop();
@@ -484,12 +493,15 @@ public:
 		this->coverage = coverage;
 		this->atPlayhead = atPlayhead;
 		updateTitle();
-		if (coverage == SR_REPLAY_COVERAGE_NONE) {
-			clearFrame();
-			setMessage(T("Multiview.NoCoverage"));
-		} else if (!atPlayhead) {
+		/* Event coverage controls only the marker in the title. Preview
+		 * availability is determined independently from the complete recording
+		 * timeline so moving the editor playhead outside IN/OUT keeps showing the
+		 * recorded camera frames. */
+		if (!atPlayhead) {
 			clearFrame();
 			setMessage(T("Multiview.NoMediaAtCursor"));
+		} else if (coverage == SR_REPLAY_COVERAGE_NONE && !haveFrame) {
+			setMessage(T("Multiview.NoCoverage"));
 		}
 	}
 
@@ -1219,18 +1231,35 @@ private:
 	{
 		const QString selected = QString::fromUtf8(snapshot.selected_camera);
 		const QString preview = QString::fromUtf8(snapshot.preview_camera);
+		cursorAvailable.clear();
+		cursorOffsets.clear();
+
 		for (const auto &tile : tiles) {
 			tile->setSelected(!selected.isEmpty() && tile->camera() == selected);
 			tile->setPreview(!preview.isEmpty() && tile->camera() == preview);
-			sr_replay_coverage_info coverage = {};
+
 			const QByteArray camera = tile->camera().toUtf8();
+			sr_replay_coverage_info eventCoverage = {};
 			if (!snapshot.available ||
-			    !sr_replay_coverage_query(camera.constData(), snapshot.in_ns, snapshot.out_ns, &coverage))
-				coverage.coverage = SR_REPLAY_COVERAGE_NONE;
-			const bool atCursor = coverage.coverage != SR_REPLAY_COVERAGE_NONE &&
-					      snapshot.playhead_ns >= coverage.playable_in_ns &&
-					      snapshot.playhead_ns <= coverage.playable_out_ns;
-			tile->setCoverage(coverage.coverage, atCursor);
+			    !sr_replay_coverage_query(camera.constData(), snapshot.in_ns, snapshot.out_ns, &eventCoverage))
+				eventCoverage.coverage = SR_REPLAY_COVERAGE_NONE;
+
+			/* The IN/OUT range describes the event, but the operator may scrub the
+			 * complete session before/after that range to choose better marks. Query
+			 * the interval that contains the current cursor across the full recording
+			 * and use it only for preview availability/sync. */
+			sr_replay_coverage_info cursorCoverage = {};
+			const bool atCursor = snapshot.record_end_ns >= snapshot.record_start_ns &&
+					      sr_replay_coverage_query_at(camera.constData(), snapshot.record_start_ns,
+								  snapshot.record_end_ns, snapshot.playhead_ns,
+								  &cursorCoverage) &&
+					      cursorCoverage.coverage != SR_REPLAY_COVERAGE_NONE;
+			if (atCursor) {
+				cursorAvailable.insert(tile->camera());
+				cursorOffsets.insert(tile->camera(), (qint64)cursorCoverage.sync_offset_ns);
+			}
+
+			tile->setCoverage(eventCoverage.coverage, atCursor);
 		}
 	}
 
@@ -1251,12 +1280,7 @@ private:
 			if (hiddenCameras.contains(tile->camera()) ||
 			    (!soloCamera.isEmpty() && tile->camera() != soloCamera))
 				continue;
-			sr_replay_coverage_info coverage = {};
-			const QByteArray camera = tile->camera().toUtf8();
-			if (!sr_replay_coverage_query(camera.constData(), snapshot.in_ns, snapshot.out_ns, &coverage) ||
-			    coverage.coverage == SR_REPLAY_COVERAGE_NONE ||
-			    snapshot.playhead_ns < coverage.playable_in_ns ||
-			    snapshot.playhead_ns > coverage.playable_out_ns)
+			if (!cursorAvailable.contains(tile->camera()))
 				continue;
 
 			tile->decoder().setSource(session, tile->camera());
@@ -1267,7 +1291,8 @@ private:
 			if (!immediate && nowMs - last < minimumMs)
 				continue;
 			last = nowMs;
-			const uint64_t cameraTimestamp = addSignedOffset(snapshot.playhead_ns, coverage.sync_offset_ns);
+			const int64_t syncOffset = (int64_t)cursorOffsets.value(tile->camera(), 0);
+			const uint64_t cameraTimestamp = addSignedOffset(snapshot.playhead_ns, syncOffset);
 			tile->decoder().request(cameraTimestamp);
 		}
 	}
@@ -1376,6 +1401,8 @@ private:
 	QString soloCamera;
 	std::vector<std::unique_ptr<SrMultiviewTile>> tiles;
 	QMap<QString, qint64> lastRequestMs;
+	QSet<QString> cursorAvailable;
+	QMap<QString, qint64> cursorOffsets;
 	sr_event_editor_snapshot lastSnapshot = {};
 	uint64_t lastEventId = 0;
 	uint64_t lastPlayheadNs = 0;
