@@ -817,7 +817,7 @@ public:
 
 	void setRecordingBounds(uint64_t startNs, uint64_t endNs)
 	{
-		if (!startNs || endNs <= startNs) {
+		if (endNs <= startNs) {
 			haveRecording = false;
 			recordStartNs = 0;
 			recordEndNs = 0;

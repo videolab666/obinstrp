@@ -397,7 +397,7 @@ private:
 			bool ok = false;
 			uint64_t actualNs = timestampNs;
 			AVFrame *decoded = nullptr;
-			if (player && timestampNs) {
+			if (player) {
 				ok = sr_disk_player_decode_at(player, timestampNs, &decoded, &actualNs);
 				if (!ok) {
 					sr_disk_player_refresh(player);
