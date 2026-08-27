@@ -1721,16 +1721,13 @@ public:
 
 		auto *cueBar = new QHBoxLayout();
 		cueBar->setSpacing(3);
-		cueBar->addWidget(new QLabel(T("EventDock.Camera"), this));
+		cueBar->addWidget(new QLabel(T("EventDock.AngleSelector"), this));
 		cameraCombo = new QComboBox(this);
 		cameraCombo->setMinimumContentsLength(18);
+		cameraCombo->setToolTip(T("EventDock.AngleSelector.Tooltip"));
 		cueBar->addWidget(cameraCombo, 1);
-		auto *setPreferred = new QPushButton(T("EventDock.SetPreferred"), this);
-		auto *clearPreferred = new QPushButton(T("EventDock.ClearPreferred"), this);
 		auto *cueA = new QPushButton(T("EventDock.CueA"), this);
 		auto *cueB = new QPushButton(T("EventDock.CueB"), this);
-		cueBar->addWidget(setPreferred);
-		cueBar->addWidget(clearPreferred);
 		cueBar->addWidget(cueA);
 		cueBar->addWidget(cueB);
 		cueBar->addSpacing(6);
@@ -1973,8 +1970,6 @@ public:
 		connect(duplicate, &QPushButton::clicked, this, [this]() { duplicateSelected(); });
 		connect(exportFast, &QPushButton::clicked, this, [this]() { startExport(); });
 		connect(exportCancelButton, &QPushButton::clicked, this, [this]() { cancelExport(); });
-		connect(setPreferred, &QPushButton::clicked, this, [this]() { setPreferredCamera(false); });
-		connect(clearPreferred, &QPushButton::clicked, this, [this]() { setPreferredCamera(true); });
 		connect(cueA, &QPushButton::clicked, this, [this]() { cueSelected(SR_REPLAY_BUS_A); });
 		connect(cueB, &QPushButton::clicked, this, [this]() { cueSelected(SR_REPLAY_BUS_B); });
 		connect(busCombo, &QComboBox::currentIndexChanged, this, [this](int) {
@@ -1984,11 +1979,10 @@ public:
 				previewSelectedEvent(true);
 			}
 		});
-		connect(cameraCombo, &QComboBox::currentIndexChanged, this, [this](int) {
-			if (!replayPlayoutActive()) {
-				previewSelectedEvent(true);
-				syncTimeline();
-			}
+		connect(cameraCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+			if (index < 0)
+				return;
+			selectAngle(selectedCamera());
 		});
 		connect(playPause, &QPushButton::clicked, this, [this]() { togglePlayPause(); });
 		connect(stop, &QPushButton::clicked, this, [this]() { stopTransport(); });
@@ -2215,6 +2209,84 @@ private:
 
 	QString selectedCamera() const { return cameraCombo ? cameraCombo->currentData().toString() : QString(); }
 
+	QString eventPreferredCamera(const sr_event_record &event) const
+	{
+		if (!controller || !event.preferred_camera_id)
+			return QString();
+		char *name = nullptr;
+		QString camera;
+		if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id, &name) && name)
+			camera = QString::fromUtf8(name);
+		bfree(name);
+		return camera;
+	}
+
+	QString eventAngleText(const sr_event_record &event) const
+	{
+		const QString camera = eventPreferredCamera(event);
+		return camera.isEmpty() ? T("EventDock.AngleAuto") : camera;
+	}
+
+	bool cameraHasEventCoverage(const QString &camera, const sr_event_record &event,
+				    enum sr_replay_coverage wanted) const
+	{
+		if (camera.isEmpty())
+			return false;
+		sr_replay_coverage_info coverage = {};
+		const QByteArray cameraUtf8 = camera.toUtf8();
+		return sr_replay_coverage_query(cameraUtf8.constData(), event.in_ns, event.out_ns, &coverage) &&
+		       coverage.coverage == wanted;
+	}
+
+	QString automaticCameraForEvent(const sr_event_record &event, enum sr_replay_bus bus) const
+	{
+		QStringList candidates;
+		auto add = [&candidates](const QString &camera) {
+			if (!camera.isEmpty() && !candidates.contains(camera))
+				candidates.append(camera);
+		};
+		sr_replay_channel_state current = {};
+		if (sr_replay_channel_get_state(bus, &current) && current.cued && current.camera_name[0])
+			add(QString::fromUtf8(current.camera_name));
+		for (const QString &camera : captureCameraNames())
+			add(camera);
+
+		for (enum sr_replay_coverage wanted : {SR_REPLAY_COVERAGE_FULL, SR_REPLAY_COVERAGE_PARTIAL}) {
+			for (const QString &camera : candidates) {
+				if (cameraHasEventCoverage(camera, event, wanted))
+					return camera;
+			}
+		}
+		return QString();
+	}
+
+	void syncEventAngleSelection()
+	{
+		if (!cameraCombo)
+			return;
+		QString desired;
+		const uint64_t eventId = selectedEventId();
+		if (replayPlayoutActive()) {
+			sr_replay_channel_state state = {};
+			if (sr_replay_channel_get_state(transportBus(), &state) && state.cued &&
+			    (!eventId || state.event_id == eventId))
+				desired = QString::fromUtf8(state.camera_name);
+		} else if (controller && eventId) {
+			sr_event_record event = {};
+			if (sr_event_controller_get_event(controller, eventId, &event)) {
+				desired = eventPreferredCamera(event);
+				sr_event_controller_free_event(&event);
+			}
+		}
+
+		const QSignalBlocker blocker(cameraCombo);
+		int index = desired.isEmpty() ? cameraCombo->findData(QString()) : cameraCombo->findData(desired);
+		if (index < 0)
+			index = cameraCombo->findData(QString());
+		if (index >= 0)
+			cameraCombo->setCurrentIndex(index);
+	}
+
 	bool thumbnailViewActive() const
 
 	{
@@ -2294,7 +2366,10 @@ private:
 				       !event.speed_override;
 		const QString speed = inherited ? QStringLiteral("--")
 						: QStringLiteral("%1%").arg(event.speed_percent, 0, 'f', 0);
-		QString second = QStringLiteral("%1  ·  %2").arg(durationText(event)).arg(speed);
+		QString second = QStringLiteral("%1  ·  %2  ·  %3")
+					 .arg(durationText(event))
+					 .arg(speed)
+					 .arg(eventAngleText(event));
 		if (!tag.isEmpty())
 			second += QStringLiteral("  ·  ") + tag;
 		return first + QStringLiteral("\n") + second;
@@ -3097,7 +3172,6 @@ private:
 	{
 		if (!cameraCombo)
 			return;
-		const QString previous = selectedCamera();
 		const QStringList names = captureCameraNames();
 		QStringList current;
 		for (int i = 0; i < cameraCombo->count(); i++) {
@@ -3106,20 +3180,16 @@ private:
 				current.append(value);
 		}
 
-		if (current != names) {
+		if (cameraCombo->count() == 0 || current != names) {
+			const QSignalBlocker blocker(cameraCombo);
 			cameraCombo->clear();
-			if (names.isEmpty()) {
-				cameraCombo->addItem(T("EventDock.NoCamera"), QString());
-			} else {
-				for (const QString &name : names)
-					cameraCombo->addItem(name, name);
-				const int previousIndex = cameraCombo->findData(previous);
-				if (previousIndex >= 0)
-					cameraCombo->setCurrentIndex(previousIndex);
-			}
+			cameraCombo->addItem(T("EventDock.AngleAuto"), QString());
+			for (const QString &name : names)
+				cameraCombo->addItem(name, name);
 			rebuildAngleButtons(names);
 		}
 
+		syncEventAngleSelection();
 		refreshAngleCoverage();
 	}
 
@@ -3146,15 +3216,7 @@ private:
 				button->setIcon(QIcon());
 		}
 
-		QString preferredCamera;
-		if (haveEvent && event.preferred_camera_id) {
-			char *preferredName = nullptr;
-			if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id,
-								&preferredName) &&
-			    preferredName)
-				preferredCamera = QString::fromUtf8(preferredName);
-			bfree(preferredName);
-		}
+		const QString preferredCamera = haveEvent ? eventPreferredCamera(event) : QString();
 
 		for (QToolButton *button : angleButtons) {
 			const QString camera = button->property("cameraName").toString();
@@ -3190,10 +3252,12 @@ private:
 						  .arg(playableSeconds, 0, 'f', 2)
 						  .arg(eventSeconds, 0, 'f', 2);
 			}
-			const QString preferredMarker = camera == preferredCamera ? QStringLiteral("★ ") : QString();
-			button->setText(QStringLiteral("%1%2 %3").arg(preferredMarker, marker, camera));
-			if (camera == preferredCamera)
-				tooltip += QStringLiteral(" — ") + T("EventDock.Preferred");
+			const bool storedAngle = !preferredCamera.isEmpty() && camera == preferredCamera;
+			button->setProperty("storedAngle", storedAngle);
+			const QString selectedMarker = storedAngle ? QStringLiteral("✓ ") : QString();
+			button->setText(QStringLiteral("%1%2 %3").arg(selectedMarker, marker, camera));
+			if (storedAngle)
+				tooltip += QStringLiteral(" — ") + T("EventDock.AngleStored");
 			tooltip += QStringLiteral("\n") + T("EventDock.AnglePreviewHint");
 			button->setProperty("coverageTooltip", tooltip);
 			button->setToolTip(tooltip);
@@ -3204,6 +3268,7 @@ private:
 
 		if (haveEvent)
 			sr_event_controller_free_event(&event);
+		syncEventAngleSelection();
 		syncAngleButtonState();
 	}
 
@@ -3322,6 +3387,7 @@ private:
 		const bool haveState = sr_replay_channel_get_state(transportBus(), &state);
 		const bool sameEvent = haveState && state.cued && eventId && state.event_id == eventId;
 		const QString activeCamera = sameEvent ? QString::fromUtf8(state.camera_name) : QString();
+		const bool playout = replayPlayoutActive();
 
 		for (QToolButton *button : angleButtons) {
 			const auto coverage = static_cast<sr_replay_coverage>(button->property("coverage").toInt());
@@ -3331,15 +3397,64 @@ private:
 			const bool atPlayhead = !sameEvent ||
 						(state.playhead_ns >= playableIn && state.playhead_ns <= playableOut);
 			button->setEnabled(eventId && coverage != SR_REPLAY_COVERAGE_NONE && atPlayhead);
-			button->setChecked(sameEvent && activeCamera == camera);
+			button->setChecked(playout ? (sameEvent && activeCamera == camera)
+						   : button->property("storedAngle").toBool());
 			button->setToolTip(button->property("coverageTooltip").toString());
 			if (sameEvent && coverage != SR_REPLAY_COVERAGE_NONE && !atPlayhead)
 				button->setToolTip(T("EventDock.AngleUnavailable").arg(camera));
 		}
 	}
 
+	bool storeEventAngle(uint64_t eventId, const QString &camera)
+	{
+		if (!controller || !eventId)
+			return false;
+		const QByteArray cameraUtf8 = camera.toUtf8();
+		const char *name = camera.isEmpty() ? nullptr : cameraUtf8.constData();
+		if (!sr_event_controller_set_preferred_camera(controller, eventId, name)) {
+			setStatus("EventDock.AngleSaveFailed");
+			return false;
+		}
+		eventThumbnailCache.erase(eventId);
+		return true;
+	}
+
+	void selectAutoAngle()
+	{
+		const uint64_t eventId = selectedEventId();
+		if (!controller || !eventId) {
+			setStatus("EventDock.NoEventSelected");
+			return;
+		}
+		if (replayPlayoutActive()) {
+			setStatus("EventDock.AngleAutoEditOnly");
+			syncEventAngleSelection();
+			return;
+		}
+
+		const uint64_t target = editTimeline ? editTimeline->playheadTimestamp() : 0;
+		if (!storeEventAngle(eventId, QString())) {
+			syncEventAngleSelection();
+			return;
+		}
+		editPreviewEventId = 0;
+		editPreviewCamera.clear();
+		refresh(eventId);
+		refreshAngleCoverage();
+		previewSelectedEvent(true);
+		if (target)
+			previewSeekTo(target);
+		status->setText(T("EventDock.AngleAutoSaved").arg(eventId));
+		syncTimeline();
+	}
+
 	void selectAngle(const QString &camera)
 	{
+		if (camera.isEmpty()) {
+			selectAutoAngle();
+			return;
+		}
+
 		const enum sr_replay_bus bus = transportBus();
 		uint64_t eventId = selectedEventId();
 		sr_replay_channel_state state = {};
@@ -3360,12 +3475,27 @@ private:
 				setStatus("EventDock.Failed");
 				return;
 			}
+			sr_replay_coverage_info coverage = {};
+			if (!sr_replay_coverage_query(cameraUtf8.constData(), event.in_ns, event.out_ns, &coverage) ||
+			    coverage.coverage == SR_REPLAY_COVERAGE_NONE) {
+				sr_event_controller_free_event(&event);
+				status->setText(T("EventDock.CueNoCoverage").arg(camera));
+				syncEventAngleSelection();
+				return;
+			}
+
 			uint64_t target = editTimeline ? editTimeline->playheadTimestamp() : event.in_ns;
 			if (!target)
 				target = event.in_ns;
 			const uint64_t rangeIn = editTimelineHaveBounds ? editTimelineStartNs : event.in_ns;
 			const uint64_t rangeOut = editTimelineHaveBounds ? editTimelineEndNs : event.out_ns;
 			target = qBound(rangeIn, target, rangeOut);
+			if (!storeEventAngle(eventId, camera)) {
+				sr_event_controller_free_event(&event);
+				syncEventAngleSelection();
+				return;
+			}
+
 			if (haveState && state.cued && state.preview_mode && state.event_id == eventId)
 				ok = sr_replay_channel_switch_camera(bus, cameraUtf8.constData());
 			if (ok) {
@@ -3373,52 +3503,47 @@ private:
 				editPreviewBus = bus;
 				editPreviewCamera = camera;
 				sr_replay_channel_pause(bus, true);
+				sr_replay_channel_seek(bus, target);
 			} else {
 				ok = cueEditPreviewAt(camera, eventId, target, rangeIn, rangeOut);
 			}
 			sr_event_controller_free_event(&event);
-		} else {
-			const bool switching = haveState && state.cued && state.event_id == eventId;
-			ok = switching ? sr_replay_channel_switch_camera(bus, cameraUtf8.constData())
-				       : sr_replay_channel_cue(bus, eventId, cameraUtf8.constData());
+
+			{
+				const QSignalBlocker blocker(cameraCombo);
+				const int comboIndex = cameraCombo ? cameraCombo->findData(camera) : -1;
+				if (comboIndex >= 0)
+					cameraCombo->setCurrentIndex(comboIndex);
+			}
+			refresh(eventId);
+			refreshAngleCoverage();
+			status->setText(T("EventDock.AngleSaved").arg(eventId).arg(camera));
+			if (!ok)
+				status->setText(T("EventDock.AngleSavedPreviewFailed").arg(eventId).arg(camera));
+			syncTransportControls();
+			syncTimeline();
+			return;
 		}
+
+		const bool switching = haveState && state.cued && state.event_id == eventId;
+		ok = switching ? sr_replay_channel_switch_camera(bus, cameraUtf8.constData())
+			       : sr_replay_channel_cue(bus, eventId, cameraUtf8.constData());
 		if (!ok) {
 			setStatus("EventDock.AngleSwitchFailed");
 			refreshAngleCoverage();
 			return;
 		}
 
-		const int comboIndex = cameraCombo ? cameraCombo->findData(camera) : -1;
-		if (comboIndex >= 0)
-			cameraCombo->setCurrentIndex(comboIndex);
-		status->setText(T("EventDock.AngleSelected")
+		{
+			const QSignalBlocker blocker(cameraCombo);
+			const int comboIndex = cameraCombo ? cameraCombo->findData(camera) : -1;
+			if (comboIndex >= 0)
+				cameraCombo->setCurrentIndex(comboIndex);
+		}
+		status->setText(T("EventDock.AngleLiveSwitched")
 					.arg(bus == SR_REPLAY_BUS_A ? QStringLiteral("A") : QStringLiteral("B"))
 					.arg(camera));
 		syncTransportControls();
-		refreshAngleCoverage();
-	}
-
-	void setPreferredCamera(bool clear)
-	{
-		const uint64_t eventId = selectedEventId();
-		if (!controller || !eventId) {
-			setStatus("EventDock.NoEventSelected");
-			return;
-		}
-
-		const QString camera = selectedCamera();
-		if (!clear && camera.isEmpty()) {
-			setStatus("EventDock.NoCameraSelected");
-			return;
-		}
-		const QByteArray cameraUtf8 = camera.toUtf8();
-		const char *name = clear ? nullptr : cameraUtf8.constData();
-		if (!sr_event_controller_set_preferred_camera(controller, eventId, name)) {
-			setStatus("EventDock.PreferredFailed");
-			return;
-		}
-
-		setStatus(clear ? "EventDock.PreferredCleared" : "EventDock.PreferredSet");
 		refreshAngleCoverage();
 	}
 
@@ -4327,15 +4452,25 @@ private:
 	bool cueSelected(enum sr_replay_bus bus)
 	{
 		const uint64_t eventId = selectedEventId();
-		const QString camera = selectedCamera();
 		if (!eventId) {
 			setStatus("EventDock.NoEventSelected");
 			return false;
 		}
-		if (camera.isEmpty()) {
-			setStatus("EventDock.NoCameraSelected");
+
+		sr_event_record event = {};
+		if (!controller || !sr_event_controller_get_event(controller, eventId, &event)) {
+			setStatus("EventDock.Failed");
 			return false;
 		}
+		QString camera = eventPreferredCamera(event);
+		if (camera.isEmpty())
+			camera = automaticCameraForEvent(event, bus);
+		sr_event_controller_free_event(&event);
+		if (camera.isEmpty()) {
+			setStatus("EventDock.CueFailed");
+			return false;
+		}
+
 		QToolButton *angle = angleButton(camera);
 		if (angle && angle->property("coverage").toInt() == SR_REPLAY_COVERAGE_NONE) {
 			status->setText(T("EventDock.CueNoCoverage").arg(camera));
@@ -4372,13 +4507,10 @@ private:
 			return;
 		}
 
-		const QString camera = selectedCamera();
-		const QByteArray cameraUtf8 = camera.toUtf8();
-		const char *preferred = camera.isEmpty() ? nullptr : cameraUtf8.constData();
 		bool transitionRequested = false;
 		const bool crossBus = eventTransitionCrossBus(&transitionRequested);
 		if (!controller || !sr_replay_playlist_start_events_with_transitions(
-					   bus, currentList(), eventIds.data(), eventIds.size(), preferred, crossBus)) {
+					   bus, currentList(), eventIds.data(), eventIds.size(), nullptr, crossBus)) {
 			setStatus("EventDock.PlaylistFailed");
 			return;
 		}
@@ -4473,13 +4605,9 @@ private:
 
 	void startPlaylist(enum sr_replay_bus bus)
 	{
-		const QString camera = selectedCamera();
-		const QByteArray cameraUtf8 = camera.toUtf8();
-		const char *preferred = camera.isEmpty() ? nullptr : cameraUtf8.constData();
 		bool transitionRequested = false;
 		const bool crossBus = eventTransitionCrossBus(&transitionRequested);
-		if (!controller ||
-		    !sr_replay_playlist_start_with_transitions(bus, currentList(), preferred, crossBus)) {
+		if (!controller || !sr_replay_playlist_start_with_transitions(bus, currentList(), nullptr, crossBus)) {
 			setStatus("EventDock.PlaylistFailed");
 			return;
 		}
@@ -4703,8 +4831,6 @@ private:
 		} else {
 			QString camera = preferred;
 			if (!fullAngles.contains(camera))
-				camera = selectedCamera();
-			if (!fullAngles.contains(camera))
 				camera = fullAngles.first();
 
 			QString baseDirectory = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
@@ -4869,23 +4995,8 @@ private:
 			state->setFlags(state->flags() & ~Qt::ItemIsEditable);
 			table->setItem((int)i, 3, state);
 
-			QString preferredCamera;
-			if (event.preferred_camera_id) {
-				char *preferredName = nullptr;
-				if (sr_event_controller_get_camera_name(controller, event.preferred_camera_id,
-									&preferredName) &&
-				    preferredName)
-					preferredCamera = QString::fromUtf8(preferredName);
-				bfree(preferredName);
-			}
-			QString angleText;
-			if (!preferredCamera.isEmpty())
-				angleText = QStringLiteral("★ ") + preferredCamera;
-			else if (!selectedCamera().isEmpty())
-				angleText = T("EventDock.AngleAutoCurrent").arg(selectedCamera());
-			else
-				angleText = T("EventDock.AngleAuto");
-			auto *angle = new QTableWidgetItem(angleText);
+			const QString preferredCamera = eventPreferredCamera(event);
+			auto *angle = new QTableWidgetItem(eventAngleText(event));
 			angle->setFlags(angle->flags() & ~Qt::ItemIsEditable);
 			angle->setToolTip(preferredCamera.isEmpty()
 						  ? T("EventDock.AngleAuto.Tooltip")
