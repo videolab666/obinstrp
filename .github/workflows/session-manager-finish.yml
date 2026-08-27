@@ -1,0 +1,91 @@
+name: Session Manager Finish
+
+on:
+  push:
+    branches:
+      - feature/session-manager
+    paths:
+      - .github/workflows/session-manager-finish.yml
+      - CMakeLists.txt
+      - src/sr-session-panel.cpp
+      - src/sr-audio-session.c
+      - src/sr-master-audio.c
+      - data/locale/en-US.ini
+      - data/locale/es-ES.ini
+
+permissions:
+  contents: write
+
+jobs:
+  finish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply final Session Manager fixes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          audio = Path('src/sr-master-audio.c')
+          text = audio.read_text(encoding='utf-8')
+          needle = '\t\tstate->next_sequence = find_next_sequence(state->audio_dir);\n\t\tstate->enqueue_epoch++;'
+          replacement = ('\t\tstate->next_sequence = find_next_sequence(state->audio_dir);\n'
+                         '\t\tstate->next_segment_discontinuity = sr_session_recording_starts_with_discontinuity();\n'
+                         '\t\tstate->enqueue_epoch++;')
+          if needle not in text and replacement not in text:
+              raise SystemExit('master audio acquire insertion point not found')
+          text = text.replace(needle, replacement, 1)
+
+          needle = '\tstate->next_sequence = find_next_sequence(state->audio_dir);\n\tstate->active = true;'
+          replacement = ('\tstate->next_sequence = find_next_sequence(state->audio_dir);\n'
+                         '\tstate->next_segment_discontinuity = sr_session_recording_starts_with_discontinuity();\n'
+                         '\tstate->active = true;')
+          if needle not in text and replacement not in text:
+              raise SystemExit('camera audio insertion point not found')
+          text = text.replace(needle, replacement, 1)
+          audio.write_text(text, encoding='utf-8')
+
+          en = Path('data/locale/en-US.ini')
+          en_text = en.read_text(encoding='utf-8')
+          if 'Session.New=' not in en_text:
+              en_text += '''\nSession.New="New Session"\nSession.Open="Open"\nSession.Resume="Resume Recording"\nSession.Rename="Rename"\nSession.ReturnToRecording="Return to Recording Session"\nSession.ClearTarget="Clear REC Target"\nSession.Hint="OPEN is the session currently being browsed/edited. TARGET is used by the next START RECORD. REC is the immutable session receiving the active recording run. Opening an archive never changes a live recording target."\nSession.Title="Replay Session Manager"\nSession.StopBeforeTarget="Stop replay recording before changing the recording target."\nSession.StopRecordingConfirm="Replay recording is active. Stop it before creating a new session?"\nSession.StopFailed="Could not stop all replay recorders. Check the OBS log."\nSession.NewTitle="New Replay Session"\nSession.NamePrompt="Session name"\nSession.CreateFailed="Could not create the replay session."\nSession.OpenFailed="Could not open the selected replay session."\nSession.TargetFailed="Could not select the replay session as the recording target."\nSession.RenameTitle="Rename Replay Session"\nSession.RenameFailed="Could not rename the replay session."\nSession.DeleteInUse="OPEN, TARGET, or REC sessions cannot be deleted. Close/clear/stop them first."\nSession.DeleteConfirm="Permanently delete %1 selected replay session(s) and all media inside them?"\nSession.DeleteFailed="%1 replay session(s) could not be completely deleted."\nSession.DiskSummary="Replay root: %1 · sessions: %2 · free: %3"\nSession.StateSummary="OPEN: %1 · TARGET: %2 · REC: %3"\n'''
+              en.write_text(en_text, encoding='utf-8')
+
+          es = Path('data/locale/es-ES.ini')
+          es_text = es.read_text(encoding='utf-8')
+          if 'Session.New=' not in es_text:
+              es_text += '''\nSession.New="Nueva sesión"\nSession.Open="Abrir"\nSession.Resume="Reanudar grabación"\nSession.Rename="Renombrar"\nSession.ReturnToRecording="Volver a la sesión de grabación"\nSession.ClearTarget="Borrar destino REC"\nSession.Hint="OPEN es la sesión que se está viendo/editando. TARGET se usa en el próximo START RECORD. REC es la sesión inmutable que recibe la grabación activa. Abrir un archivo nunca cambia el destino de una grabación en curso."\nSession.Title="Administrador de sesiones de Replay"\nSession.StopBeforeTarget="Detén la grabación de Replay antes de cambiar el destino de grabación."\nSession.StopRecordingConfirm="La grabación de Replay está activa. ¿Detenerla antes de crear una nueva sesión?"\nSession.StopFailed="No se pudieron detener todos los grabadores de Replay. Revisa el registro de OBS."\nSession.NewTitle="Nueva sesión de Replay"\nSession.NamePrompt="Nombre de la sesión"\nSession.CreateFailed="No se pudo crear la sesión de Replay."\nSession.OpenFailed="No se pudo abrir la sesión de Replay seleccionada."\nSession.TargetFailed="No se pudo seleccionar la sesión como destino de grabación."\nSession.RenameTitle="Renombrar sesión de Replay"\nSession.RenameFailed="No se pudo renombrar la sesión de Replay."\nSession.DeleteInUse="Las sesiones OPEN, TARGET o REC no se pueden eliminar. Ciérralas, borra el destino o detén la grabación primero."\nSession.DeleteConfirm="¿Eliminar permanentemente %1 sesión(es) de Replay seleccionada(s) y todos sus medios?"\nSession.DeleteFailed="No se pudieron eliminar completamente %1 sesión(es) de Replay."\nSession.DiskSummary="Raíz de Replay: %1 · sesiones: %2 · libre: %3"\nSession.StateSummary="OPEN: %1 · TARGET: %2 · REC: %3"\n'''
+              es.write_text(es_text, encoding='utf-8')
+
+      - name: Install repository formatters
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew tap obsproject/tools
+          if brew help trust >/dev/null 2>&1; then brew trust obsproject/tools; fi
+          brew install --quiet obsproject/tools/clang-format@19 obsproject/tools/gersemi
+          echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> "$GITHUB_PATH"
+
+      - name: Format changed sources
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          clang-format-19 -i src/sr-session-panel.cpp src/sr-audio-session.c src/sr-master-audio.c
+          gersemi -i CMakeLists.txt
+          git diff --check
+
+      - name: Commit finished Session Manager
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CMakeLists.txt src/sr-session-panel.cpp src/sr-audio-session.c src/sr-master-audio.c data/locale/en-US.ini data/locale/es-ES.ini
+          git commit -m "fix: complete session audio resume and localization"
+          git push origin HEAD:feature/session-manager
