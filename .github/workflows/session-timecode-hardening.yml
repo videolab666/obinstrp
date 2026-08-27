@@ -1,0 +1,49 @@
+name: Session Timecode Hardening
+
+on:
+  push:
+    branches:
+      - feature/session-timecode-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  apply-patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply timecode hardening
+        run: python3 .github/scripts/patch-session-timecode-hardening.py
+      - name: Format changed C/C++ files
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang-format-19
+          mapfile -t files < <(git diff --name-only -- '*.c' '*.h' '*.cpp')
+          if ((${#files[@]})); then
+            clang-format-19 -i "${files[@]}"
+          fi
+      - name: Commit patched sources
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src
+          git diff --cached --check
+          git commit -m 'fix: harden session timecodes across session switches'
+          git push origin HEAD:feature/session-timecode-hardening
+
+  check-format:
+    if: github.actor == 'github-actions[bot]'
+    uses: ./.github/workflows/check-format.yaml
+    permissions:
+      contents: read
+
+  build-project:
+    if: github.actor == 'github-actions[bot]'
+    uses: ./.github/workflows/build-project.yaml
+    secrets: inherit
+    permissions:
+      contents: read
