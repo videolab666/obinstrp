@@ -327,6 +327,45 @@ static uint64_t last_media_timestamp(const char *session_dir)
 	return result;
 }
 
+static void recover_stale_recording_runs(const char *session_dir, uint64_t media_end_ns)
+{
+	sqlite3 *sql = open_session_sqlite(session_dir);
+	if (!sql)
+		return;
+
+	sqlite3_stmt *stmt = NULL;
+	const char *query =
+		"UPDATE recording_runs SET ended_unix=COALESCE(ended_unix,unixepoch()),"
+		"timeline_end_ns=CASE WHEN timeline_end_ns IS NULL AND ? >= timeline_start_ns THEN ? "
+		"ELSE timeline_end_ns END "
+		"WHERE id=(SELECT id FROM recording_runs WHERE ended_unix IS NULL ORDER BY id DESC LIMIT 1)";
+	bool recovered = false;
+	if (sqlite3_prepare_v2(sql, query, -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, (sqlite3_int64)media_end_ns);
+		sqlite3_bind_int64(stmt, 2, (sqlite3_int64)media_end_ns);
+		if (sqlite3_step(stmt) == SQLITE_DONE)
+			recovered = sqlite3_changes(sql) > 0;
+	}
+	sqlite3_finalize(stmt);
+
+	/* Older interrupted rows are historical bookkeeping only. Mark them closed
+	 * without inventing an OBS end timestamp or media end that we cannot prove. */
+	char *error = NULL;
+	if (sqlite3_exec(sql,
+			 "UPDATE recording_runs SET ended_unix=COALESCE(ended_unix,unixepoch()) "
+			 "WHERE ended_unix IS NULL",
+			 NULL, NULL, &error) != SQLITE_OK) {
+		blog(LOG_WARNING, "Pitel Instant Replay: could not close stale recording runs: %s",
+		     error ? error : "unknown");
+	}
+	sqlite3_free(error);
+	sqlite3_close(sql);
+
+	if (recovered)
+		blog(LOG_INFO, "Pitel Instant Replay: recovered an interrupted recording run at session %.3f s",
+		     (double)media_end_ns / 1e9);
+}
+
 static uint64_t frame_interval_ns(void)
 {
 	struct obs_video_info ovi = {0};
@@ -586,6 +625,7 @@ bool sr_session_prepare_recording(uint64_t obs_now_ns)
 		return false;
 	}
 	const uint64_t previous_end = last_media_timestamp(g_recording_path);
+	recover_stale_recording_runs(g_recording_path, previous_end);
 	g_recording_discontinuity = previous_end != 0;
 	g_recording_obs_start_ns = obs_now_ns;
 	g_recording_timeline_start_ns = previous_end ? previous_end + frame_interval_ns() : obs_now_ns;
