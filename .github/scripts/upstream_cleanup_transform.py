@@ -94,13 +94,15 @@ file = Path("src/sr-config.c")
 text = file.read_text(encoding="utf-8")
 for old in (
     "static char *g_legacy_save_dir;\n",
-    "\tbfree(g_legacy_save_dir);\n",
     "\tg_legacy_save_dir = NULL;\n",
     '\tobs_data_set_string(json, "save_dir", g_legacy_save_dir ? g_legacy_save_dir : "");\n',
     '\tobs_data_set_bool(json, "session_root_follows_save_dir", false);\n',
     "\tg_legacy_save_dir = copy_string(legacy_save);\n",
 ):
     text = replace_once(text, old, "", old.strip())
+if text.count("\tbfree(g_legacy_save_dir);\n") != 2:
+    raise RuntimeError(f"expected two legacy save-dir frees, found {text.count(chr(9) + 'bfree(g_legacy_save_dir);' + chr(10))}")
+text = text.replace("\tbfree(g_legacy_save_dir);\n", "")
 text, count = re.subn(
     r"\nchar \*sr_config_get_save_dir\(void\)\n\{.*?\n\}\n\nvoid sr_config_set_save_dir\(const char \*save_dir\)\n\{.*?\n\}\n",
     "\n",
