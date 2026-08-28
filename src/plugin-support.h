@@ -19,7 +19,10 @@ extern const char *PLUGIN_VERSION;
 
 #define PLUGIN_WEBSITE "https://github.com/videolab666/obinstrp"
 
-/* Prefixes one log message with the plugin name before forwarding to libobs. */
+/* libobs provides blogva at final plugin link time. The generated support
+ * helper is deliberately header-independent so the OBS template can compile
+ * it before libobs include paths are attached to the plugin target. */
+extern void blogva(int log_level, const char *format, va_list args);
 void obs_log(int log_level, const char *format, ...);
 
 #ifdef __cplusplus
