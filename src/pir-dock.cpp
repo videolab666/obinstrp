@@ -17,6 +17,8 @@
 #include <util/bmem.h>
 #include <util/platform.h>
 
+#include <cstring>
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
@@ -24,6 +26,7 @@
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
