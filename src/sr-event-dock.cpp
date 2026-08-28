@@ -3272,7 +3272,6 @@ private:
 			QString tooltip = T("EventDock.Performance.Tooltip")
 						  .arg(averageSubmitMs, 0, 'f', 3)
 						  .arg(lastSubmitMs, 0, 'f', 3)
-						  .arg((double)entry.ram_bytes / (1024.0 * 1024.0), 0, 'f', 1)
 						  .arg(entry.segments_finalized)
 						  .arg(entry.queue_high_watermark);
 			if (!fallback.isEmpty())

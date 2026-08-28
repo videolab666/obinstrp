@@ -17,10 +17,6 @@ extern "C" {
 #endif
 
 #define SR_CAPTURE_ID "pitel_instant_replay_capture"
-/* Migration-only identifier for old scene collections. The legacy playback
- * source is no longer registered or built; Replay Setup only uses this value
- * to avoid treating a stale legacy source as a camera candidate. */
-#define SR_PLAYBACK_ID "pitel_instant_replay"
 #define SR_CAPTURE_SETTING_DISK_RECORDING "disk_recording"
 #define S_SYNC_OFFSET_MS "sync_offset_ms"
 #define SR_CAMERA_SYNC_MAX_MS 5000
@@ -75,9 +71,6 @@ struct sr_capture_performance_entry {
 	uint64_t segments_finalized;
 	size_t queue_depth;
 	size_t queue_high_watermark;
-	/* Kept for UI ABI compatibility. The legacy capture RAM ring was removed;
-	 * therefore this value is always zero. */
-	uint64_t ram_bytes;
 	uint64_t encode_calls;
 	uint64_t encode_time_ns_total;
 	uint64_t encode_time_ns_last;

@@ -238,7 +238,6 @@ static void publish_status(struct sr_capture *capture, uint64_t now, bool force)
 	performance.writer_active = capture->writer != NULL;
 	performance.writer_failed = capture->writer_failed;
 	performance.encoder_failed = capture->encoder_failed;
-	performance.ram_bytes = 0;
 	performance.encode_calls = capture->encode_calls;
 	performance.encode_time_ns_total = capture->encode_time_ns_total;
 	performance.encode_time_ns_last = capture->encode_time_ns_last;

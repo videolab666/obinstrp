@@ -68,7 +68,7 @@ void sr_session_remove_raw_audio_callback(size_t mix_idx, audio_output_callback_
 	pthread_mutex_unlock(&g_raw_audio_mutex);
 }
 
-/* capture-filter.c is compiled with sr_camera_audio_writer_push redirected to
+/* pir-capture-filter.c is compiled with sr_camera_audio_writer_push redirected to
  * this adapter. Camera audio therefore uses the exact same Run mapping as
  * video and master audio before it enters any asynchronous encoder queue. */
 bool sr_session_camera_audio_writer_push(struct sr_camera_audio_writer *writer, const struct obs_audio_data *audio,
