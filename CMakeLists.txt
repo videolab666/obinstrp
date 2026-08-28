@@ -132,6 +132,7 @@ target_sources(
     src/sr-master-audio-catalog.c
     src/sr-master-audio-player.c
     src/sr-session.c
+    src/sr-recording-run-catalog.c
     src/sr-event-db.c
     src/sr-event-controller.c
     src/sr-media-guard.c
