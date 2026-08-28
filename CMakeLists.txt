@@ -29,7 +29,8 @@ FetchContent_Declare(
   URL https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip
   URL_HASH SHA3_256=628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-  SOURCE_SUBDIR __pitel_instant_replay_no_cmake__
+  SOURCE_SUBDIR
+  __pitel_instant_replay_no_cmake__
 )
 FetchContent_MakeAvailable(sr_sqlite_source)
 
@@ -76,6 +77,34 @@ if(ENABLE_QT)
   )
 endif()
 
+set_source_files_properties(
+  src/capture-filter.c
+  PROPERTIES
+    COMPILE_DEFINITIONS
+      "SR_SESSION_RECORDING_PRODUCER;sr_capture_set_all_disk_recording=sr_capture_set_all_disk_recording_impl;sr_capture_get_recording_summary=sr_capture_get_recording_summary_impl;sr_camera_audio_writer_push=sr_session_camera_audio_writer_push"
+)
+
+set_source_files_properties(
+  src/sr-program-recorder.c
+  src/sr-storage-manager.c
+  PROPERTIES COMPILE_DEFINITIONS "SR_SESSION_RECORDING_PRODUCER"
+)
+
+# Master audio is also a recording producer. Its raw OBS callback is proxied so
+# audio timestamps are mapped to the compact Recording Run timeline before they
+# enter the asynchronous AAC queue.
+set_source_files_properties(
+  src/sr-master-audio.c
+  PROPERTIES
+    COMPILE_DEFINITIONS
+      "SR_SESSION_RECORDING_PRODUCER;obs_add_raw_audio_callback=sr_session_add_raw_audio_callback;obs_remove_raw_audio_callback=sr_session_remove_raw_audio_callback"
+)
+
+# sr-session-panel.cpp wraps the original dock registration and swaps the old
+# Storage widget for Session Manager after the unified dock exists. No changes
+# are required inside the large, already-stable sr-dock.cpp implementation.
+set_source_files_properties(src/sr-dock.cpp PROPERTIES COMPILE_DEFINITIONS "sr_dock_register=sr_dock_register_impl")
+
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE
@@ -90,6 +119,7 @@ target_sources(
     src/sr-frame-cache.c
     src/sr-replay-decode.c
     src/capture-filter.c
+    src/sr-capture-session.c
     src/playback-source.c
     src/sr-scene-tracker.c
     src/sr-clip.c
@@ -97,10 +127,12 @@ target_sources(
     src/sr-load.c
     src/sr-config.c
     src/sr-master-audio.c
+    src/sr-audio-session.c
     src/sr-master-audio-reader.c
     src/sr-master-audio-catalog.c
     src/sr-master-audio-player.c
     src/sr-session.c
+    src/sr-recording-run-catalog.c
     src/sr-event-db.c
     src/sr-event-controller.c
     src/sr-media-guard.c
@@ -123,6 +155,8 @@ target_sources(
     src/sr-disk-player.c
     src/sr-thumb.c
     src/sr-dock.cpp
+    src/sr-session-panel.cpp
+    src/sr-session-export.cpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

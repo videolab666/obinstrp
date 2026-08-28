@@ -47,6 +47,7 @@ void sr_master_audio_free(void);
  * session-backed master timeline; the last release drains/finalizes it. */
 bool sr_master_audio_acquire(void);
 void sr_master_audio_release(void);
+bool sr_master_audio_wait_idle(uint32_t timeout_ms);
 
 void sr_master_audio_get_stats(struct sr_master_audio_stats *stats);
 

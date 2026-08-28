@@ -397,7 +397,7 @@ private:
 			bool ok = false;
 			uint64_t actualNs = timestampNs;
 			AVFrame *decoded = nullptr;
-			if (player && timestampNs) {
+			if (player) {
 				ok = sr_disk_player_decode_at(player, timestampNs, &decoded, &actualNs);
 				if (!ok) {
 					sr_disk_player_refresh(player);
@@ -614,6 +614,9 @@ public:
 	void setState(const sr_event_editor_snapshot &state)
 	{
 		const bool first = !haveRecording;
+		const bool eventChanged = state.event_id && state.event_id != focusedEventId;
+		if (!state.event_id)
+			focusedEventId = 0;
 		haveRecording = state.record_end_ns > state.record_start_ns;
 		if (!haveRecording) {
 			update();
@@ -632,7 +635,11 @@ public:
 			inNs = clamp(state.in_ns);
 			outNs = clamp(state.out_ns);
 			haveRange = state.out_ns > state.in_ns;
+			if (eventChanged && haveRange)
+				focusRange(inNs, outNs);
 		}
+		if (state.event_id)
+			focusedEventId = state.event_id;
 		update();
 	}
 
@@ -829,24 +836,75 @@ private:
 	void paintRuler(QPainter &painter, const QRect &area)
 	{
 		const uint64_t span = viewSpan();
-		if (!span)
+		if (!span || area.width() <= 0)
 			return;
-		const uint64_t candidates[] = {100000000ULL,   250000000ULL,    500000000ULL,   1000000000ULL,
-					       2000000000ULL,  5000000000ULL,   10000000000ULL, 30000000000ULL,
-					       60000000000ULL, 300000000000ULL, 600000000000ULL};
-		uint64_t step = candidates[0];
-		for (uint64_t candidate : candidates) {
-			step = candidate;
-			if (span / candidate <= 8)
-				break;
-		}
-		const uint64_t first = ((viewStartNs + step - 1) / step) * step;
+
+		const QRect rulerBand(area.left(), 0, area.width(), area.top());
+		painter.fillRect(rulerBand, palette().alternateBase());
 		painter.setPen(palette().mid().color());
-		for (uint64_t t = first; t <= viewEndNs && t <= UINT64_MAX - step; t += step) {
+		painter.drawLine(area.left(), area.top() - 1, area.right(), area.top() - 1);
+
+		/* Select the major step by pixel density, not just tick count. This keeps
+		 * labels readable from sub-second edits through multi-hour sessions. */
+		const uint64_t candidates[] = {100000000ULL,      250000000ULL,      500000000ULL,     1000000000ULL,
+					       2000000000ULL,     5000000000ULL,     10000000000ULL,   30000000000ULL,
+					       60000000000ULL,    120000000000ULL,   300000000000ULL,  600000000000ULL,
+					       900000000000ULL,   1800000000000ULL,  3600000000000ULL, 7200000000000ULL,
+					       21600000000000ULL, 43200000000000ULL, 86400000000000ULL};
+		uint64_t step = candidates[sizeof(candidates) / sizeof(candidates[0]) - 1];
+		for (uint64_t candidate : candidates) {
+			const long double pixels = (long double)area.width() * candidate / (long double)span;
+			if (pixels >= 88.0L) {
+				step = candidate;
+				break;
+			}
+		}
+
+		const uint64_t relativeStart = viewStartNs > recordStartNs ? viewStartNs - recordStartNs : 0;
+		uint64_t firstRelative = (relativeStart / step) * step;
+		if (firstRelative < relativeStart && firstRelative <= UINT64_MAX - step)
+			firstRelative += step;
+		if (firstRelative > UINT64_MAX - recordStartNs)
+			return;
+		const uint64_t first = recordStartNs + firstRelative;
+
+		/* Minor ticks make the scale useful while scrubbing even when the next
+		 * labelled major mark is relatively far away. */
+		const uint64_t minorStep = step / 4;
+		if (minorStep) {
+			uint64_t firstMinorRelative = (relativeStart / minorStep) * minorStep;
+			if (firstMinorRelative < relativeStart && firstMinorRelative <= UINT64_MAX - minorStep)
+				firstMinorRelative += minorStep;
+			if (firstMinorRelative <= UINT64_MAX - recordStartNs) {
+				for (uint64_t relative = firstMinorRelative; relative <= viewEndNs - recordStartNs;) {
+					if (relative % step != 0) {
+						const int x = xFromTimestamp(recordStartNs + relative);
+						painter.drawLine(x, area.top() - 4, x, area.top() - 1);
+					}
+					if (relative > UINT64_MAX - minorStep)
+						break;
+					relative += minorStep;
+				}
+			}
+		}
+
+		const QRect zoomReserved(area.right() - 86, 0, 86, area.top());
+		for (uint64_t t = first; t <= viewEndNs;) {
 			const int x = xFromTimestamp(t);
-			painter.drawLine(x, area.top(), x, area.top() + 6);
+			painter.setPen(palette().mid().color());
+			painter.drawLine(x, area.top() - 8, x, area.top() - 1);
 			const uint64_t relative = t > recordStartNs ? t - recordStartNs : 0;
-			painter.drawText(QRect(x - 48, 1, 96, 15), Qt::AlignCenter, clockText(relative));
+			const QString labelText = clockText(relative);
+			const int labelWidth = std::max(76, painter.fontMetrics().horizontalAdvance(labelText) + 10);
+			const QRect label(x - labelWidth / 2, 1, labelWidth, std::max(12, area.top() - 8));
+			if (label.right() >= area.left() && label.left() <= area.right() &&
+			    !label.intersects(zoomReserved)) {
+				painter.setPen(palette().text().color());
+				painter.drawText(label, Qt::AlignHCenter | Qt::AlignTop, labelText);
+			}
+			if (t > UINT64_MAX - step)
+				break;
+			t += step;
 		}
 	}
 
@@ -885,6 +943,34 @@ private:
 			viewEndNs = recordEndNs;
 			viewStartNs = recordEndNs - span;
 		}
+	}
+
+	void focusRange(uint64_t rangeInNs, uint64_t rangeOutNs)
+	{
+		if (!haveRecording || rangeOutNs <= rangeInNs || recordEndNs <= recordStartNs)
+			return;
+		rangeInNs = clamp(rangeInNs);
+		rangeOutNs = clamp(rangeOutNs);
+		if (rangeOutNs <= rangeInNs)
+			return;
+
+		const uint64_t total = recordEndNs - recordStartNs;
+		const uint64_t rangeSpan = rangeOutNs - rangeInNs;
+		uint64_t span = (uint64_t)std::ceil((long double)rangeSpan / 0.60L);
+		span = std::max<uint64_t>(250000000ULL, std::max<uint64_t>(rangeSpan, span));
+		span = std::min<uint64_t>(span, total);
+		if (span >= total) {
+			zoomLocked = false;
+			viewStartNs = recordStartNs;
+			viewEndNs = recordEndNs;
+			return;
+		}
+
+		const uint64_t center = rangeInNs + rangeSpan / 2;
+		zoomLocked = true;
+		viewStartNs = center > span / 2 ? center - span / 2 : recordStartNs;
+		viewEndNs = viewStartNs <= UINT64_MAX - span ? viewStartNs + span : recordEndNs;
+		clampView();
 	}
 
 	void pan(int direction, uint64_t amount)
@@ -934,6 +1020,7 @@ private:
 	uint64_t playheadNs = 0;
 	uint64_t inNs = 0;
 	uint64_t outNs = 0;
+	uint64_t focusedEventId = 0;
 	Drag drag = Drag::None;
 	SeekHandler seekHandler;
 	RangeHandler rangeHandler;
@@ -1240,8 +1327,8 @@ private:
 
 			const QByteArray camera = tile->camera().toUtf8();
 			sr_replay_coverage_info eventCoverage = {};
-			if (!snapshot.available ||
-			    !sr_replay_coverage_query(camera.constData(), snapshot.in_ns, snapshot.out_ns, &eventCoverage))
+			if (!snapshot.available || !sr_replay_coverage_query(camera.constData(), snapshot.in_ns,
+									     snapshot.out_ns, &eventCoverage))
 				eventCoverage.coverage = SR_REPLAY_COVERAGE_NONE;
 
 			/* The IN/OUT range describes the event, but the operator may scrub the
@@ -1251,8 +1338,8 @@ private:
 			sr_replay_coverage_info cursorCoverage = {};
 			const bool atCursor = snapshot.record_end_ns >= snapshot.record_start_ns &&
 					      sr_replay_coverage_query_at(camera.constData(), snapshot.record_start_ns,
-								  snapshot.record_end_ns, snapshot.playhead_ns,
-								  &cursorCoverage) &&
+									  snapshot.record_end_ns, snapshot.playhead_ns,
+									  &cursorCoverage) &&
 					      cursorCoverage.coverage != SR_REPLAY_COVERAGE_NONE;
 			if (atCursor) {
 				cursorAvailable.insert(tile->camera());

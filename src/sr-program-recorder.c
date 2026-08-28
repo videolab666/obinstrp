@@ -51,7 +51,7 @@ struct sr_program_recorder {
 	uint32_t fps_num;
 	uint32_t fps_den;
 
-	uint64_t recording_start_ns;
+	uint64_t recording_obs_start_ns;
 	uint64_t encode_calls;
 	uint64_t encode_time_ns_total;
 	uint64_t encode_time_ns_last;
@@ -92,7 +92,7 @@ static enum AVCodecID active_encoder_codec_id_locked(const struct sr_program_rec
 }
 
 static void active_encoder_get_extradata_locked(const struct sr_program_recorder *state, const uint8_t **data,
-						 int *size)
+						int *size)
 {
 	if (data)
 		*data = NULL;
@@ -156,6 +156,7 @@ static bool ensure_writer_locked(struct sr_program_recorder *state)
 		.extradata_size = extradata_size,
 		.target_segment_ms = sr_config_get_segment_duration_ms(),
 		.max_queue_packets = 600,
+		.start_discontinuity = sr_session_recording_starts_with_discontinuity(),
 		.min_free_bytes = sr_config_get_low_space_action() == SR_STORAGE_LOW_SPACE_WARN_ONLY
 					  ? 0
 					  : sr_config_get_min_free_bytes(),
@@ -445,7 +446,7 @@ bool sr_program_recorder_set_recording(bool enabled)
 	g_program.recording_requested = enabled;
 	if (enabled) {
 		if (!was_requested)
-			g_program.recording_start_ns = obs_get_video_frame_time();
+			g_program.recording_obs_start_ns = obs_get_video_frame_time();
 		g_program.encoder_failed = false;
 		g_program.writer_failed = false;
 
@@ -458,7 +459,7 @@ bool sr_program_recorder_set_recording(bool enabled)
 			add_raw_callback = true;
 		}
 	} else {
-		g_program.recording_start_ns = 0;
+		g_program.recording_obs_start_ns = 0;
 		if (g_program.raw_supported && g_program.raw_callback_registered) {
 			/* Mark it inactive before disconnecting so an in-flight callback
 			 * that was waiting on the mutex exits without touching encoders. */
@@ -509,12 +510,12 @@ void sr_program_recorder_add_recording_summary(struct sr_capture_recording_summa
 		summary->active_count++;
 	if (g_program.encoder_failed || g_program.writer_failed)
 		summary->failed_count++;
-	if (g_program.recording_requested && g_program.recording_start_ns) {
-		if (!summary->recording_start_ns || g_program.recording_start_ns < summary->recording_start_ns)
-			summary->recording_start_ns = g_program.recording_start_ns;
+	if (g_program.recording_requested && g_program.recording_obs_start_ns) {
+		if (!summary->recording_start_ns || g_program.recording_obs_start_ns < summary->recording_start_ns)
+			summary->recording_start_ns = g_program.recording_obs_start_ns;
 		const uint64_t now = obs_get_video_frame_time();
-		if (now >= g_program.recording_start_ns) {
-			const uint64_t duration = now - g_program.recording_start_ns;
+		if (now >= g_program.recording_obs_start_ns) {
+			const uint64_t duration = now - g_program.recording_obs_start_ns;
 			if (duration > summary->recording_duration_ns)
 				summary->recording_duration_ns = duration;
 		}
