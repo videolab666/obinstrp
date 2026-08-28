@@ -126,21 +126,16 @@ directly into the encoder input frame and `swscale` is bypassed. Other formats o
 sizes continue through the existing conversion path.
 
 The GPU and CPU encoders are never allowed to write into the same open segment.
-If GPU creation or runtime encoding fails, the current writer is closed, the RAM
-video ring is cleared, and the next CPU packet begins a clean stream boundary
-with that encoder's own SPS/PPS.
+If GPU creation or runtime encoding fails, the current writer is closed and the
+next CPU packet begins a clean stream/discontinuity boundary with that encoder's
+own SPS/PPS.
 
 ## Timestamp domains
 
-Disk/Event media uses `obs_get_video_frame_time()` because Event IN/OUT markers
-live on the OBS global video clock. Legacy RAM replay historically stores camera
-video against the asynchronous source/device timestamp used alongside its audio
-ring.
-
-The GPU encode callback therefore keeps the most recent mapping between source
-time and OBS video time. GPU-generated packets are stamped on disk in OBS time,
-while their RAM-ring timestamps are mapped back into the source clock. This
-preserves compatibility with both continuous Event replay and legacy RAM replay.
+Disk/Event media is normalized onto the OBS global video clock and then mapped
+into the active Session recording-run timeline. Event IN/OUT markers, camera
+video, PROGRAM video and replay audio therefore share one Session time domain.
+There is no parallel capture-time RAM replay timestamp domain.
 
 ## Fallback behavior
 

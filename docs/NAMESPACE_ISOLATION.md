@@ -7,14 +7,14 @@ There is no runtime compatibility bridge or automatic migration.
 
 - module/package: `pitel-instant-replay`
 - capture source ID: `pitel_instant_replay_capture`
-- playback source ID: `pitel_instant_replay`
 - Event Output source ID: `pitel_instant_replay_event_output`
+- no standalone playback-source ID is registered; A/B replay is rendered through Event Output sources
 - frontend/source hotkeys: `PitelInstantReplay.*`
 - dock ID: `pitel_instant_replay_dock`
 - Qt dock object names: `PitelInstantReplayDock` / `PitelInstantReplayOperatorScroll`
 - macOS bundle ID: `com.videolab666.pitel-instant-replay`
 - module config namespace: `pitel-instant-replay/standalone-v1/` (older module-root config files are ignored)
-- default recording root: `Videos/Pitel Instant Replay/Recorder`
+- default Session root: `<OBS module config>/standalone-v1/Sessions`
 - canonical replay scenes: `Pitel Instant Replay A` / `Pitel Instant Replay B`
 
 The installer installs only Pitel Instant Replay files and never deletes, edits or
