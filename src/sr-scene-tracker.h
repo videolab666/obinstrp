@@ -1,20 +1,10 @@
 /*
-Pitel Instant Replay
-Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along
-with this program. If not, see <https://www.gnu.org/licenses/>
-*/
+ * Pitel Instant Replay - OBS scene/transition bridge
+ * Copyright (C) 2026 Alexander Pitel
+ *
+ * This OBS plugin component is licensed under the GNU General Public License
+ * version 2 or later. See LICENSE for details.
+ */
 
 #pragma once
 
@@ -25,60 +15,22 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 extern "C" {
 #endif
 
-/* Tracks program scene changes so a replay can return to the scene that was
- * live before it. Registered once at module load. */
 void sr_scene_tracker_start(void);
 void sr_scene_tracker_stop(void);
 
-/* Returns a bstrdup of the scene that was on program before the current one,
- * or NULL. Caller frees with bfree. */
 char *sr_scene_tracker_previous(void);
+char *sr_find_scene_with_source(const char *source_name);
 
-/* Switches the program output to the named scene (on the UI thread). Takes a
- * copy of the name. */
 void sr_switch_to_scene(const char *scene_name);
-
-/* As above, but temporarily selects an existing native OBS Stinger by name
- * for this scene change. The operator's previous transition is restored when
- * OBS reports TRANSITION_STOPPED. Missing/renamed stingers fall back to the
- * transition currently selected in OBS. */
 void sr_switch_to_scene_with_transition(const char *scene_name, const char *transition_name);
-
-/* One-shot arbitrary existing OBS transition with a temporary duration.
- * Used only for replay Event/angle A<->B changes; it does not require a
- * Stinger source and restores the operator's previous transition/duration. */
 void sr_switch_to_scene_with_transition_duration(const char *scene_name, const char *transition_name,
 						 uint32_t duration_ms);
 
-/* Same as sr_switch_to_scene(), but marks the switch as a "return to
- * previous scene" bounce, so a playback source landing there doesn't
- * auto-capture a fresh replay. */
 void sr_switch_to_scene_return(const char *scene_name);
 void sr_switch_to_scene_return_with_transition(const char *scene_name, const char *transition_name);
-
-/* Reads and clears the "returning to previous scene" mark; true when the
- * activation happening right now was caused by sr_switch_to_scene_return()
- * or sr_switch_to_scene_of_source_return(). */
+void sr_switch_to_scene_of_source_return(const char *source_name);
 bool sr_scene_tracker_consume_returning(void);
 
-/* Switches the program output to the scene holding the named source (a
- * camera), marked as a return bounce. Falls back to the previous scene when
- * no scene holds it. */
-void sr_switch_to_scene_of_source_return(const char *source_name);
-
-/* Name of the scene holding the named source, or NULL. Free with bfree().
- * Enumerates the scene list, so don't call it while holding a scene lock -
- * i.e. not from a source's activate() or video_tick(). */
-char *sr_find_scene_with_source(const char *source_name);
-
-/* Studio mode preview guard. Call note_replay_launch() when a replay scene
- * goes on program and end_replay_guard() when it leaves: in between, OBS's
- * "swap preview/program scenes after transitioning" would leave the replay
- * scene (or the camera it interrupted) sitting in preview, in place of the
- * shot the operator had lined up - one blind transition away from putting
- * the replay back on air. Anything the operator picks in preview during the
- * replay is honoured and becomes what gets restored. No-ops outside studio
- * mode. Safe to call from any thread. */
 void sr_scene_tracker_note_replay_launch(void);
 void sr_scene_tracker_end_replay_guard(void);
 
