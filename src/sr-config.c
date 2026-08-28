@@ -20,7 +20,6 @@
 
 static pthread_mutex_t g_lock;
 static bool g_initialized;
-static char *g_legacy_save_dir;
 static char *g_session_root;
 static uint64_t g_min_free_bytes;
 static uint64_t g_purge_target_bytes;
@@ -67,12 +66,10 @@ static uint64_t positive_or_default(int64_t value, uint64_t fallback)
 
 static void free_strings(void)
 {
-	bfree(g_legacy_save_dir);
 	bfree(g_session_root);
 	bfree(g_take_in_transition);
 	bfree(g_take_out_transition);
 	bfree(g_event_transition);
-	g_legacy_save_dir = NULL;
 	g_session_root = NULL;
 	g_take_in_transition = NULL;
 	g_take_out_transition = NULL;
@@ -89,9 +86,7 @@ static void persist_locked(void)
 
 	obs_data_t *json = obs_data_create();
 	obs_data_set_int(json, "schema_version", SR_CONFIG_SCHEMA_VERSION);
-	obs_data_set_string(json, "save_dir", g_legacy_save_dir ? g_legacy_save_dir : "");
 	obs_data_set_string(json, "session_root", g_session_root ? g_session_root : "");
-	obs_data_set_bool(json, "session_root_follows_save_dir", false);
 	obs_data_set_int(json, "min_free_bytes", (long long)g_min_free_bytes);
 	obs_data_set_int(json, "purge_target_bytes", (long long)g_purge_target_bytes);
 	obs_data_set_int(json, "low_space_action", (long long)g_low_space_action);
@@ -124,7 +119,6 @@ void sr_config_init(void)
 
 	const char *legacy_save = json ? obs_data_get_string(json, "save_dir") : "";
 	const char *saved_session = json ? obs_data_get_string(json, "session_root") : "";
-	g_legacy_save_dir = copy_string(legacy_save);
 	if (saved_session && *saved_session)
 		g_session_root = copy_string(saved_session);
 	else if (legacy_save && *legacy_save)
@@ -179,22 +173,6 @@ void sr_config_free(void)
 	g_initialized = false;
 }
 
-char *sr_config_get_save_dir(void)
-{
-	pthread_mutex_lock(&g_lock);
-	char *result = copy_string(g_legacy_save_dir);
-	pthread_mutex_unlock(&g_lock);
-	return result;
-}
-
-void sr_config_set_save_dir(const char *save_dir)
-{
-	pthread_mutex_lock(&g_lock);
-	bfree(g_legacy_save_dir);
-	g_legacy_save_dir = copy_string(save_dir);
-	persist_locked();
-	pthread_mutex_unlock(&g_lock);
-}
 
 char *sr_config_get_session_root(void)
 {

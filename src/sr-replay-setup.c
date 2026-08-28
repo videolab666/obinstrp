@@ -204,7 +204,7 @@ static bool source_is_candidate(obs_source_t *source, bool has_capture, bool *co
 		return false;
 
 	const char *id = obs_source_get_unversioned_id(source);
-	if (!id || strcmp(id, SR_EVENT_OUTPUT_ID) == 0 || strcmp(id, SR_PLAYBACK_ID) == 0 || strcmp(id, "scene") == 0 ||
+	if (!id || strcmp(id, SR_EVENT_OUTPUT_ID) == 0 || strcmp(id, "pitel_instant_replay") == 0 || strcmp(id, "scene") == 0 ||
 	    strcmp(id, "group") == 0)
 		return false;
 

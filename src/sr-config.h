@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define SR_CONFIG_SCHEMA_VERSION 8
+#define SR_CONFIG_SCHEMA_VERSION 9
 
 enum sr_storage_low_space_action {
 	SR_STORAGE_LOW_SPACE_DELETE_UNREFERENCED = 0,
@@ -30,11 +30,6 @@ enum sr_replay_speed_policy {
 
 void sr_config_init(void);
 void sr_config_free(void);
-
-/* Deprecated compatibility accessors for profiles created by the pre-Session
- * loose-MP4 replay implementation. New UI and recording code use session_root. */
-char *sr_config_get_save_dir(void);
-void sr_config_set_save_dir(const char *save_dir);
 
 char *sr_config_get_session_root(void);
 void sr_config_set_session_root(const char *session_root);
