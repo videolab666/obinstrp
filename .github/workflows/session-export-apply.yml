@@ -1,0 +1,40 @@
+name: Apply Session Export Integration
+
+on:
+  push:
+    branches:
+      - feature/session-export
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Apply integration patch
+        run: python3 .github/scripts/patch-session-export.py
+      - name: Format C/C++
+        run: |
+          FORMATTER="$(command -v clang-format-19 || command -v clang-format)"
+          "$FORMATTER" -i \
+            src/sr-event-export.c \
+            src/sr-event-export.h \
+            src/sr-session-panel.cpp \
+            src/sr-session-export.cpp \
+            src/sr-session-export.h
+      - name: Commit generated integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CMakeLists.txt data/locale/en-US.ini data/locale/es-ES.ini \
+            .github/workflows/validate-program-output.yml \
+            src/sr-event-export.c src/sr-event-export.h src/sr-session-panel.cpp \
+            src/sr-session-export.cpp src/sr-session-export.h
+          git diff --cached --check
+          git commit -m "feat: export Session clips and ISO recordings" || exit 0
+          git push
