@@ -7,7 +7,6 @@ on:
     branches:
       - feature/hardware-zero-copy
       - feature/session-manager
-      - feature/session-export
 
 permissions:
   contents: read
