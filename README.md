@@ -28,9 +28,9 @@ indexed Session segments on disk
         +--> Event export / ISO Run export
 ```
 
-There is no legacy capture-time replay RAM ring and no loose-MP4 replay bin in
-the current runtime. Small bounded decoder/frame caches are still used where
-they improve seek, reverse and preview performance.
+There is no capture-time replay RAM ring and no loose-MP4 replay bin in the
+current runtime. Small bounded decoder/frame caches are still used where they
+improve seek, reverse and preview performance.
 
 ## Main features
 
@@ -87,8 +87,8 @@ encode path. Intel replay decode deliberately uses an isolated FFmpeg D3D11VA
 device and transfers the decoded frame before OBS rendering; this avoids sharing
 OBS's D3D11 immediate/video context on Intel drivers.
 
-The project also has CPU-frame fallbacks for compatibility. CPU video paths are
-normalized to BT.709 limited range.
+The project also has CPU-frame fallbacks for hardware/platform compatibility.
+CPU video paths are normalized to BT.709 limited range.
 
 ## Building
 
@@ -103,19 +103,25 @@ cmake --build --preset windows-x64
 Exact presets and packaging commands are defined by the repository CMake and
 GitHub Actions files.
 
-## Development branches
+## Pre-release compatibility policy
 
-The current persistent Session implementation is developed from
-`feature/session-manager`.
+Pitel Instant Replay is still pre-release. The current Session/Event architecture
+is a deliberate breaking boundary: obsolete replay-source IDs, loose-MP4 replay
+bins, old replay-folder configuration and older scene-collection layouts are not
+migrated or supported. Use Replay Setup to create fresh Replay A/B scenes and
+attach current Pitel capture filters.
 
-`cleanup/upstream-removal` removes the obsolete runtime inherited from the
-original sports-replay fork and is intentionally kept separate until CI and
-Windows field validation pass. See `docs/UPSTREAM_CLEANUP.md` for the provenance
-ledger and validation requirements.
+This policy keeps the runtime focused on one disk-backed replay architecture and
+avoids carrying migration code for builds that were never released as a stable
+public interface.
 
-## License
+## License and provenance
 
 The OBS plugin/bridge is distributed under GPL-2.0-or-later. See `LICENSE`.
+Historical project provenance and third-party licensing notes are preserved in
+`THIRD_PARTY_NOTICES.md` and `docs/UPSTREAM_CLEANUP.md`.
 
-A future standalone replay engine is planned as a separate process and separate
-repository; code for that engine must not be copied from the GPL OBS bridge.
+A future out-of-process replay engine, if developed separately, should be treated
+as a separate component with its own provenance and licensing analysis rather
+than assuming that moving code out of the OBS plugin changes existing license
+obligations.
