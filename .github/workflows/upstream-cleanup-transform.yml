@@ -3,14 +3,14 @@ name: Upstream Cleanup Transform
 on:
   push:
     branches:
-      - release/upstream-cleanup-transform
+      - 'release/upstream-cleanup-transform'
 
 permissions:
   contents: write
 
 jobs:
   transform:
-    if: github.actor != 'github-actions[bot]'
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -19,8 +19,10 @@ jobs:
           fetch-depth: 0
 
       - name: Remove obsolete compatibility surface
-        shell: python
+        shell: bash
         run: |
+          set -euo pipefail
+          python3 - <<'PY'
           from pathlib import Path
           import re
 
@@ -115,17 +117,17 @@ jobs:
 
           p = Path('src/sr-event-dock.cpp')
           text = p.read_text(encoding='utf-8')
-          old = '''\t\t\tQString tooltip = T("EventDock.Performance.Tooltip")
+          old = """\t\t\tQString tooltip = T(\"EventDock.Performance.Tooltip\")
 \t\t\t\t\t\t  .arg(averageSubmitMs, 0, 'f', 3)
 \t\t\t\t\t\t  .arg(lastSubmitMs, 0, 'f', 3)
 \t\t\t\t\t\t  .arg((double)entry.ram_bytes / (1024.0 * 1024.0), 0, 'f', 1)
 \t\t\t\t\t\t  .arg(entry.segments_finalized)
-\t\t\t\t\t\t  .arg(entry.queue_high_watermark);'''
-          new = '''\t\t\tQString tooltip = T("EventDock.Performance.Tooltip")
+\t\t\t\t\t\t  .arg(entry.queue_high_watermark);"""
+          new = """\t\t\tQString tooltip = T(\"EventDock.Performance.Tooltip\")
 \t\t\t\t\t\t  .arg(averageSubmitMs, 0, 'f', 3)
 \t\t\t\t\t\t  .arg(lastSubmitMs, 0, 'f', 3)
 \t\t\t\t\t\t  .arg(entry.segments_finalized)
-\t\t\t\t\t\t  .arg(entry.queue_high_watermark);'''
+\t\t\t\t\t\t  .arg(entry.queue_high_watermark);"""
           if old not in text:
               raise SystemExit('RAM performance tooltip call was not found')
           p.write_text(text.replace(old, new), encoding='utf-8')
@@ -142,19 +144,12 @@ jobs:
               p = Path(name)
               text = p.read_text(encoding='utf-8').replace('capture-filter.c', 'pir-capture-filter.c')
               p.write_text(text, encoding='utf-8')
+          PY
 
-      - name: Verify removed surface
-        shell: bash
-        run: |
-          set -euo pipefail
           ! grep -R -n -E 'sr_config_(get|set)_save_dir|SR_PLAYBACK_ID|ram_bytes|saved MP4|loose-MP4|RAM instant replay buffer' src data/locale
-
-      - name: Commit transform
-        shell: bash
-        run: |
-          set -euo pipefail
           git diff --check
           git status --short
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src data/locale
