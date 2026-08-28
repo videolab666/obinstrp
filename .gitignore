@@ -17,9 +17,14 @@
 !CMakePresets.json
 !LICENSE
 !README.md
+!THIRD_PARTY_NOTICES.md
 
 # Exclude lock files
 *.lock.json
+
+# Never commit generated Python cache/bytecode
+__pycache__/
+*.py[cod]
 
 # Exclude macOS legacy resource forks
 .DS_Store

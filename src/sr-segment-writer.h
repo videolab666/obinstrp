@@ -54,8 +54,7 @@ struct sr_segment_writer_stats {
 };
 
 /* Creates a per-camera asynchronous writer. Packets passed to push are cloned,
- * so the caller retains ownership and may immediately pass the original to the
- * legacy RAM replay buffer. */
+ * so the caller retains ownership and may immediately release or reuse the original. */
 struct sr_segment_writer *sr_segment_writer_create(const struct sr_segment_writer_config *config);
 void sr_segment_writer_destroy(struct sr_segment_writer *writer);
 

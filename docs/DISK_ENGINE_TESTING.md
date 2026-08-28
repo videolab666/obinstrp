@@ -19,13 +19,13 @@ Open the capture-filter properties and enable:
 Continuous replay recording to disk
 ```
 
-The current session root defaults to:
+The current session root defaults to the plugin configuration namespace:
 
 ```text
-<Videos>/Pitel Instant Replay/Sessions/
+<OBS module config>/standalone-v1/Sessions/
 ```
 
-If the legacy replay folder was changed before the first continuous session is created, the default session root follows that folder and appends `/Sessions`.
+The session root is configured only through the current Pitel Instant Replay Session settings. Pre-release replay-folder settings are not migrated or consulted.
 
 The config schema already carries a minimum-free-space reserve (currently 100 GiB by default). The early writer does **not** delete media yet: if the free space falls below the reserve, it stops opening new segments and periodically waits for space to become available. Automatic safe GC to the configured purge target is a later milestone.
 
@@ -133,13 +133,6 @@ Expected properties:
 - the segment catalog can resolve a timestamp to the correct camera segment;
 - the keyframe-aware disk decode helper can locate the preceding keyframe and decode forward to a requested timestamp.
 
-## Known limitations at this checkpoint
+## Current status
 
-- Continuous disk recording is video-only. Long-session audio comes later.
-- Disk replay is not yet wired into the OBS playback source.
-- Minimum free-space reserve is enforced, but automatic free-space garbage collection is not implemented yet.
-- The reserve/session-root controls are in the config layer but do not yet have their final operator settings UI.
-- No SQLite event database yet.
-- No crash-recovery scanner yet, although `.part` and packet framing are designed for it.
-- No short-GOP mode yet; legacy playback still requires All-I.
-- GitHub Actions should be enabled for the fork so format/build CI can validate each synchronization of the draft PR.
+This document originated as the first disk-engine validation checklist. The current plugin has moved beyond that checkpoint: Session/Event replay, recording runs, master/camera audio, automatic storage cleanup, crash recovery, short-GOP playback and the operator Session UI are all part of the active architecture. Validation should target the current Session/Event workflow rather than any pre-release playback-source or loose-MP4 path.

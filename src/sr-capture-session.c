@@ -16,7 +16,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-module.h>
 #include <util/platform.h>
 
-/* capture-filter.c is compiled with these two public symbols renamed. Keeping
+/* pir-capture-filter.c is compiled with these two public symbols renamed. Keeping
  * the stable recorder implementation untouched is intentional: this adapter
  * owns Session Manager policy while the existing render/encode callbacks keep
  * their proven Intel/NVIDIA locking and fallback behavior. */

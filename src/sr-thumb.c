@@ -1,160 +1,169 @@
 /*
-Pitel Instant Replay
-Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along
-with this program. If not, see <https://www.gnu.org/licenses/>
-*/
+ * Pitel Instant Replay - thumbnail service
+ * Copyright (C) 2026 Alexander Pitel
+ *
+ * This OBS plugin component is licensed under the GNU General Public License
+ * version 2 or later. See LICENSE for details.
+ */
 
 #include "sr-thumb.h"
-
 #include "sr-disk-player.h"
 
 #include <obs-module.h>
-#include <libavformat/avformat.h>
+
 #include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
 #include <libavutil/hwcontext.h>
 #include <libswscale/swscale.h>
 
-bool sr_thumbnail_rgba(const char *path, int w, int h, uint8_t **out)
+static bool frame_to_rgba(const AVFrame *source, int width, int height, uint8_t **rgba)
 {
-	*out = NULL;
-	if (!path || !*path || w <= 0 || h <= 0)
+	if (!source || !rgba || width <= 0 || height <= 0)
 		return false;
 
-	AVFormatContext *fmt = NULL;
-	if (avformat_open_input(&fmt, path, NULL, NULL) < 0)
+	struct SwsContext *converter = sws_getContext(source->width, source->height, source->format, width, height,
+						      AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
+	if (!converter)
 		return false;
-	if (avformat_find_stream_info(fmt, NULL) < 0) {
-		avformat_close_input(&fmt);
+
+	uint8_t *pixels = bmalloc((size_t)width * (size_t)height * 4u);
+	if (!pixels) {
+		sws_freeContext(converter);
 		return false;
 	}
 
-	const int vs = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
-	if (vs < 0) {
-		avformat_close_input(&fmt);
+	uint8_t *destinations[4] = {pixels, NULL, NULL, NULL};
+	int strides[4] = {width * 4, 0, 0, 0};
+	const int converted = sws_scale(converter, (const uint8_t *const *)source->data, source->linesize, 0,
+					source->height, destinations, strides);
+	sws_freeContext(converter);
+	if (converted <= 0) {
+		bfree(pixels);
 		return false;
 	}
 
-	AVStream *st = fmt->streams[vs];
-	const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
-	AVCodecContext *dec = codec ? avcodec_alloc_context3(codec) : NULL;
-	if (!dec) {
-		avformat_close_input(&fmt);
-		return false;
-	}
-	avcodec_parameters_to_context(dec, st->codecpar);
-	if (avcodec_open2(dec, codec, NULL) < 0) {
-		avcodec_free_context(&dec);
-		avformat_close_input(&fmt);
-		return false;
-	}
+	*rgba = pixels;
+	return true;
+}
 
-	AVPacket *pkt = av_packet_alloc();
-	AVFrame *frame = av_frame_alloc();
-	bool have_frame = false;
+static AVFrame *software_frame_from(const AVFrame *source)
+{
+	if (!source)
+		return NULL;
 
-	while (!have_frame && av_read_frame(fmt, pkt) >= 0) {
-		if (pkt->stream_index == vs && avcodec_send_packet(dec, pkt) == 0) {
-			if (avcodec_receive_frame(dec, frame) == 0)
-				have_frame = true;
+	AVFrame *copy = av_frame_alloc();
+	if (!copy)
+		return NULL;
+
+	if (source->hw_frames_ctx) {
+		if (av_hwframe_transfer_data(copy, source, 0) < 0) {
+			av_frame_free(&copy);
+			return NULL;
 		}
-		av_packet_unref(pkt);
-	}
-	if (!have_frame) {
-		avcodec_send_packet(dec, NULL);
-		if (avcodec_receive_frame(dec, frame) == 0)
-			have_frame = true;
+		av_frame_copy_props(copy, source);
+		return copy;
 	}
 
-	bool ok = false;
-	if (have_frame) {
-		struct SwsContext *sws = sws_getContext(frame->width, frame->height, frame->format, w, h,
-							AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
-		if (sws) {
-			uint8_t *buf = bzalloc((size_t)w * h * 4);
-			uint8_t *dst[4] = {buf, NULL, NULL, NULL};
-			int dst_linesize[4] = {w * 4, 0, 0, 0};
-			sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, frame->height, dst,
-				  dst_linesize);
-			sws_freeContext(sws);
-			*out = buf;
-			ok = true;
+	if (av_frame_ref(copy, source) < 0) {
+		av_frame_free(&copy);
+		return NULL;
+	}
+	return copy;
+}
+
+bool sr_thumbnail_rgba(const char *path, int width, int height, uint8_t **rgba)
+{
+	if (!rgba)
+		return false;
+	*rgba = NULL;
+	if (!path || !*path || width <= 0 || height <= 0)
+		return false;
+
+	AVFormatContext *format = NULL;
+	if (avformat_open_input(&format, path, NULL, NULL) < 0)
+		return false;
+	if (avformat_find_stream_info(format, NULL) < 0) {
+		avformat_close_input(&format);
+		return false;
+	}
+
+	const int stream_index = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+	if (stream_index < 0) {
+		avformat_close_input(&format);
+		return false;
+	}
+
+	AVStream *stream = format->streams[stream_index];
+	const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
+	AVCodecContext *decoder = codec ? avcodec_alloc_context3(codec) : NULL;
+	if (!decoder || avcodec_parameters_to_context(decoder, stream->codecpar) < 0 ||
+	    avcodec_open2(decoder, codec, NULL) < 0) {
+		avcodec_free_context(&decoder);
+		avformat_close_input(&format);
+		return false;
+	}
+
+	AVPacket *packet = av_packet_alloc();
+	AVFrame *frame = av_frame_alloc();
+	bool decoded = false;
+	if (packet && frame) {
+		while (!decoded && av_read_frame(format, packet) >= 0) {
+			if (packet->stream_index == stream_index && avcodec_send_packet(decoder, packet) >= 0 &&
+			    avcodec_receive_frame(decoder, frame) >= 0)
+				decoded = true;
+			av_packet_unref(packet);
+		}
+		if (!decoded && avcodec_send_packet(decoder, NULL) >= 0 && avcodec_receive_frame(decoder, frame) >= 0)
+			decoded = true;
+	}
+
+	bool success = false;
+	if (decoded) {
+		AVFrame *software = software_frame_from(frame);
+		if (software) {
+			success = frame_to_rgba(software, width, height, rgba);
+			av_frame_free(&software);
 		}
 	}
 
 	av_frame_free(&frame);
-	av_packet_free(&pkt);
-	avcodec_free_context(&dec);
-	avformat_close_input(&fmt);
-	return ok;
+	av_packet_free(&packet);
+	avcodec_free_context(&decoder);
+	avformat_close_input(&format);
+	return success;
 }
 
-bool sr_disk_thumbnail_rgba(const char *session_dir, const char *camera_name, uint64_t timestamp_ns, int w, int h,
-			    uint8_t **out)
+bool sr_disk_thumbnail_rgba(const char *session_dir, const char *camera_name, uint64_t timestamp_ns, int width,
+			    int height, uint8_t **rgba)
 {
-	if (!out)
+	if (!rgba)
 		return false;
-	*out = NULL;
-	if (!session_dir || !*session_dir || !camera_name || !*camera_name || !timestamp_ns || w <= 0 || h <= 0)
+	*rgba = NULL;
+	if (!session_dir || !*session_dir || !camera_name || !*camera_name || width <= 0 || height <= 0)
 		return false;
 
 	struct sr_disk_player *player = sr_disk_player_create(session_dir, camera_name);
 	if (!player)
 		return false;
+
 	AVFrame *frame = NULL;
-	bool have_frame = sr_disk_player_decode_at(player, timestamp_ns, &frame, NULL);
-	if (!have_frame) {
+	bool decoded = sr_disk_player_decode_at(player, timestamp_ns, &frame, NULL);
+	if (!decoded) {
 		uint64_t first_ns = 0;
 		if (sr_disk_player_get_bounds(player, &first_ns, NULL))
-			have_frame = sr_disk_player_decode_at(player, first_ns, &frame, NULL);
+			decoded = sr_disk_player_decode_at(player, first_ns, &frame, NULL);
 	}
 
-	/* Disk replay normally decodes through D3D11VA on Windows. swscale cannot
-	 * read an AV_PIX_FMT_D3D11 surface directly, so download this one UI still
-	 * to a software frame. Normal replay remains GPU-resident. */
-	AVFrame *software_frame = frame;
-	AVFrame *transferred = NULL;
-	if (have_frame && frame && frame->hw_frames_ctx) {
-		transferred = av_frame_alloc();
-		if (!transferred || av_hwframe_transfer_data(transferred, frame, 0) < 0) {
-			av_frame_free(&transferred);
-			have_frame = false;
-		} else {
-			av_frame_copy_props(transferred, frame);
-			software_frame = transferred;
+	bool success = false;
+	if (decoded && frame) {
+		AVFrame *software = software_frame_from(frame);
+		if (software) {
+			success = frame_to_rgba(software, width, height, rgba);
+			av_frame_free(&software);
 		}
 	}
 
-	bool ok = false;
-	if (have_frame && software_frame) {
-		struct SwsContext *sws = sws_getContext(software_frame->width, software_frame->height,
-							software_frame->format, w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR,
-							NULL, NULL, NULL);
-		if (sws) {
-			uint8_t *buf = bzalloc((size_t)w * h * 4);
-			uint8_t *dst[4] = {buf, NULL, NULL, NULL};
-			int dst_linesize[4] = {w * 4, 0, 0, 0};
-			sws_scale(sws, (const uint8_t *const *)software_frame->data, software_frame->linesize, 0,
-				  software_frame->height, dst, dst_linesize);
-			sws_freeContext(sws);
-			*out = buf;
-			ok = true;
-		}
-	}
-
-	av_frame_free(&transferred);
 	av_frame_free(&frame);
 	sr_disk_player_destroy(player);
-	return ok;
+	return success;
 }

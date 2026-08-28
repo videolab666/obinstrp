@@ -122,8 +122,7 @@ char *sr_replay_setup_find_output_source_name(enum sr_replay_bus bus)
 	if (bus != SR_REPLAY_BUS_A && bus != SR_REPLAY_BUS_B)
 		return NULL;
 
-	/* A canonical Setup scene is deterministic even if an older Event Output
-	 * with the same bus is still referenced by another user scene. */
+	/* A canonical Setup scene is deterministic even if another Event Output with the same bus is referenced by a user scene. */
 	obs_source_t *canonical = obs_get_source_by_name(canonical_scene_name(bus));
 	if (canonical) {
 		obs_source_t *output = find_output_in_scene_source(canonical, bus);
@@ -204,7 +203,7 @@ static bool source_is_candidate(obs_source_t *source, bool has_capture, bool *co
 		return false;
 
 	const char *id = obs_source_get_unversioned_id(source);
-	if (!id || strcmp(id, SR_EVENT_OUTPUT_ID) == 0 || strcmp(id, SR_PLAYBACK_ID) == 0 || strcmp(id, "scene") == 0 ||
+	if (!id || strcmp(id, SR_EVENT_OUTPUT_ID) == 0 || strcmp(id, "scene") == 0 ||
 	    strcmp(id, "group") == 0)
 		return false;
 

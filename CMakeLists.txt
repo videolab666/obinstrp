@@ -21,8 +21,7 @@ find_package(FFmpeg REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE FFmpeg::avcodec FFmpeg::avutil FFmpeg::swscale FFmpeg::avformat)
 
 # Event metadata is stored in an embedded SQLite database. Build the official
-# amalgamation into the plugin instead of depending on a system SQLite DLL/
-# dylib, so Windows/macOS/Linux packages have identical schema/runtime behavior.
+# amalgamation into the plugin so every platform uses the same SQLite runtime.
 include(FetchContent)
 FetchContent_Declare(
   sr_sqlite_source
@@ -77,8 +76,11 @@ if(ENABLE_QT)
   )
 endif()
 
+# Session Manager owns START/STOP policy and timestamp mapping. Rename the low
+# level producer symbols in the capture translation unit so sr-capture-session.c
+# can expose the public policy-aware wrappers.
 set_source_files_properties(
-  src/capture-filter.c
+  src/pir-capture-filter.c
   PROPERTIES
     COMPILE_DEFINITIONS
       "SR_SESSION_RECORDING_PRODUCER;sr_capture_set_all_disk_recording=sr_capture_set_all_disk_recording_impl;sr_capture_get_recording_summary=sr_capture_get_recording_summary_impl;sr_camera_audio_writer_push=sr_session_camera_audio_writer_push"
@@ -90,9 +92,6 @@ set_source_files_properties(
   PROPERTIES COMPILE_DEFINITIONS "SR_SESSION_RECORDING_PRODUCER"
 )
 
-# Master audio is also a recording producer. Its raw OBS callback is proxied so
-# audio timestamps are mapped to the compact Recording Run timeline before they
-# enter the asynchronous AAC queue.
 set_source_files_properties(
   src/sr-master-audio.c
   PROPERTIES
@@ -100,31 +99,20 @@ set_source_files_properties(
       "SR_SESSION_RECORDING_PRODUCER;obs_add_raw_audio_callback=sr_session_add_raw_audio_callback;obs_remove_raw_audio_callback=sr_session_remove_raw_audio_callback"
 )
 
-# sr-session-panel.cpp wraps the original dock registration and swaps the old
-# Storage widget for Session Manager after the unified dock exists. No changes
-# are required inside the large, already-stable sr-dock.cpp implementation.
-set_source_files_properties(src/sr-dock.cpp PROPERTIES COMPILE_DEFINITIONS "sr_dock_register=sr_dock_register_impl")
-
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE
-    src/plugin-main.c
+    src/pir-plugin-main.c
     src/sr-camera-list.c
     src/sr-camera-identity.c
-    src/sr-buffer.c
     src/sr-codec.c
     src/sr-gpu-video.cpp
     src/sr-gpu-encoder.cpp
     src/sr-program-recorder.c
     src/sr-frame-cache.c
-    src/sr-replay-decode.c
-    src/capture-filter.c
+    src/pir-capture-filter.c
     src/sr-capture-session.c
-    src/playback-source.c
     src/sr-scene-tracker.c
-    src/sr-clip.c
-    src/sr-save.c
-    src/sr-load.c
     src/sr-config.c
     src/sr-master-audio.c
     src/sr-audio-session.c
@@ -154,7 +142,7 @@ target_sources(
     src/sr-disk-decode.c
     src/sr-disk-player.c
     src/sr-thumb.c
-    src/sr-dock.cpp
+    src/pir-dock.cpp
     src/sr-session-panel.cpp
     src/sr-session-export.cpp
 )
