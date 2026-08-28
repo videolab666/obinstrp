@@ -37,21 +37,11 @@ Camera 4 ─► encoder ─► Disk Segment Store ─┘
 
 A replay event is primarily metadata (`IN`, `OUT`, available angles, preferred angle, speed, audio mode, played/protected flags), not a copied media file.
 
-## 2. Important implementation constraint discovered in the current code
+## 2. Current playback constraint
 
-The current playback engine assumes **every stored H.264 packet is independently decodable**. `sr-codec.c` therefore uses `GOP=1`, and `playback-source.c` flushes the decoder on a non-sequential jump and decodes only the selected packet.
+The active replay engine is keyframe-aware: non-sequential seek, reverse and jog resolve the previous IDR/keyframe and decode forward to the requested frame. Short-GOP media is therefore a first-class Session/Event format rather than a migration mode layered on top of an All-I RAM player.
 
-Therefore we must **not simply change the current RAM encoder to GOP 15/25/30 while keeping the old playback path**. Doing so would break random seek, reverse and frame selection.
-
-Safe migration order:
-
-1. Keep legacy All-I replay working.
-2. Add continuous disk recording and segment/index infrastructure first.
-3. Add disk reader that can seek to the previous IDR and decode forward to the exact requested frame.
-4. Only then make short-GOP the default for disk replay.
-5. Keep All-I as an optional maximum-scrub-performance mode.
-
-This is preferable to running two simultaneous encoders per camera during migration.
+Do not reintroduce a second capture-time replay store or a playback path that assumes every H.264 packet is independently decodable. Disk Session media is the single source of replay truth.
 
 ## 3. Target codec policy
 
@@ -545,7 +535,7 @@ Fast / no re-encode
 Frame accurate
 ```
 
-Legacy saved MP4 files should remain loadable.
+Export operates on current Session/Event media only.
 
 ## 22. Diagnostics
 
@@ -592,12 +582,12 @@ Metadata DB error: avoid destructive cleanup and preserve media for recovery.
 - [ ] Add replay storage path, reserve, purge target, segment duration.
 - [ ] Add `SrSession` start/stop and session folder metadata.
 
-### M2 — Disk segment writer while legacy replay remains All-I
+### M2 — Disk segment writer foundation
 - [ ] Define `.srseg`/`.sridx` v1.
 - [ ] Worker-thread SegmentWriter.
 - [ ] `.part` files and atomic finalize.
 - [ ] Keyframe/timestamp index.
-- [ ] Write continuous ISO media in parallel with current RAM replay.
+- [ ] Write continuous ISO media directly into Session segments.
 - [ ] 2-hour one-camera test.
 
 ### M3 — Multi-camera continuous recording
@@ -705,7 +695,7 @@ Metadata DB error: avoid destructive cleanup and preserve media for recovery.
 ## 26. Recommended PR sequence
 
 1. Docs/upstream tracking/config skeleton.
-2. Session manager + disk segment format/writer while legacy All-I stays intact.
+2. Session manager + disk segment format/writer.
 3. Multi-camera continuous disk record.
 4. Segment reader and keyframe-aware playback.
 5. Short-GOP encoder presets/default.

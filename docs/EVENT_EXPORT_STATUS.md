@@ -25,4 +25,4 @@ The exporter refuses a camera angle if codec parameters, dimensions, frame rate,
 - Output is first written to `<destination>.part` and renamed only after a successful MP4 trailer.
 - Cancellation and failures remove the temporary file.
 - Camera sync calibration is applied while interleaving against the global/master timeline.
-- Event rows remain metadata-only; export does not mutate the Event database or the legacy MP4 replay importer.
+- Event rows remain metadata-only; export does not mutate the Event database or Session media.
