@@ -8,6 +8,7 @@
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
+#include <plugin-support.h>
 
 #include "sr-camera-list.h"
 #include "sr-capture.h"
