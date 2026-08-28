@@ -9,11 +9,12 @@
 #pragma once
 
 #include <obs-module.h>
-#include <libavcodec/avcodec.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include <libavcodec/avcodec.h>
 
 enum sr_encoder_backend {
 	SR_ENC_AUTO = 0,
