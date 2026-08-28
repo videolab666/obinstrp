@@ -7,7 +7,6 @@
  */
 
 #include <plugin-support.h>
-#include <obs-module.h>
 
 #include <stdarg.h>
 #include <stdio.h>
