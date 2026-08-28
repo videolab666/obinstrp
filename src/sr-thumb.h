@@ -1,20 +1,10 @@
 /*
-Pitel Instant Replay
-Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along
-with this program. If not, see <https://www.gnu.org/licenses/>
-*/
+ * Pitel Instant Replay - thumbnail service interface
+ * Copyright (C) 2026 Alexander Pitel
+ *
+ * This OBS plugin component is licensed under the GNU General Public License
+ * version 2 or later. See LICENSE for details.
+ */
 
 #pragma once
 
@@ -25,15 +15,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 extern "C" {
 #endif
 
-/* Decodes the first frame of a video file, scaled to w x h, into a newly
- * allocated tightly-packed RGBA buffer (w*h*4 bytes). Caller frees with
- * bfree. Returns false on failure. */
-bool sr_thumbnail_rgba(const char *path, int w, int h, uint8_t **out);
-
-/* Decodes a frame from one continuous-recording camera at timestamp_ns and
- * scales it to tightly packed RGBA for the operator angle preview. */
-bool sr_disk_thumbnail_rgba(const char *session_dir, const char *camera_name, uint64_t timestamp_ns, int w, int h,
-			    uint8_t **out);
+bool sr_thumbnail_rgba(const char *path, int width, int height, uint8_t **rgba);
+bool sr_disk_thumbnail_rgba(const char *session_dir, const char *camera_name, uint64_t timestamp_ns, int width,
+			    int height, uint8_t **rgba);
 
 #ifdef __cplusplus
 }
