@@ -1,216 +1,187 @@
 /*
-Pitel Instant Replay
-Copyright (C) 2026 Systec <systecinformatica@gmail.com> (https://www.systecinformatica.com.ar)
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along
-with this program. If not, see <https://www.gnu.org/licenses/>
-*/
+ * Pitel Instant Replay - OBS scene/transition bridge
+ * Copyright (C) 2026 Alexander Pitel
+ *
+ * This OBS plugin component is licensed under the GNU General Public License
+ * version 2 or later. See LICENSE for details.
+ */
 
 #include "sr-scene-tracker.h"
 
-#include <obs-module.h>
 #include <obs-frontend-api.h>
+#include <obs-module.h>
+#include <util/bmem.h>
 #include <util/platform.h>
 #include <util/threading.h>
 
-/* How long a pending "return to previous scene" bounce stays valid. The
- * activation of the scene we bounce to does not necessarily happen inside
- * obs_frontend_set_current_scene() - with a transition in play it lands a
- * few frames later, on another thread - so the mark has to outlive the call
- * that set it. Kept short (a handful of frames) so an operator firing a
- * replay right after a bounce still gets a fresh capture; it is also cleared
- * as soon as it is consumed, or as soon as the program moves to any scene
- * other than the one we bounced to. */
-#define SR_RETURN_WINDOW_NS 500000000ULL
+#include <string.h>
 
-/* How long the preview guard keeps watching after the replay leaves program.
- * OBS performs the preview/program swap when the transition finishes, which
- * is after the source is deactivated, so the guard has to outlive it. */
-#define SR_PREVIEW_GUARD_TAIL_NS 5000000000ULL
+#define RETURN_TOKEN_LIFETIME_NS 500000000ULL
+#define PREVIEW_RESTORE_TAIL_NS 5000000000ULL
 
-static pthread_mutex_t g_mutex;
-static bool g_started;
-static char *g_current_scene;
-static char *g_previous_scene;
-static char *g_return_target; /* scene a bounce is on its way to, or NULL */
-static uint64_t g_return_expires;
-static char *g_preview_scene;               /* what the operator has lined up in preview */
-static bool g_preview_guard;                /* a replay is on air: keep it out of preview */
-static uint64_t g_preview_guard_ends;       /* 0 = guard runs until the replay leaves program */
-static obs_source_t *g_transition_restore;  /* ref held while a one-shot override is active */
-static obs_source_t *g_transition_override; /* ref held while a one-shot override is active */
-static int g_transition_duration_restore;
-static bool g_transition_duration_overridden;
+struct scene_bridge_state {
+	pthread_mutex_t lock;
+	bool initialized;
+	char *program_now;
+	char *program_before;
+	char *preview_wanted;
+	char *return_destination;
+	uint64_t return_deadline_ns;
+	bool preview_protected;
+	uint64_t preview_protection_deadline_ns;
+	obs_source_t *saved_transition;
+	obs_source_t *temporary_transition;
+	int saved_transition_duration;
+	bool restore_duration;
+};
 
-/* call with g_mutex held */
-static void clear_return_mark(void)
+static struct scene_bridge_state g_scene;
+
+static void replace_text(char **slot, const char *value)
 {
-	bfree(g_return_target);
-	g_return_target = NULL;
-	g_return_expires = 0;
+	char *replacement = value ? bstrdup(value) : NULL;
+	bfree(*slot);
+	*slot = replacement;
 }
 
-static void on_program_scene_changed(void)
+static void clear_return_token_locked(void)
 {
-	obs_source_t *scene = obs_frontend_get_current_scene();
-	if (!scene)
+	replace_text(&g_scene.return_destination, NULL);
+	g_scene.return_deadline_ns = 0;
+}
+
+static void snapshot_program(void)
+{
+	obs_source_t *program = obs_frontend_get_current_scene();
+	if (!program)
 		return;
-	const char *name = obs_source_get_name(scene);
+	const char *name = obs_source_get_name(program);
 
-	pthread_mutex_lock(&g_mutex);
-	if (!g_current_scene || strcmp(g_current_scene, name) != 0) {
-		bfree(g_previous_scene);
-		g_previous_scene = g_current_scene; /* hand over ownership */
-		g_current_scene = bstrdup(name);
+	pthread_mutex_lock(&g_scene.lock);
+	if (!g_scene.program_now || strcmp(g_scene.program_now, name) != 0) {
+		bfree(g_scene.program_before);
+		g_scene.program_before = g_scene.program_now;
+		g_scene.program_now = bstrdup(name);
 	}
-	/* the program went somewhere else: whatever bounce was in flight is
-	 * no longer the reason this scene is live */
-	if (g_return_target && strcmp(g_return_target, name) != 0)
-		clear_return_mark();
-	pthread_mutex_unlock(&g_mutex);
-
-	obs_source_release(scene);
+	if (g_scene.return_destination && strcmp(g_scene.return_destination, name) != 0)
+		clear_return_token_locked();
+	pthread_mutex_unlock(&g_scene.lock);
+	obs_source_release(program);
 }
 
-/* Records the scene sitting in preview. Studio mode only (the frontend hands
- * back NULL otherwise), and UI thread only. */
-static void note_preview_scene(void)
+static void snapshot_preview(void)
 {
-	obs_source_t *scene = obs_frontend_get_current_preview_scene();
-
-	pthread_mutex_lock(&g_mutex);
-	bfree(g_preview_scene);
-	g_preview_scene = scene ? bstrdup(obs_source_get_name(scene)) : NULL;
-	pthread_mutex_unlock(&g_mutex);
-
-	obs_source_release(scene);
+	obs_source_t *preview = obs_frontend_get_current_preview_scene();
+	pthread_mutex_lock(&g_scene.lock);
+	replace_text(&g_scene.preview_wanted, preview ? obs_source_get_name(preview) : NULL);
+	pthread_mutex_unlock(&g_scene.lock);
+	if (preview)
+		obs_source_release(preview);
 }
 
-/* call with g_mutex held */
-static bool preview_guard_running(void)
+static bool preview_protection_active_locked(uint64_t now)
 {
-	if (!g_preview_guard)
+	if (!g_scene.preview_protected)
 		return false;
-	if (g_preview_guard_ends && os_gettime_ns() > g_preview_guard_ends) {
-		g_preview_guard = false;
-		g_preview_guard_ends = 0;
+	if (g_scene.preview_protection_deadline_ns && now > g_scene.preview_protection_deadline_ns) {
+		g_scene.preview_protected = false;
+		g_scene.preview_protection_deadline_ns = 0;
 		return false;
 	}
 	return true;
 }
 
-static void on_preview_scene_changed(void)
+static void handle_preview_change(void)
 {
 	if (!obs_frontend_preview_program_mode_active())
 		return;
 
-	obs_source_t *scene = obs_frontend_get_current_preview_scene();
-	if (!scene)
+	obs_source_t *preview = obs_frontend_get_current_preview_scene();
+	if (!preview)
 		return;
-	const char *name = obs_source_get_name(scene);
+	const char *preview_name = obs_source_get_name(preview);
+	char *restore_name = NULL;
 
-	char *restore = NULL;
+	pthread_mutex_lock(&g_scene.lock);
+	const bool obs_swap_detected = preview_protection_active_locked(os_gettime_ns()) && g_scene.program_now &&
+				       strcmp(preview_name, g_scene.program_now) == 0 && g_scene.preview_wanted &&
+				       strcmp(g_scene.preview_wanted, preview_name) != 0;
+	if (obs_swap_detected)
+		restore_name = bstrdup(g_scene.preview_wanted);
+	else
+		replace_text(&g_scene.preview_wanted, preview_name);
+	pthread_mutex_unlock(&g_scene.lock);
+	obs_source_release(preview);
 
-	pthread_mutex_lock(&g_mutex);
-	/* OBS's "swap preview/program scenes after transitioning" drops the
-	 * scene leaving program into preview, and it does that inside
-	 * TransitionStopped() - before the program change reaches us - so
-	 * g_current_scene still names the scene that just left the air. While
-	 * a replay is on air, that scene is the replay itself (or the camera
-	 * it cut into), and the operator never asked for either of them to
-	 * take over the shot they had lined up. Undo it, putting back what was
-	 * in preview - which is whatever the operator last picked, since a
-	 * swap we undo never becomes g_preview_scene. */
-	const bool swapped_in = preview_guard_running() && g_current_scene && strcmp(name, g_current_scene) == 0 &&
-				g_preview_scene && strcmp(g_preview_scene, name) != 0;
-
-	if (swapped_in)
-		restore = bstrdup(g_preview_scene);
-	else {
-		bfree(g_preview_scene);
-		g_preview_scene = bstrdup(name);
-	}
-	pthread_mutex_unlock(&g_mutex);
-
-	obs_source_release(scene);
-
-	if (!restore)
+	if (!restore_name)
 		return;
-
-	obs_source_t *target = obs_get_source_by_name(restore);
-	if (target) {
-		obs_frontend_set_current_preview_scene(target);
-		obs_source_release(target);
+	obs_source_t *wanted = obs_get_source_by_name(restore_name);
+	if (wanted) {
+		obs_frontend_set_current_preview_scene(wanted);
+		obs_source_release(wanted);
 	}
-	bfree(restore);
+	bfree(restore_name);
 }
 
-static void restore_transition_override(void)
+static void finish_temporary_transition(void)
 {
-	obs_source_t *restore = NULL;
-	obs_source_t *override = NULL;
-	int restore_duration = 0;
-	bool restore_duration_enabled = false;
+	obs_source_t *saved = NULL;
+	obs_source_t *temporary = NULL;
+	int saved_duration = 0;
+	bool restore_duration = false;
 
-	pthread_mutex_lock(&g_mutex);
-	restore = g_transition_restore;
-	override = g_transition_override;
-	restore_duration = g_transition_duration_restore;
-	restore_duration_enabled = g_transition_duration_overridden;
-	g_transition_restore = NULL;
-	g_transition_override = NULL;
-	g_transition_duration_restore = 0;
-	g_transition_duration_overridden = false;
-	pthread_mutex_unlock(&g_mutex);
+	pthread_mutex_lock(&g_scene.lock);
+	saved = g_scene.saved_transition;
+	temporary = g_scene.temporary_transition;
+	saved_duration = g_scene.saved_transition_duration;
+	restore_duration = g_scene.restore_duration;
+	g_scene.saved_transition = NULL;
+	g_scene.temporary_transition = NULL;
+	g_scene.saved_transition_duration = 0;
+	g_scene.restore_duration = false;
+	pthread_mutex_unlock(&g_scene.lock);
 
-	if (!override) {
-		obs_source_release(restore);
+	if (!temporary) {
+		if (saved)
+			obs_source_release(saved);
 		return;
 	}
 
 	obs_source_t *current = obs_frontend_get_current_transition();
-	if (current == override && restore && restore != override)
-		obs_frontend_set_current_transition(restore);
-	if (restore_duration_enabled)
-		obs_frontend_set_transition_duration(restore_duration);
-	obs_source_release(current);
-	obs_source_release(override);
-	obs_source_release(restore);
+	if (current == temporary && saved && saved != temporary)
+		obs_frontend_set_current_transition(saved);
+	if (restore_duration)
+		obs_frontend_set_transition_duration(saved_duration);
+	if (current)
+		obs_source_release(current);
+	obs_source_release(temporary);
+	if (saved)
+		obs_source_release(saved);
 }
 
-static void on_frontend_event(enum obs_frontend_event event, void *data)
+static void frontend_event(enum obs_frontend_event event, void *unused)
 {
-	UNUSED_PARAMETER(data);
-
+	UNUSED_PARAMETER(unused);
 	switch (event) {
 	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
-		on_program_scene_changed();
+		snapshot_program();
 		break;
 	case OBS_FRONTEND_EVENT_PREVIEW_SCENE_CHANGED:
-		on_preview_scene_changed();
+		handle_preview_change();
 		break;
 	case OBS_FRONTEND_EVENT_TRANSITION_STOPPED:
-		restore_transition_override();
+		finish_temporary_transition();
 		break;
 	case OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED:
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
-		note_preview_scene();
+		snapshot_preview();
 		break;
 	case OBS_FRONTEND_EVENT_STUDIO_MODE_DISABLED:
-		pthread_mutex_lock(&g_mutex);
-		bfree(g_preview_scene);
-		g_preview_scene = NULL;
-		pthread_mutex_unlock(&g_mutex);
+		pthread_mutex_lock(&g_scene.lock);
+		replace_text(&g_scene.preview_wanted, NULL);
+		g_scene.preview_protected = false;
+		g_scene.preview_protection_deadline_ns = 0;
+		pthread_mutex_unlock(&g_scene.lock);
 		break;
 	default:
 		break;
@@ -219,194 +190,162 @@ static void on_frontend_event(enum obs_frontend_event event, void *data)
 
 void sr_scene_tracker_start(void)
 {
-	pthread_mutex_init(&g_mutex, NULL);
-	obs_frontend_add_event_callback(on_frontend_event, NULL);
-	g_started = true;
+	if (g_scene.initialized)
+		return;
+	memset(&g_scene, 0, sizeof(g_scene));
+	pthread_mutex_init(&g_scene.lock, NULL);
+	g_scene.initialized = true;
+	obs_frontend_add_event_callback(frontend_event, NULL);
+	snapshot_program();
+	if (obs_frontend_preview_program_mode_active())
+		snapshot_preview();
 }
 
 void sr_scene_tracker_stop(void)
 {
-	if (!g_started)
+	if (!g_scene.initialized)
 		return;
-	obs_frontend_remove_event_callback(on_frontend_event, NULL);
-	pthread_mutex_lock(&g_mutex);
-	bfree(g_current_scene);
-	bfree(g_previous_scene);
-	bfree(g_preview_scene);
-	g_current_scene = NULL;
-	g_previous_scene = NULL;
-	g_preview_scene = NULL;
-	g_preview_guard = false;
-	g_preview_guard_ends = 0;
-	obs_source_release(g_transition_restore);
-	obs_source_release(g_transition_override);
-	g_transition_restore = NULL;
-	g_transition_override = NULL;
-	clear_return_mark();
-	pthread_mutex_unlock(&g_mutex);
-	pthread_mutex_destroy(&g_mutex);
-	g_started = false;
+	obs_frontend_remove_event_callback(frontend_event, NULL);
+	finish_temporary_transition();
+
+	pthread_mutex_lock(&g_scene.lock);
+	bfree(g_scene.program_now);
+	bfree(g_scene.program_before);
+	bfree(g_scene.preview_wanted);
+	bfree(g_scene.return_destination);
+	g_scene.program_now = NULL;
+	g_scene.program_before = NULL;
+	g_scene.preview_wanted = NULL;
+	g_scene.return_destination = NULL;
+	pthread_mutex_unlock(&g_scene.lock);
+	pthread_mutex_destroy(&g_scene.lock);
+	memset(&g_scene, 0, sizeof(g_scene));
 }
 
 char *sr_scene_tracker_previous(void)
 {
-	char *result = NULL;
-	pthread_mutex_lock(&g_mutex);
-	if (g_previous_scene)
-		result = bstrdup(g_previous_scene);
-	pthread_mutex_unlock(&g_mutex);
+	if (!g_scene.initialized)
+		return NULL;
+	pthread_mutex_lock(&g_scene.lock);
+	char *result = g_scene.program_before ? bstrdup(g_scene.program_before) : NULL;
+	pthread_mutex_unlock(&g_scene.lock);
 	return result;
 }
 
-struct find_scene_ctx {
+struct scene_search {
 	const char *source_name;
-	char *found_name;
+	char *scene_name;
 };
 
-static bool enum_scene_for_source(void *param, obs_source_t *scene_source)
+static bool find_source_scene(void *opaque, obs_source_t *scene_source)
 {
-	struct find_scene_ctx *ctx = param;
+	struct scene_search *search = opaque;
 	obs_scene_t *scene = obs_scene_from_source(scene_source);
-	if (scene && obs_scene_find_source_recursive(scene, ctx->source_name)) {
-		ctx->found_name = bstrdup(obs_source_get_name(scene_source));
-		return false;
-	}
-	return true;
+	if (!scene || !obs_scene_find_source_recursive(scene, search->source_name))
+		return true;
+	search->scene_name = bstrdup(obs_source_get_name(scene_source));
+	return false;
 }
 
 char *sr_find_scene_with_source(const char *source_name)
 {
 	if (!source_name || !*source_name)
 		return NULL;
-
-	struct find_scene_ctx ctx = {source_name, NULL};
-	obs_enum_scenes(enum_scene_for_source, &ctx);
-	return ctx.found_name;
+	struct scene_search search = {.source_name = source_name};
+	obs_enum_scenes(find_source_scene, &search);
+	return search.scene_name;
 }
 
-static obs_source_t *find_transition_by_name(const char *name, bool native_stinger_only)
+static obs_source_t *lookup_transition(const char *name, bool require_stinger)
 {
 	if (!name || !*name)
 		return NULL;
 
 	obs_source_t *result = NULL;
-	struct obs_frontend_source_list transitions = {0};
-	obs_frontend_get_transitions(&transitions);
-	for (size_t i = 0; i < transitions.sources.num; i++) {
-		obs_source_t *transition = transitions.sources.array[i];
-		if (strcmp(obs_source_get_name(transition), name) != 0)
+	struct obs_frontend_source_list list = {0};
+	obs_frontend_get_transitions(&list);
+	for (size_t i = 0; i < list.sources.num; ++i) {
+		obs_source_t *candidate = list.sources.array[i];
+		if (strcmp(obs_source_get_name(candidate), name) != 0)
 			continue;
-		if (native_stinger_only &&
-		    strcmp(obs_source_get_unversioned_id(transition), "obs_stinger_transition") != 0)
+		const char *id = obs_source_get_unversioned_id(candidate);
+		if (require_stinger && (!id || strcmp(id, "obs_stinger_transition") != 0))
 			continue;
-		result = obs_source_get_ref(transition);
+		result = obs_source_get_ref(candidate);
 		break;
 	}
-	obs_frontend_source_list_free(&transitions);
+	obs_frontend_source_list_free(&list);
 	return result;
 }
 
-static bool begin_transition_override(const char *transition_name, bool native_stinger_only, uint32_t duration_ms)
+static bool install_temporary_transition(const char *name, bool require_stinger, uint32_t duration_ms)
 {
-	if (!transition_name || !*transition_name)
-		return false;
-
-	obs_source_t *override = find_transition_by_name(transition_name, native_stinger_only);
-	if (!override) {
-		blog(LOG_WARNING,
-		     native_stinger_only
-			     ? "Pitel Instant Replay: native OBS Stinger '%s' was not found; using current transition"
-			     : "Pitel Instant Replay: OBS Event Transition '%s' was not found; using current transition",
-		     transition_name);
+	obs_source_t *temporary = lookup_transition(name, require_stinger);
+	if (!temporary) {
+		blog(LOG_WARNING, "Pitel Instant Replay: transition '%s' was not found; current OBS transition will be used",
+		     name ? name : "");
 		return false;
 	}
-
 	obs_source_t *current = obs_frontend_get_current_transition();
-	pthread_mutex_lock(&g_mutex);
-	const bool already_pending = g_transition_override != NULL;
-	if (!already_pending) {
-		g_transition_restore = current;
-		g_transition_override = override;
-		if (duration_ms) {
-			g_transition_duration_restore = obs_frontend_get_transition_duration();
-			g_transition_duration_overridden = true;
-		}
-	}
-	pthread_mutex_unlock(&g_mutex);
 
-	if (already_pending) {
-		blog(LOG_WARNING,
-		     "Pitel Instant Replay: transition override already in flight; keeping current OBS transition");
-		obs_source_release(current);
-		obs_source_release(override);
+	pthread_mutex_lock(&g_scene.lock);
+	if (g_scene.temporary_transition) {
+		pthread_mutex_unlock(&g_scene.lock);
+		if (current)
+			obs_source_release(current);
+		obs_source_release(temporary);
+		blog(LOG_WARNING, "Pitel Instant Replay: another temporary transition is still active");
 		return false;
 	}
+	g_scene.saved_transition = current;
+	g_scene.temporary_transition = temporary;
+	if (duration_ms) {
+		g_scene.saved_transition_duration = obs_frontend_get_transition_duration();
+		g_scene.restore_duration = true;
+	}
+	pthread_mutex_unlock(&g_scene.lock);
 
-	if (current != override)
-		obs_frontend_set_current_transition(override);
+	if (current != temporary)
+		obs_frontend_set_current_transition(temporary);
 	if (duration_ms)
 		obs_frontend_set_transition_duration((int)duration_ms);
 	return true;
 }
 
-struct sr_scene_switch_request {
+struct switch_request {
 	char *scene_name;
 	char *transition_name;
-	uint32_t transition_duration_ms;
-	bool returning;
-	bool native_stinger_only;
+	uint32_t duration_ms;
+	bool is_return;
+	bool stinger_only;
 };
 
-static void switch_scene_task(void *param)
+static void set_return_token(const char *destination)
 {
-	char *name = param;
-	obs_source_t *scene = obs_get_source_by_name(name);
-	if (scene) {
-		/* This is a replay scene going on air, and the transition that
-		 * follows may swap preview out from under the operator before
-		 * the source's activate() ever runs - that lands a frame later,
-		 * from the video tick. Guard it here, where we are ahead of the
-		 * switch and on the UI thread. */
-		note_preview_scene();
-		sr_scene_tracker_note_replay_launch();
-
-		obs_frontend_set_current_scene(scene);
-		obs_source_release(scene);
-	}
-	bfree(name);
+	pthread_mutex_lock(&g_scene.lock);
+	replace_text(&g_scene.return_destination, destination);
+	g_scene.return_deadline_ns = os_gettime_ns() + RETURN_TOKEN_LIFETIME_NS;
+	pthread_mutex_unlock(&g_scene.lock);
 }
 
-/* Puts a replay scene on program, cutting past preview the way OBS's own
- * "switch to scene" hotkey does. */
-void sr_switch_to_scene(const char *scene_name)
+static void execute_switch(void *opaque)
 {
-	if (!scene_name || !*scene_name)
-		return;
-	/* scene switching must happen on the UI thread */
-	obs_queue_task(OBS_TASK_UI, switch_scene_task, bstrdup(scene_name), false);
-}
-
-static void switch_scene_transition_task(void *param)
-{
-	struct sr_scene_switch_request *request = param;
+	struct switch_request *request = opaque;
 	if (!request)
 		return;
 
 	obs_source_t *scene = obs_get_source_by_name(request->scene_name);
 	if (scene) {
-		if (!request->returning) {
-			note_preview_scene();
+		if (request->is_return)
+			set_return_token(request->scene_name);
+		else {
+			if (obs_frontend_preview_program_mode_active())
+				snapshot_preview();
 			sr_scene_tracker_note_replay_launch();
-		} else {
-			pthread_mutex_lock(&g_mutex);
-			bfree(g_return_target);
-			g_return_target = bstrdup(request->scene_name);
-			g_return_expires = os_gettime_ns() + SR_RETURN_WINDOW_NS;
-			pthread_mutex_unlock(&g_mutex);
 		}
 
-		begin_transition_override(request->transition_name, request->native_stinger_only,
-					  request->transition_duration_ms);
+		if (request->transition_name && *request->transition_name)
+			install_temporary_transition(request->transition_name, request->stinger_only, request->duration_ms);
 		obs_frontend_set_current_scene(scene);
 		obs_source_release(scene);
 	}
@@ -416,140 +355,106 @@ static void switch_scene_transition_task(void *param)
 	bfree(request);
 }
 
-static void queue_scene_with_transition(const char *scene_name, const char *transition_name, bool returning,
-					bool native_stinger_only, uint32_t duration_ms)
+static void queue_switch(const char *scene_name, const char *transition_name, uint32_t duration_ms, bool is_return,
+			 bool stinger_only)
 {
 	if (!scene_name || !*scene_name)
 		return;
-
-	struct sr_scene_switch_request *request = bzalloc(sizeof(*request));
+	struct switch_request *request = bzalloc(sizeof(*request));
 	request->scene_name = bstrdup(scene_name);
 	request->transition_name = bstrdup(transition_name ? transition_name : "");
-	request->transition_duration_ms = duration_ms;
-	request->returning = returning;
-	request->native_stinger_only = native_stinger_only;
-	obs_queue_task(OBS_TASK_UI, switch_scene_transition_task, request, false);
+	request->duration_ms = duration_ms;
+	request->is_return = is_return;
+	request->stinger_only = stinger_only;
+	obs_queue_task(OBS_TASK_UI, execute_switch, request, false);
+}
+
+void sr_switch_to_scene(const char *scene_name)
+{
+	queue_switch(scene_name, NULL, 0, false, false);
 }
 
 void sr_switch_to_scene_with_transition(const char *scene_name, const char *transition_name)
 {
-	if (!transition_name || !*transition_name) {
-		sr_switch_to_scene(scene_name);
-		return;
-	}
-	queue_scene_with_transition(scene_name, transition_name, false, true, 0);
+	queue_switch(scene_name, transition_name, 0, false, true);
 }
 
 void sr_switch_to_scene_with_transition_duration(const char *scene_name, const char *transition_name,
 						 uint32_t duration_ms)
 {
-	if (!transition_name || !*transition_name) {
-		sr_switch_to_scene(scene_name);
-		return;
-	}
-	queue_scene_with_transition(scene_name, transition_name, false, false, duration_ms);
+	queue_switch(scene_name, transition_name, duration_ms, false, false);
 }
 
-static void switch_scene_return_task(void *param)
-{
-	char *name = param;
-	obs_source_t *scene = obs_get_source_by_name(name);
-	if (scene) {
-		/* Mark the destination before the switch: the sources there are
-		 * activated once the transition to it starts, which is after
-		 * this call returns. */
-		pthread_mutex_lock(&g_mutex);
-		bfree(g_return_target);
-		g_return_target = bstrdup(name);
-		g_return_expires = os_gettime_ns() + SR_RETURN_WINDOW_NS;
-		pthread_mutex_unlock(&g_mutex);
-
-		obs_frontend_set_current_scene(scene);
-		obs_source_release(scene);
-	}
-	bfree(name);
-}
-
-/* Same as sr_switch_to_scene(), but marks the activation as a "return to
- * previous scene" bounce: if the scene we land on itself holds a Pitel Instant Replay
- * replay source with autoplay + "return to previous" configured, that
- * source must not treat this as a deliberate trigger and auto-capture a
- * fresh replay - otherwise two such scenes ping-pong forever. */
 void sr_switch_to_scene_return(const char *scene_name)
 {
-	if (!scene_name || !*scene_name)
-		return;
-	obs_queue_task(OBS_TASK_UI, switch_scene_return_task, bstrdup(scene_name), false);
+	queue_switch(scene_name, NULL, 0, true, false);
 }
 
 void sr_switch_to_scene_return_with_transition(const char *scene_name, const char *transition_name)
 {
-	if (!transition_name || !*transition_name) {
-		sr_switch_to_scene_return(scene_name);
-		return;
-	}
-	queue_scene_with_transition(scene_name, transition_name, true, true, 0);
+	queue_switch(scene_name, transition_name, 0, true, true);
 }
 
 bool sr_scene_tracker_consume_returning(void)
 {
-	bool match = false;
-
-	pthread_mutex_lock(&g_mutex);
-	if (g_return_target) {
-		match = os_gettime_ns() <= g_return_expires;
-		clear_return_mark();
-	}
-	pthread_mutex_unlock(&g_mutex);
-
-	return match;
+	if (!g_scene.initialized)
+		return false;
+	pthread_mutex_lock(&g_scene.lock);
+	const bool valid = g_scene.return_destination && os_gettime_ns() <= g_scene.return_deadline_ns;
+	clear_return_token_locked();
+	pthread_mutex_unlock(&g_scene.lock);
+	return valid;
 }
 
-/* Runs on the UI thread: enumerating scenes here is safe, whereas doing it
- * from a source's activate()/video_tick() would take the scene list lock
- * while a scene lock is already held - the reverse of the order the dock
- * takes them in. */
-static void switch_to_source_scene_task(void *param)
+struct source_return_request {
+	char *source_name;
+};
+
+static void return_to_source_task(void *opaque)
 {
-	char *source_name = param;
-
-	char *scene = sr_find_scene_with_source(source_name);
-	if (!scene) {
-		blog(LOG_WARNING, "[pitel-instant-replay] '%s' is not in any scene, returning to the previous one",
-		     source_name);
-		scene = sr_scene_tracker_previous();
+	struct source_return_request *request = opaque;
+	char *destination = sr_find_scene_with_source(request->source_name);
+	if (!destination) {
+		blog(LOG_WARNING, "Pitel Instant Replay: source '%s' is not present in a scene; using previous Program scene",
+		     request->source_name);
+		destination = sr_scene_tracker_previous();
 	}
-
-	if (scene) {
-		switch_scene_return_task(bstrdup(scene)); /* frees its argument */
-		bfree(scene);
+	if (destination) {
+		struct switch_request *switcher = bzalloc(sizeof(*switcher));
+		switcher->scene_name = destination;
+		switcher->transition_name = bstrdup("");
+		switcher->is_return = true;
+		execute_switch(switcher);
 	}
-	bfree(source_name);
+	bfree(request->source_name);
+	bfree(request);
 }
 
 void sr_switch_to_scene_of_source_return(const char *source_name)
 {
 	if (!source_name || !*source_name)
 		return;
-	obs_queue_task(OBS_TASK_UI, switch_to_source_scene_task, bstrdup(source_name), false);
+	struct source_return_request *request = bzalloc(sizeof(*request));
+	request->source_name = bstrdup(source_name);
+	obs_queue_task(OBS_TASK_UI, return_to_source_task, request, false);
 }
 
 void sr_scene_tracker_note_replay_launch(void)
 {
-	if (!g_started)
+	if (!g_scene.initialized)
 		return;
-	pthread_mutex_lock(&g_mutex);
-	g_preview_guard = true;
-	g_preview_guard_ends = 0; /* guard until the replay leaves program */
-	pthread_mutex_unlock(&g_mutex);
+	pthread_mutex_lock(&g_scene.lock);
+	g_scene.preview_protected = true;
+	g_scene.preview_protection_deadline_ns = 0;
+	pthread_mutex_unlock(&g_scene.lock);
 }
 
 void sr_scene_tracker_end_replay_guard(void)
 {
-	if (!g_started)
+	if (!g_scene.initialized)
 		return;
-	pthread_mutex_lock(&g_mutex);
-	if (g_preview_guard && !g_preview_guard_ends)
-		g_preview_guard_ends = os_gettime_ns() + SR_PREVIEW_GUARD_TAIL_NS;
-	pthread_mutex_unlock(&g_mutex);
+	pthread_mutex_lock(&g_scene.lock);
+	if (g_scene.preview_protected && !g_scene.preview_protection_deadline_ns)
+		g_scene.preview_protection_deadline_ns = os_gettime_ns() + PREVIEW_RESTORE_TAIL_NS;
+	pthread_mutex_unlock(&g_scene.lock);
 }
