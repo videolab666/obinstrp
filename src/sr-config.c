@@ -9,7 +9,6 @@
 #include "sr-config.h"
 
 #include <obs-module.h>
-#include <util/dstr.h>
 #include <util/platform.h>
 #include <util/threading.h>
 
@@ -44,19 +43,6 @@ static char *default_storage_root(void)
 	if (!path)
 		return bstrdup("Sessions");
 	return path;
-}
-
-static char *join_sessions(const char *parent)
-{
-	struct dstr path = {0};
-	dstr_copy(&path, parent && *parent ? parent : "replays");
-	dstr_replace(&path, "\\", "/");
-	if (path.len && dstr_end(&path) != '/')
-		dstr_cat_ch(&path, '/');
-	dstr_cat(&path, "Sessions");
-	char *result = bstrdup(path.array ? path.array : "Sessions");
-	dstr_free(&path);
-	return result;
 }
 
 static uint64_t positive_or_default(int64_t value, uint64_t fallback)
@@ -117,12 +103,9 @@ void sr_config_init(void)
 	obs_data_t *json = path ? obs_data_create_from_json_file(path) : NULL;
 	bfree(path);
 
-	const char *legacy_save = json ? obs_data_get_string(json, "save_dir") : "";
 	const char *saved_session = json ? obs_data_get_string(json, "session_root") : "";
 	if (saved_session && *saved_session)
 		g_session_root = copy_string(saved_session);
-	else if (legacy_save && *legacy_save)
-		g_session_root = join_sessions(legacy_save);
 	else
 		g_session_root = default_storage_root();
 
