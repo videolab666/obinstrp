@@ -37,6 +37,8 @@ struct sr_event_export_spec {
 	uint64_t event_out_ns;
 	int64_t camera_sync_offset_ns;
 	bool include_master_audio;
+	/* Optional AAC segment directory. NULL keeps the existing session master-audio behavior. */
+	const char *audio_directory_override;
 };
 
 struct sr_event_export_result {

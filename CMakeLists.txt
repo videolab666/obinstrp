@@ -155,6 +155,7 @@ target_sources(
     src/sr-thumb.c
     src/sr-dock.cpp
     src/sr-session-panel.cpp
+    src/sr-session-export.cpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

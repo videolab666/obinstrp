@@ -264,8 +264,12 @@ static bool audio_cursor_init(struct audio_cursor *cursor, const struct sr_event
 {
 	memset(cursor, 0, sizeof(*cursor));
 	cursor->stop_ns = spec->event_out_ns;
-	if (!sr_master_audio_catalog_scan(spec->session_dir, &cursor->segments, &cursor->segment_count) ||
-	    !cursor->segment_count)
+	const bool scanned =
+		spec->audio_directory_override && *spec->audio_directory_override
+			? sr_audio_catalog_scan_directory(spec->audio_directory_override, &cursor->segments,
+							  &cursor->segment_count)
+			: sr_master_audio_catalog_scan(spec->session_dir, &cursor->segments, &cursor->segment_count);
+	if (!scanned || !cursor->segment_count)
 		return false;
 
 	const struct sr_master_audio_descriptor *start =

@@ -305,13 +305,15 @@ public:
 		  outputDir(std::move(outputDirectory))
 	{
 		dialog = new QProgressDialog(T("Session.ExportPreparing"), T("Session.ExportCancel"), 0, 100, parent);
-		dialog->setWindowTitle(exportMode == ExportMode::Clips ? T("Session.ExportClips") : T("Session.ExportIso"));
+		dialog->setWindowTitle(exportMode == ExportMode::Clips ? T("Session.ExportClips")
+								       : T("Session.ExportIso"));
 		dialog->setWindowModality(Qt::WindowModal);
 		dialog->setMinimumDuration(0);
 		dialog->setAutoClose(false);
 		dialog->setAutoReset(false);
 		dialog->setValue(0);
-		connect(dialog, &QProgressDialog::canceled, this, [this]() { cancel.store(true, std::memory_order_relaxed); });
+		connect(dialog, &QProgressDialog::canceled, this,
+			[this]() { cancel.store(true, std::memory_order_relaxed); });
 
 		timer = new QTimer(this);
 		timer->setInterval(100);
@@ -410,7 +412,8 @@ private:
 			task.inNs = event.in_ns;
 			task.outNs = event.out_ns;
 			task.syncOffsetNs = camera.syncOffsetNs;
-			if (event.audio_mode == SR_EVENT_AUDIO_MASTER || sr_camera_is_program_name(camera.name.c_str())) {
+			if (event.audio_mode == SR_EVENT_AUDIO_MASTER ||
+			    sr_camera_is_program_name(camera.name.c_str())) {
 				task.includeAudio = true;
 			} else if (event.audio_mode == SR_EVENT_AUDIO_CAMERA) {
 				task.audioDirectory = cameraAudioDirectory(session, camera);
@@ -448,10 +451,10 @@ private:
 			ExportTask task;
 			task.sessionDir = session;
 			task.camera = camera.name;
-			task.outputPath =
-				unusedMp4Path(destination, QStringLiteral("ISO_%1").arg(safeFilePart(QString::fromUtf8(camera.name.c_str()))))
-					.toUtf8()
-					.constData();
+			task.outputPath = unusedMp4Path(destination, QStringLiteral("ISO_%1").arg(safeFilePart(
+									     QString::fromUtf8(camera.name.c_str()))))
+						  .toUtf8()
+						  .constData();
 			task.inNs = globalFirst;
 			task.outNs = globalLast == UINT64_MAX ? globalLast : globalLast + 1ULL;
 			task.syncOffsetNs = camera.syncOffsetNs;
@@ -491,7 +494,8 @@ private:
 			spec.event_out_ns = task.outNs;
 			spec.camera_sync_offset_ns = task.syncOffsetNs;
 			spec.include_master_audio = task.includeAudio;
-			spec.audio_directory_override = task.audioDirectory.empty() ? nullptr : task.audioDirectory.c_str();
+			spec.audio_directory_override = task.audioDirectory.empty() ? nullptr
+										    : task.audioDirectory.c_str();
 
 			sr_event_export_result result = {};
 			if (sr_event_export_fast(&spec, shouldCancel, reportTaskProgress, this, &result)) {
@@ -499,9 +503,9 @@ private:
 			} else if (result.error != SR_EVENT_EXPORT_CANCELLED) {
 				failed++;
 				if (firstFailure.isEmpty()) {
-					firstFailure = QStringLiteral("%1: %2")
-						       .arg(QString::fromUtf8(task.camera.c_str()),
-							    QString::fromUtf8(sr_event_export_error_text(result.error)));
+					firstFailure = QStringLiteral("%1: %2").arg(
+						QString::fromUtf8(task.camera.c_str()),
+						QString::fromUtf8(sr_event_export_error_text(result.error)));
 				}
 			}
 		}
@@ -532,15 +536,12 @@ private:
 		} else if (taskCount.load(std::memory_order_relaxed) == 0) {
 			QMessageBox::warning(parentWidget, T("Session.ExportTitle"), planningError);
 		} else if (failed) {
-			QMessageBox::warning(parentWidget, T("Session.ExportTitle"),
-					     T("Session.ExportPartial")
-						     .arg(exported)
-						     .arg(failed)
-						     .arg(skipped)
-						     .arg(firstFailure));
+			QMessageBox::warning(
+				parentWidget, T("Session.ExportTitle"),
+				T("Session.ExportPartial").arg(exported).arg(failed).arg(skipped).arg(firstFailure));
 		} else {
 			QMessageBox::information(parentWidget, T("Session.ExportTitle"),
-						     T("Session.ExportComplete").arg(exported).arg(skipped).arg(outputDir));
+						 T("Session.ExportComplete").arg(exported).arg(skipped).arg(outputDir));
 		}
 		deleteLater();
 	}
@@ -580,8 +581,8 @@ void launchSessionExport(QWidget *parent, const char *sessionDir, ExportMode mod
 
 	const QString modeSuffix = mode == ExportMode::Clips ? QStringLiteral("Clips") : QStringLiteral("ISO");
 	const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"));
-	const QString folderName = QStringLiteral("%1_%2_%3")
-					   .arg(safeFilePart(sessionDisplayName(sessionPath)), modeSuffix, stamp);
+	const QString folderName =
+		QStringLiteral("%1_%2_%3").arg(safeFilePart(sessionDisplayName(sessionPath)), modeSuffix, stamp);
 	QDir base(parentDirectory);
 	if (!base.mkpath(folderName)) {
 		QMessageBox::warning(parent, T("Session.ExportTitle"), T("Session.ExportCreateFolderFailed"));

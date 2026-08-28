@@ -14,6 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "sr-config.h"
 #include "sr-event-controller.h"
 #include "sr-session.h"
+#include "sr-session-export.h"
 #include "sr-storage-manager.h"
 
 #include <obs-module.h>
@@ -134,10 +135,14 @@ public:
 		auto *secondary = new QHBoxLayout();
 		auto *refreshButton = new QPushButton(T("Storage.Refresh"), this);
 		auto *clearTargetButton = new QPushButton(T("Session.ClearTarget"), this);
+		exportClipsButton = new QPushButton(T("Session.ExportClips"), this);
+		exportIsoButton = new QPushButton(T("Session.ExportIso"), this);
 		auto *deleteButton = new QPushButton(T("Storage.DeleteSelected"), this);
 		auto *deleteAllButton = new QPushButton(T("Storage.DeleteAll"), this);
 		secondary->addWidget(refreshButton);
 		secondary->addWidget(clearTargetButton);
+		secondary->addWidget(exportClipsButton);
+		secondary->addWidget(exportIsoButton);
 		secondary->addStretch(1);
 		secondary->addWidget(deleteButton);
 		secondary->addWidget(deleteAllButton);
@@ -160,6 +165,8 @@ public:
 		connect(returnToRecordingButton, &QPushButton::clicked, this, [this]() { returnToRecording(); });
 		connect(refreshButton, &QPushButton::clicked, this, [this]() { refresh(); });
 		connect(clearTargetButton, &QPushButton::clicked, this, [this]() { clearTarget(); });
+		connect(exportClipsButton, &QPushButton::clicked, this, [this]() { exportClips(); });
+		connect(exportIsoButton, &QPushButton::clicked, this, [this]() { exportIso(); });
 		connect(deleteButton, &QPushButton::clicked, this, [this]() { deleteSelected(); });
 		connect(deleteAllButton, &QPushButton::clicked, this, [this]() { deleteAllSessions(); });
 		connect(table, &QTableWidget::itemDoubleClicked, this, [this](QTableWidgetItem *) { openSelected(); });
@@ -214,6 +221,8 @@ private:
 		openButton->setEnabled(one);
 		resumeButton->setEnabled(one && !sr_session_recording_is_active());
 		renameButton->setEnabled(one);
+		exportClipsButton->setEnabled(one);
+		exportIsoButton->setEnabled(one);
 
 		char *opened = sr_session_get_opened_path();
 		char *recording = sr_session_get_recording_path();
@@ -342,6 +351,24 @@ private:
 		}
 		sr_session_clear_record_target();
 		refresh();
+	}
+
+	void exportClips()
+	{
+		const QString path = singleSelectedPath();
+		if (path.isEmpty())
+			return;
+		const QByteArray utf8 = path.toUtf8();
+		sr_session_export_all_clips(this, utf8.constData());
+	}
+
+	void exportIso()
+	{
+		const QString path = singleSelectedPath();
+		if (path.isEmpty())
+			return;
+		const QByteArray utf8 = path.toUtf8();
+		sr_session_export_iso(this, utf8.constData());
 	}
 
 	void deleteSelected() { deleteSessions(selectedPaths(), false); }
@@ -523,6 +550,8 @@ private:
 	QPushButton *resumeButton = nullptr;
 	QPushButton *renameButton = nullptr;
 	QPushButton *returnToRecordingButton = nullptr;
+	QPushButton *exportClipsButton = nullptr;
+	QPushButton *exportIsoButton = nullptr;
 	QTimer *timer = nullptr;
 	QHash<QString, quint64> sessionSizeCache;
 };
