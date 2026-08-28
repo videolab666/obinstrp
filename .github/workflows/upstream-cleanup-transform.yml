@@ -3,153 +3,29 @@ name: Upstream Cleanup Transform
 on:
   push:
     branches:
-      - 'release/upstream-cleanup-transform'
+      - release/upstream-cleanup-transform
 
 permissions:
   contents: write
 
 jobs:
   transform:
-    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           ref: release/upstream-cleanup-transform
           fetch-depth: 0
-
-      - name: Remove obsolete compatibility surface
-        shell: bash
+      - name: Apply cleanup
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          legacy_locale_keys = {
-              'PitelInstantReplay', 'Duration', 'CaptureSource', 'NoSource', 'Speed', 'Backward', 'AutoPlay',
-              'CaptureNow', 'EndAction', 'EndAction.Freeze', 'EndAction.Return', 'EndAction.Loop', 'EndAction.Camera',
-              'IntroClip', 'OutroClip', 'SaveDir', 'Dock.TabClips', 'Dock.Folder', 'Dock.OutputSource',
-              'Dock.ReplayScene', 'Dock.PickFolder', 'Dock.Hint', 'Credit.By', 'MediaFilter', 'Hotkey.Capture',
-              'Hotkey.PlayPause', 'Hotkey.Restart', 'Hotkey.Faster', 'Hotkey.Slower', 'Hotkey.NormalSpeed',
-              'Hotkey.HalfSpeed', 'Hotkey.QuarterSpeed', 'Hotkey.ReverseToggle', 'Hotkey.PlayLast',
-              'Hotkey.SendToProgram', 'Hotkey.CaptureOnly', 'RunMuted',
-          }
-
-          def clean_locale(path, description, disk_description, tooltip):
-              p = Path(path)
-              out = []
-              for line in p.read_text(encoding='utf-8').splitlines():
-                  key = line.split('=', 1)[0].strip() if '=' in line else ''
-                  if key in legacy_locale_keys:
-                      continue
-                  if key == 'Description':
-                      line = f'Description="{description}"'
-                  elif key == 'DiskRecording.Description':
-                      line = f'DiskRecording.Description="{disk_description}"'
-                  elif key == 'EventDock.Performance.Tooltip':
-                      line = f'EventDock.Performance.Tooltip="{tooltip}"'
-                  out.append(line)
-              p.write_text('\n'.join(out) + '\n', encoding='utf-8')
-
-          clean_locale(
-              'data/locale/en-US.ini',
-              'Professional disk-based instant replay for OBS Studio: continuous ISO/PROGRAM recording, Events, multi-angle A/B replay, slow motion and Session management.',
-              'Continuously write this camera to crash-recoverable Session segments while global replay recording is active. Recording is controlled from the Pitel Instant Replay operator dock.',
-              'Encoder submit: avg %1 ms, last %2 ms; finalized segments %3; queue peak %4',
-          )
-          clean_locale(
-              'data/locale/es-ES.ini',
-              'Repetición instantánea profesional basada en disco para OBS Studio: grabación continua ISO/PROGRAM, Eventos, replay multicámara A/B, cámara lenta y gestión de sesiones.',
-              'Graba esta cámara continuamente en segmentos recuperables de la sesión mientras la grabación global de replay está activa. La grabación se controla desde el panel de operador de Pitel Instant Replay.',
-              'Envío al codificador: prom. %1 ms, último %2 ms; segmentos finalizados %3; pico de cola %4',
-          )
-
-          p = Path('src/sr-config.h')
-          text = p.read_text(encoding='utf-8')
-          text = text.replace('#define SR_CONFIG_SCHEMA_VERSION 8', '#define SR_CONFIG_SCHEMA_VERSION 9')
-          text = re.sub(
-              r'/\* Deprecated compatibility accessors for profiles created by the pre-Session\n \* loose-MP4 replay implementation\. New UI and recording code use session_root\. \*/\nchar \*sr_config_get_save_dir\(void\);\nvoid sr_config_set_save_dir\(const char \*save_dir\);\n\n',
-              '', text,
-          )
-          p.write_text(text, encoding='utf-8')
-
-          p = Path('src/sr-config.c')
-          text = p.read_text(encoding='utf-8')
-          text = text.replace('static char *g_legacy_save_dir;\n', '')
-          text = text.replace('\tbfree(g_legacy_save_dir);\n', '')
-          text = text.replace('\tg_legacy_save_dir = NULL;\n', '')
-          text = text.replace('\tobs_data_set_string(json, "save_dir", g_legacy_save_dir ? g_legacy_save_dir : "");\n', '')
-          text = text.replace('\tobs_data_set_bool(json, "session_root_follows_save_dir", false);\n', '')
-          text = text.replace('\tg_legacy_save_dir = copy_string(legacy_save);\n', '')
-          text, count = re.subn(
-              r'\nchar \*sr_config_get_save_dir\(void\)\n\{.*?\n\}\n\nvoid sr_config_set_save_dir\(const char \*save_dir\)\n\{.*?\n\}\n',
-              '\n', text, flags=re.S,
-          )
-          if count != 1:
-              raise SystemExit(f'expected one legacy save-dir API block, got {count}')
-          p.write_text(text, encoding='utf-8')
-
-          p = Path('src/sr-capture.h')
-          text = p.read_text(encoding='utf-8')
-          text, count = re.subn(
-              r'/\* Migration-only identifier for old scene collections\..*?\*/\n#define SR_PLAYBACK_ID "pitel_instant_replay"\n',
-              '', text, flags=re.S,
-          )
-          if count != 1:
-              raise SystemExit(f'expected one playback migration define, got {count}')
-          text = text.replace('\t/* Kept for UI ABI compatibility. The legacy capture RAM ring was removed;\n\t * therefore this value is always zero. */\n\tuint64_t ram_bytes;\n', '')
-          p.write_text(text, encoding='utf-8')
-
-          p = Path('src/sr-replay-setup.c')
-          text = p.read_text(encoding='utf-8')
-          if 'SR_PLAYBACK_ID' not in text:
-              raise SystemExit('legacy playback id filter was not found')
-          text = text.replace('strcmp(id, SR_PLAYBACK_ID) == 0', 'strcmp(id, "pitel_instant_replay") == 0')
-          p.write_text(text, encoding='utf-8')
-
-          p = Path('src/pir-capture-filter.c')
-          text = p.read_text(encoding='utf-8')
-          if '\tperformance.ram_bytes = 0;\n' not in text:
-              raise SystemExit('RAM performance compatibility assignment was not found')
-          text = text.replace('\tperformance.ram_bytes = 0;\n', '')
-          p.write_text(text, encoding='utf-8')
-
-          p = Path('src/sr-event-dock.cpp')
-          text = p.read_text(encoding='utf-8')
-          old = """\t\t\tQString tooltip = T(\"EventDock.Performance.Tooltip\")
-\t\t\t\t\t\t  .arg(averageSubmitMs, 0, 'f', 3)
-\t\t\t\t\t\t  .arg(lastSubmitMs, 0, 'f', 3)
-\t\t\t\t\t\t  .arg((double)entry.ram_bytes / (1024.0 * 1024.0), 0, 'f', 1)
-\t\t\t\t\t\t  .arg(entry.segments_finalized)
-\t\t\t\t\t\t  .arg(entry.queue_high_watermark);"""
-          new = """\t\t\tQString tooltip = T(\"EventDock.Performance.Tooltip\")
-\t\t\t\t\t\t  .arg(averageSubmitMs, 0, 'f', 3)
-\t\t\t\t\t\t  .arg(lastSubmitMs, 0, 'f', 3)
-\t\t\t\t\t\t  .arg(entry.segments_finalized)
-\t\t\t\t\t\t  .arg(entry.queue_high_watermark);"""
-          if old not in text:
-              raise SystemExit('RAM performance tooltip call was not found')
-          p.write_text(text.replace(old, new), encoding='utf-8')
-
-          p = Path('src/sr-segment-writer.h')
-          text = p.read_text(encoding='utf-8')
-          text = text.replace(
-              '/* Creates a per-camera asynchronous writer. Packets passed to push are cloned,\n * so the caller retains ownership and may immediately pass the original to the\n * legacy RAM replay buffer. */',
-              '/* Creates a per-camera asynchronous writer. Packets passed to push are cloned,\n * so the caller retains ownership and may immediately release or reuse the original. */',
-          )
-          p.write_text(text, encoding='utf-8')
-
-          for name in ('src/sr-capture-session.c', 'src/sr-audio-session.c'):
-              p = Path(name)
-              text = p.read_text(encoding='utf-8').replace('capture-filter.c', 'pir-capture-filter.c')
-              p.write_text(text, encoding='utf-8')
-          PY
-
+          if [ "$GITHUB_ACTOR" = "github-actions[bot]" ]; then
+            exit 0
+          fi
+          python3 .github/scripts/upstream_cleanup_transform.py
           ! grep -R -n -E 'sr_config_(get|set)_save_dir|SR_PLAYBACK_ID|ram_bytes|saved MP4|loose-MP4|RAM instant replay buffer' src data/locale
           git diff --check
           git status --short
-
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src data/locale
