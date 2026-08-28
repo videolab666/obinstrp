@@ -4,9 +4,9 @@ Pitel Instant Replay is distributed under the GNU General Public License; see `L
 
 ## Historical project provenance
 
-This project was originally developed from the public `Voodoo25/obs-sports-replay` repository, which is licensed under GPL-2.0. During the Pitel Instant Replay redesign, the legacy RAM/file replay runtime was removed and the remaining inherited runtime components were either removed or independently reimplemented for the current disk/session/Event architecture. The historical origin is recorded here and in `docs/UPSTREAM_CLEANUP.md` so that provenance is not lost when the project is moved to a standalone repository.
+This project was originally developed from the public `Voodoo25/obs-sports-replay` repository, which is licensed under GPL-2.0. During the Pitel Instant Replay redesign, the legacy capture-time RAM/file replay runtime was removed and the architecture was changed to continuous disk recording, persistent Sessions, Events and replay buses.
 
-The cleanup does not remove or supersede obligations imposed by the GPL on code or history to which those obligations apply.
+The current repository contains substantial Pitel-developed Session/Event code as well as GPL-derived files or components whose original copyright notices remain in place. `docs/UPSTREAM_CLEANUP.md` records the removed/replaced runtime paths and the cleanup boundary. Moving the project to a new standalone GitHub repository or starting a new Git commit history does not erase provenance or change licensing obligations for code derived from earlier GPL material.
 
 ## OBS Studio and OBS plugin build infrastructure
 
