@@ -226,11 +226,3 @@ extern "C" void sr_dock_open_settings(void)
 {
 	openSettingsDialog();
 }
-
-extern "C" void sr_dock_mark_played(const char *path)
-{
-	/* Legacy loose-MP4 replay bins were removed. Event played-state now lives
-	 * in the Session database, so this compatibility symbol intentionally does
-	 * nothing until all older callers disappear. */
-	UNUSED_PARAMETER(path);
-}
