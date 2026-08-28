@@ -1,72 +1,72 @@
-; Inno Setup installer for Pitel Instant Replay (OBS Studio plugin)
-; Pitel Instant Replay standalone installer
+; Pitel Instant Replay - Windows installer
+; Copyright (C) 2026 Alexander Pitel
 
-#define MyName "Pitel Instant Replay for OBS Studio"
+#define ProductName "Pitel Instant Replay for OBS Studio"
 #ifndef MyVersion
   #define MyVersion "1.0.0"
 #endif
-#define MyPublisher "videolab666"
-#define MyURL "https://github.com/videolab666/obinstrp"
+#define ProductPublisher "videolab666"
+#define ProductURL "https://github.com/videolab666/obinstrp"
 
 [Setup]
-AppName={#MyName}
+AppName={#ProductName}
 AppVersion={#MyVersion}
-AppPublisher={#MyPublisher}
-AppPublisherURL={#MyURL}
-DefaultDirName={code:GetOBSDir}
+AppPublisher={#ProductPublisher}
+AppPublisherURL={#ProductURL}
+AppSupportURL={#ProductURL}
+DefaultDirName={code:ResolveOBSDirectory}
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
 DisableReadyPage=no
-UninstallDisplayName={#MyName}
+UninstallDisplayName={#ProductName}
 UninstallDisplayIcon={app}\bin\64bit\obs64.exe
 OutputBaseFilename=pitel-instant-replay-{#MyVersion}-windows-installer
 Compression=lzma2
 SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64compatible
-ArchitecturesAllowed=x64compatible
-LicenseFile=LICENSE.txt
 WizardStyle=modern
-AppSupportURL={#MyURL}
+LicenseFile=LICENSE.txt
 
 [Languages]
-Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 
 [Files]
 Source: "pitel-instant-replay\bin\64bit\pitel-instant-replay.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
 Source: "pitel-instant-replay\data\locale\*"; DestDir: "{app}\data\obs-plugins\pitel-instant-replay\locale"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\data\obs-plugins\pitel-instant-replay"
 
 [Code]
-{ Detect the OBS Studio install folder from the registry, falling back to the
-  default Program Files location. }
-function GetOBSDir(Param: String): String;
+function ResolveOBSDirectory(Param: String): String;
 var
-  Path: String;
+  InstalledPath: String;
 begin
-  Path := '';
-  if RegQueryStringValue(HKLM64, 'SOFTWARE\OBS Studio', '', Path) and (Path <> '') then
-    Result := Path
-  else if RegQueryStringValue(HKLM, 'SOFTWARE\OBS Studio', '', Path) and (Path <> '') then
-    Result := Path
+  InstalledPath := '';
+  if RegQueryStringValue(HKLM64, 'SOFTWARE\OBS Studio', '', InstalledPath) and (InstalledPath <> '') then
+    Result := InstalledPath
+  else if RegQueryStringValue(HKLM, 'SOFTWARE\OBS Studio', '', InstalledPath) and (InstalledPath <> '') then
+    Result := InstalledPath
   else
     Result := ExpandConstant('{commonpf}\obs-studio');
 end;
 
-{ Warn if the chosen folder doesn't look like an OBS install. }
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  ContinueInstall: Integer;
 begin
   Result := True;
-  if CurPageID = wpSelectDir then
-  begin
-    if not FileExists(ExpandConstant('{app}\bin\64bit\obs64.exe')) then
-    begin
-      if MsgBox('No se encontró OBS Studio en esa carpeta (falta bin\64bit\obs64.exe).' + #13#10 +
-                'Elegí la carpeta donde está instalado OBS Studio.' + #13#10#13#10 +
-                '¿Continuar de todos modos?', mbConfirmation, MB_YESNO) = IDNO then
-        Result := False;
-    end;
-  end;
+  if CurPageID <> wpSelectDir then
+    Exit;
+
+  if FileExists(ExpandConstant('{app}\bin\64bit\obs64.exe')) then
+    Exit;
+
+  ContinueInstall := MsgBox(
+    'The selected directory does not look like an OBS Studio installation.' + #13#10 +
+    'Expected: bin\64bit\obs64.exe' + #13#10#13#10 +
+    'Install to this directory anyway?',
+    mbConfirmation, MB_YESNO);
+  Result := ContinueInstall = IDYES;
 end;
