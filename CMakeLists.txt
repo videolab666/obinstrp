@@ -110,7 +110,6 @@ target_sources(
     src/sr-gpu-encoder.cpp
     src/sr-program-recorder.c
     src/sr-frame-cache.c
-    src/sr-replay-decode.c
     src/pir-capture-filter.c
     src/sr-capture-session.c
     src/sr-scene-tracker.c
